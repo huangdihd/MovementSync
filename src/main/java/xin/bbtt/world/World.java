@@ -2,22 +2,23 @@ package xin.bbtt.world;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
-import org.geysermc.mcprotocollib.protocol.codec.MinecraftCodecHelper;
+import org.geysermc.mcprotocollib.protocol.codec.MinecraftTypes;
 import org.geysermc.mcprotocollib.protocol.data.game.chunk.ChunkSection;
 import org.geysermc.mcprotocollib.protocol.data.game.level.block.BlockChangeEntry;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.entity.*;
-import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.entity.spawn.ClientboundAddEntityPacket;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.level.ClientboundBlockUpdatePacket;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.level.ClientboundForgetLevelChunkPacket;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.level.ClientboundLevelChunkWithLightPacket;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.level.ClientboundSectionBlocksUpdatePacket;
 import org.joml.Vector3d;
 import org.joml.Vector3i;
+import xin.bbtt.Block.BlockStateParser;
 import xin.bbtt.Entity.Entity;
 import xin.bbtt.MovementSync;
 import xin.bbtt.events.BlockChangeEvent;
 import xin.bbtt.events.LoadChunkEvent;
 import xin.bbtt.events.UnloadChunkEvent;
+import xin.bbtt.listeners.RegistryDataListener;
 import xin.bbtt.mcbot.Bot;
 
 import java.util.*;
@@ -98,21 +99,29 @@ public class World {
             chunks.put(levelChunkWithLightPacket.getX(), new ConcurrentHashMap<>());
         }
         ByteBuf chunkBuf = Unpooled.wrappedBuffer(levelChunkWithLightPacket.getChunkData());
-        MinecraftCodecHelper helper = new MinecraftCodecHelper();
-        List<ChunkSection> readSections = new ArrayList<>();
-        ChunkSection readSection;
-        while (chunkBuf.isReadable() && (readSection = helper.readChunkSection(chunkBuf)) != null) {
-            readSections.add(readSection);
+        try {
+            List<ChunkSection> readSections = new ArrayList<>();
+
+            while (chunkBuf.isReadable()) {
+
+                ChunkSection readSection = MinecraftTypes.readChunkSection(chunkBuf, BlockStateParser.getBlockStateRegistrySize(), RegistryDataListener.getBiomeRegistrySize());
+
+                readSections.add(readSection);
+            }
+
+            int lowest = readSections.size() == 16 ? 0 : -4;
+            Map<Integer, ChunkSection> sections = new ConcurrentHashMap<>();
+            for (int y = 0;y < readSections.size();y++) {
+                sections.put(lowest + y, readSections.get(y));
+            }
+            chunks.get(levelChunkWithLightPacket.getX()).put(levelChunkWithLightPacket.getZ(), sections);
+            LoadChunkEvent loadChunkEvent = new LoadChunkEvent(levelChunkWithLightPacket.getX(), levelChunkWithLightPacket.getZ());
+            Bot.Instance.getPluginManager().events().callEvent(loadChunkEvent);
+            MovementSync.Instance.getLogger().debug("Loaded chunk: ({}, {})", levelChunkWithLightPacket.getX(), levelChunkWithLightPacket.getZ());
+
+        } finally {
+            chunkBuf.release();
         }
-        int lowest = readSections.size() == 16 ? 0 : -4;
-        Map<Integer, ChunkSection> sections = new ConcurrentHashMap<>();
-        for (int y = 0;y < readSections.size();y++) {
-            sections.put(lowest + y, readSections.get(y));
-        }
-        chunks.get(levelChunkWithLightPacket.getX()).put(levelChunkWithLightPacket.getZ(), sections);
-        LoadChunkEvent loadChunkEvent = new LoadChunkEvent(levelChunkWithLightPacket.getX(), levelChunkWithLightPacket.getZ());
-        Bot.Instance.getPluginManager().events().callEvent(loadChunkEvent);
-        MovementSync.Instance.getLogger().debug("Loaded chunk: ({}, {})", levelChunkWithLightPacket.getX(), levelChunkWithLightPacket.getZ());
     }
 
     public void handleBlockUpdatePacket(ClientboundBlockUpdatePacket blockUpdatePacket) {

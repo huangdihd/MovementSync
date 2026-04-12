@@ -2,6 +2,7 @@ package xin.bbtt.Block;
 
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
+import lombok.Getter;
 import org.jetbrains.annotations.NotNull;
 
 import java.io.BufferedReader;
@@ -12,6 +13,8 @@ import java.util.stream.Collectors;
 
 public class BlockStateParser {
     private final TreeMap<Integer, BlockEntry> rangeMap = new TreeMap<>();
+    @Getter
+    private static int blockStateRegistrySize = 0;
     public static BlockStateParser Instance = new BlockStateParser();
 
     private BlockStateParser() {}
@@ -28,11 +31,16 @@ public class BlockStateParser {
     }
 
     public void loadJson(String jsonContent) {
+        int maxId = -1;
         Gson gson = new Gson();
         List<BlockEntry> entries = gson.fromJson(jsonContent, new TypeToken<List<BlockEntry>>(){}.getType());
         for (BlockEntry entry : entries) {
             rangeMap.put(entry.getMinStateId(), entry);
+            if (entry.getMaxStateId() > maxId) {
+                maxId = entry.getMaxStateId();
+            }
         }
+        blockStateRegistrySize = maxId + 1;
     }
 
     public BlockState parseStateId(int stateId) {

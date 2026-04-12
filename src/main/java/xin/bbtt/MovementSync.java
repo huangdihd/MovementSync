@@ -63,6 +63,7 @@ public class MovementSync implements Plugin {
         Bot.Instance.addPacketListener(new EntityIdRecorder(), this);
         Bot.Instance.addPacketListener(new RespawnPacketListener(), this);
         Bot.Instance.addPacketListener(new ChunkDataListener(), this);
+        Bot.Instance.addPacketListener(new RegistryDataListener(), this);
 
         Bot.Instance.getPluginManager().registerCommand(new WhereAmICommand(), new WhereAmICommandExecutor(),  this);
         Bot.Instance.getPluginManager().registerCommand(new JumpCommand(), new JumpCommandExecutor(),  this);

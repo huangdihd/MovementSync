@@ -1,7 +1,6 @@
 package xin.bbtt.listeners;
 
 import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.entity.*;
-import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.entity.spawn.ClientboundAddEntityPacket;
 import xin.bbtt.MovementSync;
 import xin.bbtt.mcbot.event.EventHandler;
 import xin.bbtt.mcbot.event.Listener;

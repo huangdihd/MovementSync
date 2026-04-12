@@ -19,6 +19,7 @@ public class updateMotionTask implements Runnable {
     public void syncPositionToServer() {
         Bot.Instance.getSession().send(new ServerboundMovePlayerPosRotPacket(
                 MovementSync.Instance.onGround.get(),
+                false,
                 MovementSync.Instance.position.get().x,
                 MovementSync.Instance.position.get().y,
                 MovementSync.Instance.position.get().z,
