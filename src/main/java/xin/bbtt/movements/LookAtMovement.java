@@ -38,8 +38,8 @@ public class LookAtMovement extends Movement {
         float dp = wrapDegrees(targetPitch - MovementSync.Instance.pitch.get());
         this.time = (long) (Math.sqrt(dy * dy + dp * dp) / 90 * 1000);
         if (this.time <= 0) this.time = 1; // To avoid divide 0
-        this.vy = dy / this.time;
-        this.vp = dp / this.time;
+        this.vy = dy / this.time * 50;
+        this.vp = dp / this.time * 50;
     }
 
 
