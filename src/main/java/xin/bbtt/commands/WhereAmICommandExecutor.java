@@ -11,6 +11,6 @@ public class WhereAmICommandExecutor extends CommandExecutor {
     @Override
     public void onCommand(Command command, String s, String[] strings) {
         Vector3d position = new Vector3d(MovementSync.Instance.position.get());
-        MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.whereami.response"), Bot.Instance.getServer(), position.x, position.y, position.z);
+        MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.whereami.response", Bot.Instance.getServer(), position.x, position.y, position.z));
     }
 }

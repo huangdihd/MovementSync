@@ -26,6 +26,6 @@ public class GetBlockAtCommandExecutor extends CommandExecutor {
         } catch (NumberFormatException e) {
             return;
         }
-        log.info(LangManager.get("movementsync.command.getblockat.response"), BlockStateParser.Instance.parseStateId(MovementSync.Instance.getWorld().getBlockAt(new Vector3d(x, y, z))));
+        log.info(LangManager.get("movementsync.command.getblockat.response", BlockStateParser.Instance.parseStateId(MovementSync.Instance.getWorld().getBlockAt(new Vector3d(x, y, z)))));
     }
 }

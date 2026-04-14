@@ -45,6 +45,14 @@ public class MovementSync implements Plugin {
     @Override
     public void onLoad() {
         LangManager.initLang(getClass().getClassLoader());
+        // Try multiple paths to ensure loading
+        try {
+            LangManager.loadFromStream(getClass().getResourceAsStream("/zh_cn.lang"));
+            LangManager.loadFromStream(getClass().getResourceAsStream("/en_us.lang"));
+            LangManager.loadFromStream(getClass().getResourceAsStream("/lang/zh_cn.lang"));
+            LangManager.loadFromStream(getClass().getResourceAsStream("/lang/en_us.lang"));
+        } catch (Exception ignored) {}
+        
         getLogger().info(LangManager.get("movementsync.plugin.loading"));
     }
 
