@@ -1,0 +1,6 @@
+movementsync.plugin.loading=Loading MovementSync
+movementsync.plugin.unloading=Unloading MovementSync
+movementsync.plugin.enabling=Enabling MovementSync
+movementsync.plugin.disabling=Disabling MovementSync
+movementsync.command.whereami.response=You're in {0} at ({1}, {2}, {3})
+movementsync.command.getblockat.response={0}

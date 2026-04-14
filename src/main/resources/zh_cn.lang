@@ -1,0 +1,6 @@
+movementsync.plugin.loading=正在加载 MovementSync
+movementsync.plugin.unloading=正在卸载 MovementSync
+movementsync.plugin.enabling=正在启用 MovementSync
+movementsync.plugin.disabling=正在禁用 MovementSync
+movementsync.command.whereami.response=你在 {0}，坐标为 ({1}, {2}, {3})
+movementsync.command.getblockat.response={0}

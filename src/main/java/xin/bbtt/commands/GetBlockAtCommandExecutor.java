@@ -5,6 +5,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import xin.bbtt.Block.BlockStateParser;
 import xin.bbtt.MovementSync;
+import xin.bbtt.mcbot.LangManager;
 import xin.bbtt.mcbot.command.Command;
 import xin.bbtt.mcbot.command.CommandExecutor;
 
@@ -25,6 +26,6 @@ public class GetBlockAtCommandExecutor extends CommandExecutor {
         } catch (NumberFormatException e) {
             return;
         }
-        log.info("{}", BlockStateParser.Instance.parseStateId(MovementSync.Instance.getWorld().getBlockAt(new Vector3d(x, y, z))));
+        log.info(LangManager.get("movementsync.command.getblockat.response"), BlockStateParser.Instance.parseStateId(MovementSync.Instance.getWorld().getBlockAt(new Vector3d(x, y, z))));
     }
 }

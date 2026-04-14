@@ -5,6 +5,7 @@ import org.joml.Vector3d;
 import xin.bbtt.commands.*;
 import xin.bbtt.listeners.*;
 import xin.bbtt.mcbot.Bot;
+import xin.bbtt.mcbot.LangManager;
 import xin.bbtt.mcbot.plugin.Plugin;
 import xin.bbtt.movement.MovementController;
 import xin.bbtt.movements.JumpMovement;
@@ -43,17 +44,18 @@ public class MovementSync implements Plugin {
 
     @Override
     public void onLoad() {
-        getLogger().info("Loading MovementSync");
+        LangManager.initLang(getClass().getClassLoader());
+        getLogger().info(LangManager.get("movementsync.plugin.loading"));
     }
 
     @Override
     public void onUnload() {
-        getLogger().info("Unloading MovementSync");
+        getLogger().info(LangManager.get("movementsync.plugin.unloading"));
     }
 
     @Override
     public void onEnable() {
-        getLogger().info("Enabling MovementSync");
+        getLogger().info(LangManager.get("movementsync.plugin.enabling"));
         position.set(new Vector3d(0, 0, 0));
         velocity.set(new Vector3d(0, 0, 0));
         pitch.set(0f);
@@ -81,7 +83,7 @@ public class MovementSync implements Plugin {
 
     @Override
     public void onDisable() {
-        getLogger().info("Disabling MovementSync");
+        getLogger().info(LangManager.get("movementsync.plugin.disabling"));
         physicalSimulationService.shutdown();
         movementService.shutdown();
     }
