@@ -4,3 +4,36 @@ movementsync.plugin.enabling=正在启用 MovementSync
 movementsync.plugin.disabling=正在禁用 MovementSync
 movementsync.command.whereami.response=你在 %s，坐标为 (%s, %s, %s)
 movementsync.command.getblockat.response=%s
+movementsync.movement.error.pause=暂停运动失败
+movementsync.movement.error.resume=恢复运动失败
+movementsync.movement.error.run=运行运动失败
+movementsync.movement.error.stop=停止运动失败
+movementsync.movement.error.ontick=执行 onTick 失败
+movementsync.movement.jump=正在跳跃
+movementsync.listener.entityid=已接收到 EntityId: {}
+movementsync.command.inventory.not_loaded=背包尚未加载。
+movementsync.command.inventory.header=--- 玩家背包 ---
+movementsync.command.inventory.entry=[%s] ID: %s 数量: %s
+movementsync.command.container.no_open=当前没有打开的容器。
+movementsync.command.container.header=--- 容器 %s ---
+movementsync.command.movement.paused=运动控制器已暂停。
+movementsync.command.movement.resumed=运动控制器已恢复。
+movementsync.command.movement.cancelled=已取消运动控制器中的所有运动。
+movementsync.command.movement.cancel_current=已取消当前正在执行的运动。
+
+movementsync.command.common.usage=用法: %s
+movementsync.command.interactentity.success=已向实体 %2$s 发送 %1$s 动作
+movementsync.command.interactblock.success=已向坐标 %2$s, %3$s, %4$s 的方块发送 %1$s 动作
+movementsync.command.entities.header=已加载实体 (%s):
+movementsync.command.entities.entry=[%s] %s
+movementsync.command.ispassable.response=方块 %s 是否可通行: %s
+movementsync.command.lookentity.not_found=未找到 ID 为 %s 的实体。
+movementsync.command.lookentity.success=正在看向实体 %s (%s)
+movementsync.command.goto.searching=正在搜索去往 %s, %s, %s 的路径...
+movementsync.command.goto.not_found=未找到通往目标的有效路径。
+movementsync.command.goto.invalid_goal=目标位置不可站立（下方是空气或流体）。
+movementsync.command.goto.success=已找到包含 %s 个节点的路径。开始移动。
+
+
+
+

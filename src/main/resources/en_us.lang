@@ -4,3 +4,36 @@ movementsync.plugin.enabling=Enabling MovementSync
 movementsync.plugin.disabling=Disabling MovementSync
 movementsync.command.whereami.response=You're in %s at (%s, %s, %s)
 movementsync.command.getblockat.response=%s
+movementsync.movement.error.pause=Failed to pause the movement
+movementsync.movement.error.resume=Failed to resume the movement
+movementsync.movement.error.run=Failed to run the movement
+movementsync.movement.error.stop=Failed to stop the movement
+movementsync.movement.error.ontick=Failed to run onTick
+movementsync.movement.jump=jumping
+movementsync.listener.entityid=EntityId was received: {}
+movementsync.command.inventory.not_loaded=Inventory not loaded yet.
+movementsync.command.inventory.header=--- Player Inventory ---
+movementsync.command.inventory.entry=[%s] ID: %s Count: %s
+movementsync.command.container.no_open=No container open.
+movementsync.command.container.header=--- Container %s ---
+movementsync.command.movement.paused=Movement controller paused.
+movementsync.command.movement.resumed=Movement controller resumed.
+movementsync.command.movement.cancelled=Movement controller cancelled all movements.
+movementsync.command.movement.cancel_current=Current movement cancelled.
+
+movementsync.command.common.usage=Usage: %s
+movementsync.command.interactentity.success=Sent %s for entity %s
+movementsync.command.interactblock.success=Sent %s for block at %s, %s, %s
+movementsync.command.entities.header=Loaded entities (%s):
+movementsync.command.entities.entry=[%s] %s
+movementsync.command.ispassable.response=Block %s is passable: %s
+movementsync.command.lookentity.not_found=Entity with ID %s not found.
+movementsync.command.lookentity.success=Looking at entity %s (%s)
+movementsync.command.goto.searching=Searching path to %s, %s, %s...
+movementsync.command.goto.not_found=Could not find a valid path to the target.
+movementsync.command.goto.invalid_goal=Target position is not standable (air or liquid below).
+movementsync.command.goto.success=Found path with %s nodes. Moving now.
+
+
+
+

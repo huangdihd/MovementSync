@@ -23,8 +23,7 @@ public class BlockStateParser {
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(
                 Objects.requireNonNull(BlockStateParser.class.getClassLoader().getResourceAsStream("blocks.json")),
                 StandardCharsets.UTF_8))) {
-            String content = reader.lines().collect(Collectors.joining("\n"));
-            Instance.loadJson(content);
+            Instance.loadJson(reader.lines().collect(Collectors.joining("\n")));
         } catch (Exception e) {
             throw new RuntimeException("Failed to load blocks.json", e);
         }
@@ -53,7 +52,7 @@ public class BlockStateParser {
         BlockEntry block = floorEntry.getValue();
         Map<String, String> properties = getProperties(stateId, block);
 
-        return new BlockState(block.getName(), stateId, properties);
+        return new BlockState(block.getName(), stateId, properties, block.getBoundingBox());
     }
 
     private static @NotNull Map<String, String> getProperties(int stateId, BlockEntry block) {

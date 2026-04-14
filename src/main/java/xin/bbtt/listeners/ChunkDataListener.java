@@ -12,7 +12,10 @@ import xin.bbtt.MovementSync;
 public class ChunkDataListener extends SessionAdapter {
     @Override
     public void packetReceived(Session session, Packet packet) {
-        if (packet instanceof ClientboundLevelChunkWithLightPacket levelChunkWithLightPacket) MovementSync.Instance.getWorld().handleLevelChunkAndLightUpdate(levelChunkWithLightPacket);
+        if (packet instanceof ClientboundLevelChunkWithLightPacket levelChunkWithLightPacket) {
+            MovementSync.Instance.getWorld().handleLevelChunkAndLightUpdate(levelChunkWithLightPacket);
+            MovementSync.Instance.triggerAutoRepath();
+        }
         if (packet instanceof ClientboundSectionBlocksUpdatePacket sectionBlocksUpdatePacket) MovementSync.Instance.getWorld().handleSectionBlocksUpdatePacket(sectionBlocksUpdatePacket);
         if (packet instanceof ClientboundBlockUpdatePacket blockUpdatePacket) MovementSync.Instance.getWorld().handleBlockUpdatePacket(blockUpdatePacket);
         if (packet instanceof ClientboundForgetLevelChunkPacket forgetLevelChunkPacket) MovementSync.Instance.getWorld().handleForgetLevelChunkPacket(forgetLevelChunkPacket);

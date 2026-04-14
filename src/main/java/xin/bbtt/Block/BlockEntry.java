@@ -10,11 +10,11 @@ public class BlockEntry {
     private int minStateId;
     private int maxStateId;
     private int defaultState;
+    private String boundingBox;
     private List<StateProperty> states;
 
     @Data
-    static
-    class StateProperty {
+    public static class StateProperty {
         private String name;
         private String type;
         private int num_values;
@@ -22,7 +22,7 @@ public class BlockEntry {
 
         public String getValueAt(int index) {
             if ("bool".equals(type)) {
-                return index == 0 ? "true" : "false";
+                return Boolean.toString(index == 0);
             }
             if (values != null && index < values.size()) {
                 return values.get(index);

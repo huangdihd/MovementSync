@@ -2,15 +2,25 @@ package xin.bbtt.movements;
 
 import org.joml.Vector3d;
 import xin.bbtt.MovementSync;
+import xin.bbtt.mcbot.LangManager;
 import xin.bbtt.movement.Movement;
 
 public class JumpMovement extends Movement {
+    long time;
+
+    public JumpMovement(long time) {
+        this.time = time;
+    }
+
+    public JumpMovement() {
+        this(0);
+    }
+
     @Override
     public void init() {
-        if (MovementSync.Instance.onGround.get()) {
-            MovementSync.Instance.getLogger().info("jumping");
-            MovementSync.Instance.velocity.updateAndGet(p -> new Vector3d(p).add(new Vector3d(0, 0.42, 0)));
-        }
+        if (!MovementSync.Instance.onGround.get()) return;
+        MovementSync.Instance.getLogger().info(LangManager.get("movementsync.movement.jump"));
+        MovementSync.Instance.velocity.updateAndGet(p -> new Vector3d(p).add(new Vector3d(0, 0.42, 0)));
     }
 
     @Override

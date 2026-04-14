@@ -1,14 +1,15 @@
 package xin.bbtt;
 
 import lombok.Getter;
+import lombok.Setter;
 import org.joml.Vector3d;
 import xin.bbtt.commands.*;
+import xin.bbtt.inventory.InventoryManager;
 import xin.bbtt.listeners.*;
 import xin.bbtt.mcbot.Bot;
 import xin.bbtt.mcbot.LangManager;
 import xin.bbtt.mcbot.plugin.Plugin;
 import xin.bbtt.movement.MovementController;
-import xin.bbtt.movements.JumpMovement;
 import xin.bbtt.movements.LookAtMovement;
 import xin.bbtt.tasks.updateMotionTask;
 import xin.bbtt.world.Direction;
@@ -23,20 +24,25 @@ import java.util.concurrent.atomic.AtomicReference;
 public class MovementSync implements Plugin {
     public static MovementSync Instance;
     public int entityId = -1;
-    public AtomicReference<Vector3d> position = new AtomicReference<>();
-    public AtomicReference<Vector3d> velocity = new AtomicReference<>();
-    public AtomicReference<Float> pitch = new AtomicReference<>();
-    public AtomicReference<Float> yaw = new AtomicReference<>();
+    public AtomicReference<Vector3d> position = new AtomicReference<>(new Vector3d(0, 0, 0));
+    public AtomicReference<Vector3d> velocity = new AtomicReference<>(new Vector3d(0, 0, 0));
+    public AtomicReference<Float> pitch = new AtomicReference<>(0f);
+    public AtomicReference<Float> yaw = new AtomicReference<>(0f);
     public static final Vector3d gravitationalAcceleration = new Vector3d(0, -0.08, 0);
     public static final double terminalVelocity = -3.92;
     public static final double movementSpeed = 0.2159;
     public AtomicBoolean onGround = new AtomicBoolean(true);
     private ScheduledExecutorService physicalSimulationService;
     public ScheduledExecutorService movementService;
+    @Setter
+    @Getter
+    private org.joml.Vector3i activeGoal = null;
     @Getter
     public final World world = new World();
     @Getter
     public final MovementController movementController = new MovementController();
+    @Getter
+    public final InventoryManager inventoryManager = new InventoryManager();
 
     public MovementSync() {
         Instance = this;
@@ -74,12 +80,22 @@ public class MovementSync implements Plugin {
         Bot.Instance.addPacketListener(new RespawnPacketListener(), this);
         Bot.Instance.addPacketListener(new ChunkDataListener(), this);
         Bot.Instance.addPacketListener(new RegistryDataListener(), this);
+        Bot.Instance.addPacketListener(new InventoryPacketListener(), this);
 
         Bot.Instance.getPluginManager().registerCommand(new WhereAmICommand(), new WhereAmICommandExecutor(),  this);
         Bot.Instance.getPluginManager().registerCommand(new JumpCommand(), new JumpCommandExecutor(),  this);
         Bot.Instance.getPluginManager().registerCommand(new GetBlockAtCommand(), new GetBlockAtCommandExecutor(), this);
         Bot.Instance.getPluginManager().registerCommand(new WalkCommand(), new WalkCommandExecutor(), this);
         Bot.Instance.getPluginManager().registerCommand(new LookAtCommand(), new LookAtCommandExecutor(), this);
+        Bot.Instance.getPluginManager().registerCommand(new MovementCommand(), new MovementCommandExecutor(), this);
+        Bot.Instance.getPluginManager().registerCommand(new EntitiesCommand(), new EntitiesCommandExecutor(), this);
+        Bot.Instance.getPluginManager().registerCommand(new InteractBlockCommand(), new InteractBlockCommandExecutor(), this);
+        Bot.Instance.getPluginManager().registerCommand(new InteractEntityCommand(), new InteractEntityCommandExecutor(), this);
+        Bot.Instance.getPluginManager().registerCommand(new InventoryCommand(), new InventoryCommandExecutor(), this);
+        Bot.Instance.getPluginManager().registerCommand(new ContainerCommand(), new ContainerCommandExecutor(), this);
+        Bot.Instance.getPluginManager().registerCommand(new IsPassableCommand(), new IsPassableCommandExecutor(), this);
+        Bot.Instance.getPluginManager().registerCommand(new LookAtEntityCommand(), new LookAtEntityCommandExecutor(), this);
+        Bot.Instance.getPluginManager().registerCommand(new GotoCommand(), new GotoCommandExecutor(), this);
 
         Bot.Instance.getPluginManager().events().registerEvents(new ServerChangeListener(),  this);
         Bot.Instance.getPluginManager().events().registerEvents(new EntityPacketListener(), this);
@@ -96,12 +112,29 @@ public class MovementSync implements Plugin {
         movementService.shutdown();
     }
 
-    public void jump() {
-        getMovementController().addMovement(new JumpMovement());
-    }
-
     public void lookAt(Vector3d target) {
         getMovementController().addMovement(new LookAtMovement(target));
+    }
+
+    public void triggerAutoRepath() {
+        if (activeGoal == null) return;
+
+        Vector3d currentPos = position.get();
+        xin.bbtt.pathfinding.Node start = new xin.bbtt.pathfinding.Node((int)Math.floor(currentPos.x), (int)Math.floor(currentPos.y), (int)Math.floor(currentPos.z));
+        xin.bbtt.pathfinding.Node goalNode = new xin.bbtt.pathfinding.Node(activeGoal.x, activeGoal.y, activeGoal.z);
+
+        if (start.equals(goalNode)) {
+            activeGoal = null;
+            return;
+        }
+
+        xin.bbtt.pathfinding.DStarLite pathfinder = new xin.bbtt.pathfinding.DStarLite(start, goalNode, getWorld());
+        java.util.List<xin.bbtt.pathfinding.Node> path = pathfinder.findPath(5000);
+
+        if (path.size() > 1) {
+            getMovementController().insertMovement(new xin.bbtt.movements.PathMovement(path));
+            getLogger().debug("Auto-repath triggered towards {}", activeGoal);
+        }
     }
 
     public Vector3d getHeadPosition() {

@@ -2,6 +2,7 @@ package xin.bbtt.world;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
+import lombok.Getter;
 import org.geysermc.mcprotocollib.protocol.codec.MinecraftTypes;
 import org.geysermc.mcprotocollib.protocol.data.game.chunk.ChunkSection;
 import org.geysermc.mcprotocollib.protocol.data.game.level.block.BlockChangeEntry;
@@ -28,6 +29,7 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 public class World {
     private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
     private final Map<Integer, Map<Integer, Map<Integer, ChunkSection>>> chunks = new ConcurrentHashMap<>();
+    @Getter
     private final Map<Integer, Entity> entities = new ConcurrentHashMap<>();
 
     public void applyChange(BlockChangeEntry entry) {
@@ -69,22 +71,22 @@ public class World {
             bottomBlockPos.y = (int)position.y;
         }
 
-        boolean result = getBlockAt(bottomBlockPos) !=0;
+        boolean result = isSolid(bottomBlockPos);
         // North
         if (1 + Math.floor(position.z) - position.z > 0.7) {
-            result |= getBlockAt(new Vector3d(bottomBlockPos).add(Direction.NORTH.getUnitVector())) != 0;
+            result |= isSolid(new Vector3d(bottomBlockPos).add(Direction.NORTH.getUnitVector()));
         }
         // East
         if (position.x - Math.floor(position.x) > 0.7) {
-            result |= getBlockAt(new Vector3d(bottomBlockPos).add(Direction.EAST.getUnitVector())) != 0;
+            result |= isSolid(new Vector3d(bottomBlockPos).add(Direction.EAST.getUnitVector()));
         }
         // South
         if (position.z - Math.floor(position.z) > 0.7) {
-            result |=  getBlockAt(new Vector3d(bottomBlockPos).add(Direction.SOUTH.getUnitVector())) != 0;
+            result |=  isSolid(new Vector3d(bottomBlockPos).add(Direction.SOUTH.getUnitVector()));
         }
         // West
         if (1 + Math.floor(position.x) - position.x > 0.7) {
-            result |=  getBlockAt(new Vector3d(bottomBlockPos).add(Direction.WEST.getUnitVector())) != 0;
+            result |=  isSolid(new Vector3d(bottomBlockPos).add(Direction.WEST.getUnitVector()));
         }
         return result;
     }
@@ -246,5 +248,18 @@ public class World {
         finally {
             lock.readLock().unlock();
         }
+    }
+
+    public xin.bbtt.Block.BlockState getBlockStateAt(Vector3d position) {
+        int stateId = getBlockAt(position);
+        return BlockStateParser.Instance.parseStateId(stateId);
+    }
+
+    public boolean isPassable(Vector3d position) {
+        return getBlockStateAt(position).isPassable();
+    }
+
+    public boolean isSolid(Vector3d position) {
+        return getBlockStateAt(position).isSolid();
     }
 }

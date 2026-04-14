@@ -19,6 +19,5 @@ public class RegistryDataListener extends SessionAdapter {
         if (!registryPacket.getRegistry().asString().equals("minecraft:worldgen/biome")) return;
         biomeRegistrySize = registryPacket.getEntries().size();
         log.debug("Got biomeRegistrySize: {}", biomeRegistrySize);
-
     }
 }
