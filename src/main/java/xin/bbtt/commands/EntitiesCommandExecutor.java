@@ -15,7 +15,8 @@ public class EntitiesCommandExecutor extends CommandExecutor {
         MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.entities.header", entities.size()));
         for (Map.Entry<Integer, Entity> entry : entities.entrySet()) {
             Entity e = entry.getValue();
-            MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.entities.entry", entry.getKey(), e.getType()));
+            String posStr = String.format("(%.1f, %.1f, %.1f)", e.getPosition().x, e.getPosition().y, e.getPosition().z);
+            MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.entities.entry_with_pos", entry.getKey(), e.getType(), posStr));
         }
     }
 }

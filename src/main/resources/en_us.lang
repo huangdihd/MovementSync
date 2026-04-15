@@ -26,7 +26,9 @@ movementsync.command.interactentity.success=Sent %s for entity %s
 movementsync.command.interactblock.success=Sent %s for block at %s, %s, %s
 movementsync.command.entities.header=Loaded entities (%s):
 movementsync.command.entities.entry=[%s] %s
+movementsync.command.entities.entry_with_pos=[%s] %s %s
 movementsync.command.ispassable.response=Block %s is passable: %s
+
 movementsync.command.lookentity.not_found=Entity with ID %s not found.
 movementsync.command.lookentity.success=Looking at entity %s (%s)
 movementsync.command.goto.searching=Searching path to %s, %s, %s...

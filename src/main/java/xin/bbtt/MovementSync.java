@@ -34,9 +34,13 @@ public class MovementSync implements Plugin {
     public AtomicBoolean onGround = new AtomicBoolean(true);
     private ScheduledExecutorService physicalSimulationService;
     public ScheduledExecutorService movementService;
-    @Setter
-    @Getter
+    
+    @Setter @Getter
     private org.joml.Vector3i activeGoal = null;
+    
+    @Setter @Getter
+    private int followTargetId = -1;
+    
     @Getter
     public final World world = new World();
     @Getter
@@ -51,7 +55,6 @@ public class MovementSync implements Plugin {
     @Override
     public void onLoad() {
         LangManager.initLang(getClass().getClassLoader());
-        // Try multiple paths to ensure loading
         try {
             LangManager.loadFromStream(getClass().getResourceAsStream("/zh_cn.lang"));
             LangManager.loadFromStream(getClass().getResourceAsStream("/en_us.lang"));
@@ -96,6 +99,7 @@ public class MovementSync implements Plugin {
         Bot.Instance.getPluginManager().registerCommand(new IsPassableCommand(), new IsPassableCommandExecutor(), this);
         Bot.Instance.getPluginManager().registerCommand(new LookAtEntityCommand(), new LookAtEntityCommandExecutor(), this);
         Bot.Instance.getPluginManager().registerCommand(new GotoCommand(), new GotoCommandExecutor(), this);
+        Bot.Instance.getPluginManager().registerCommand(new FollowCommand(), new FollowCommandExecutor(), this);
 
         Bot.Instance.getPluginManager().events().registerEvents(new ServerChangeListener(),  this);
         Bot.Instance.getPluginManager().events().registerEvents(new EntityPacketListener(), this);
@@ -112,33 +116,58 @@ public class MovementSync implements Plugin {
         movementService.shutdown();
     }
 
+    public void jump() {
+        if (!onGround.get()) return;
+        velocity.updateAndGet(v -> new Vector3d(v).add(0, 0.42, 0));
+    }
+
     public void lookAt(Vector3d target) {
-        getMovementController().addMovement(new LookAtMovement(target));
+        getMovementController().addMovement(new xin.bbtt.movements.LookAtMovement(target));
+    }
+
+    public void directLookAt(Vector3d target) {
+        Vector3d headPos = getHeadPosition();
+        Vector3d diff = new Vector3d(target).sub(headPos);
+        double distanceXZ = Math.sqrt(diff.x * diff.x + diff.z * diff.z);
+        float targetYaw = (float) Math.toDegrees(Math.atan2(-diff.x, diff.z));
+        float targetPitch = (float) Math.toDegrees(Math.atan2(-diff.y, distanceXZ));
+        this.yaw.set(targetYaw);
+        this.pitch.set(targetPitch);
     }
 
     public void triggerAutoRepath() {
-        if (activeGoal == null) return;
+        org.joml.Vector3i targetNodePos = activeGoal;
+        
+        // If we are following an entity, override targetNodePos
+        if (followTargetId != -1) {
+            xin.bbtt.Entity.Entity entity = world.getEntity(followTargetId);
+            if (entity != null) {
+                Vector3d p = entity.getPosition();
+                targetNodePos = new org.joml.Vector3i((int)Math.floor(p.x), (int)Math.floor(p.y), (int)Math.floor(p.z));
+            }
+        }
+
+        if (targetNodePos == null) return;
 
         Vector3d currentPos = position.get();
         xin.bbtt.pathfinding.Node start = new xin.bbtt.pathfinding.Node((int)Math.floor(currentPos.x), (int)Math.floor(currentPos.y), (int)Math.floor(currentPos.z));
-        xin.bbtt.pathfinding.Node goalNode = new xin.bbtt.pathfinding.Node(activeGoal.x, activeGoal.y, activeGoal.z);
+        xin.bbtt.pathfinding.Node goalNode = new xin.bbtt.pathfinding.Node(targetNodePos.x, targetNodePos.y, targetNodePos.z);
 
-        if (start.equals(goalNode)) {
+        if (start.equals(goalNode) && followTargetId == -1) {
             activeGoal = null;
             return;
         }
 
+        // Repath limit to avoid too much calculation
         xin.bbtt.pathfinding.DStarLite pathfinder = new xin.bbtt.pathfinding.DStarLite(start, goalNode, getWorld());
-        java.util.List<xin.bbtt.pathfinding.Node> path = pathfinder.findPath(5000);
+        java.util.List<xin.bbtt.pathfinding.Node> path = pathfinder.findPath(2000);
 
         if (path.size() > 1) {
             getMovementController().insertMovement(new xin.bbtt.movements.PathMovement(path));
-            getLogger().debug("Auto-repath triggered towards {}", activeGoal);
         }
     }
 
     public Vector3d getHeadPosition() {
-        return new Vector3d(MovementSync.Instance.position.get())
-                .add(Direction.UP.getVector(1.62));
+        return new Vector3d(MovementSync.Instance.position.get()).add(Direction.UP.getVector(1.62));
     }
 }

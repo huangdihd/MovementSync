@@ -26,50 +26,51 @@ public class MovementController {
         tryExecuteNext();
     }
 
+    /**
+     * "IMMEDIATE" means interrupting the current thread NOW.
+     */
     public void insertMovement(Movement movement) {
         synchronized (stateLock) {
-            if (currentMovement != null) {
-                Movement pausedMovement = currentMovement;
-                stopCurrentMovement();
-                movements.addFirst(pausedMovement);
+            // Kill current task forcefully
+            if (currentTaskFuture != null) {
+                currentTaskFuture.cancel(true);
+                currentTaskFuture = null;
             }
+            
+            if (currentMovement != null) {
+                try {
+                    currentMovement.onStop();
+                } catch (Exception ignored) {}
+                // Put it back to the head so it resumes after the inserted one
+                movements.addFirst(currentMovement);
+                currentMovement = null;
+            }
+            
+            // Insert the new one at the very front
             movements.addFirst(movement);
+            isExecuting.set(false);
         }
+        // Force start the new task in this thread
         tryExecuteNext();
     }
 
     public void pause() {
         if (!isPaused.compareAndSet(false, true)) return;
-
         synchronized (stateLock) {
-            if (currentMovement == null) return;
-            try {
-                currentMovement.onPause();
-            } catch (Exception e) {
-                MovementSync.Instance.getLogger().error(LangManager.get("movementsync.movement.error.pause"), e);
+            if (currentMovement != null) {
+                try { currentMovement.onPause(); } catch (Exception ignored) {}
             }
         }
     }
 
     public void resume() {
         if (!isPaused.compareAndSet(true, false)) return;
-
-        boolean shouldExecuteNext = false;
         synchronized (stateLock) {
             if (currentMovement != null) {
-                try {
-                    currentMovement.onResume();
-                } catch (Exception e) {
-                    MovementSync.Instance.getLogger().error(LangManager.get("movementsync.movement.error.resume"), e);
-                }
-            } else {
-                shouldExecuteNext = true;
+                try { currentMovement.onResume(); } catch (Exception ignored) {}
             }
         }
-        
-        if (shouldExecuteNext) {
-            tryExecuteNext();
-        }
+        tryExecuteNext();
     }
 
     public boolean isPaused() {
@@ -79,22 +80,34 @@ public class MovementController {
     public void cancelAll() {
         synchronized (stateLock) {
             movements.clear();
-            stopCurrentMovement();
+            stopCurrent();
         }
     }
 
-    @SuppressWarnings("unused")
-    public boolean hasMovement() {
+    public void finishCurrentMovement() {
         synchronized (stateLock) {
-            return !movements.isEmpty() || currentMovement != null;
+            stopCurrent();
         }
+        tryExecuteNext();
+    }
+
+    private void stopCurrent() {
+        if (currentTaskFuture != null) {
+            currentTaskFuture.cancel(true);
+            currentTaskFuture = null;
+        }
+        if (currentMovement != null) {
+            try { currentMovement.onStop(); } catch (Exception ignored) {}
+            currentMovement = null;
+        }
+        isExecuting.set(false);
     }
 
     private void tryExecuteNext() {
-        if (isExecuting.get()) return;
-        if (movements.isEmpty()) return;
         if (isPaused.get()) return;
-
+        if (movements.isEmpty()) return;
+        
+        // Ensure atomic handover
         if (isExecuting.compareAndSet(false, true)) {
             doNext();
         }
@@ -103,7 +116,6 @@ public class MovementController {
     private void doNext() {
         synchronized (stateLock) {
             currentMovement = movements.pollFirst();
-
             if (currentMovement == null) {
                 isExecuting.set(false);
                 return;
@@ -116,50 +128,12 @@ public class MovementController {
             try {
                 currentMovement.init();
                 MovementTask task = new MovementTask(currentMovement, this);
-
-                currentTaskFuture = MovementSync.Instance.movementService.scheduleAtFixedRate(
-                        task,
-                        0L,
-                        50L,
-                        TimeUnit.MILLISECONDS
-                );
+                currentTaskFuture = MovementSync.Instance.movementService.scheduleAtFixedRate(task, 0L, 50L, TimeUnit.MILLISECONDS);
             } catch (Exception e) {
                 MovementSync.Instance.getLogger().error(LangManager.get("movementsync.movement.error.run"), e);
                 isExecuting.set(false);
+                tryExecuteNext();
             }
         }
-        
-        if (!isExecuting.get() && !isPaused.get()) {
-            tryExecuteNext();
-        }
-    }
-
-    public void finishCurrentMovement() {
-        boolean shouldExecuteNext;
-        synchronized (stateLock) {
-            stopCurrentMovement();
-            shouldExecuteNext = !isPaused.get();
-        }
-        if (shouldExecuteNext) {
-            tryExecuteNext();
-        }
-    }
-
-    private void stopCurrentMovement() {
-        if (currentTaskFuture != null) {
-            currentTaskFuture.cancel(true);
-            currentTaskFuture = null;
-        }
-
-        if (currentMovement != null) {
-            try {
-                currentMovement.onStop();
-            } catch (Exception e) {
-                MovementSync.Instance.getLogger().error(LangManager.get("movementsync.movement.error.stop"), e);
-            }
-            currentMovement = null;
-        }
-
-        isExecuting.set(false);
     }
 }

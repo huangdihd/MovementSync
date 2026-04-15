@@ -26,7 +26,9 @@ movementsync.command.interactentity.success=已向实体 %2$s 发送 %1$s 动作
 movementsync.command.interactblock.success=已向坐标 %2$s, %3$s, %4$s 的方块发送 %1$s 动作
 movementsync.command.entities.header=已加载实体 (%s):
 movementsync.command.entities.entry=[%s] %s
+movementsync.command.entities.entry_with_pos=[%s] %s %s
 movementsync.command.ispassable.response=方块 %s 是否可通行: %s
+
 movementsync.command.lookentity.not_found=未找到 ID 为 %s 的实体。
 movementsync.command.lookentity.success=正在看向实体 %s (%s)
 movementsync.command.goto.searching=正在搜索去往 %s, %s, %s 的路径...
