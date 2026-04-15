@@ -70,8 +70,11 @@ public class PathMovement extends Movement {
         // 3. Move towards the target
         applyPreciseMovement(currentPos, targetPos, isGapJump);
         
-        // 4. Look at the current target
-        MovementSync.Instance.directLookAt(targetPos);
+        // 4. Look in the direction of the target horizontally
+        Vector3d lookDiff = new Vector3d(targetPos).sub(currentPos);
+        float targetYaw = (float) Math.toDegrees(Math.atan2(-lookDiff.x, lookDiff.z));
+        MovementSync.Instance.yaw.set(targetYaw);
+        MovementSync.Instance.pitch.set(0f);
     }
 
     private boolean hasReachedNode(Vector3d currentPos, Vector3d targetPos) {
