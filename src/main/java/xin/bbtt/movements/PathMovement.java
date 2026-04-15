@@ -10,9 +10,14 @@ import java.util.List;
 public class PathMovement extends Movement {
     private List<Node> path;
     private int currentIndex = 0;
+    private volatile boolean repathRequested = false;
 
     public PathMovement(List<Node> path) {
         this.path = path;
+    }
+
+    public void requestRepath() {
+        this.repathRequested = true;
     }
 
     @Override
@@ -24,6 +29,11 @@ public class PathMovement extends Movement {
 
     @Override
     public void onTick() {
+        if (repathRequested) {
+            repathRequested = false;
+            repathInternally();
+        }
+
         if (currentIndex >= path.size()) {
             finishPath();
             return;

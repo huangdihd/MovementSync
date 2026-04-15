@@ -57,9 +57,9 @@ public class DStarLite {
                     if (isPassable(nx, u.y + 2, nz) && isStandable(nx, u.y + 1, nz)) {
                         neighbors.add(new Node(nx, u.y + 1, nz));
                     }
-                    // Jump over gaps (1 to 2 blocks)
+                    // Jump over gaps (1 block)
                     if (isPassable(u.x, u.y + 2, u.z)) {
-                        for (int gap = 1; gap <= 2; gap++) {
+                        for (int gap = 1; gap <= 1; gap++) {
                             int targetX = u.x + (gap + 1) * dx[i];
                             int targetZ = u.z + (gap + 1) * dz[i];
                             

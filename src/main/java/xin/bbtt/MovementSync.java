@@ -169,6 +169,13 @@ public class MovementSync implements Plugin {
         }
     }
 
+    public void requestRepath() {
+        xin.bbtt.movement.Movement current = movementController.getCurrentMovement();
+        if (current instanceof xin.bbtt.movements.PathMovement pathMovement) {
+            pathMovement.requestRepath();
+        }
+    }
+
     public Vector3d getHeadPosition() {
         return new Vector3d(MovementSync.Instance.position.get()).add(Direction.UP.getVector(1.62));
     }

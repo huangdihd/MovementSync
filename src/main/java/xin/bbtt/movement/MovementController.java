@@ -77,6 +77,12 @@ public class MovementController {
         return isPaused.get();
     }
 
+    public Movement getCurrentMovement() {
+        synchronized (stateLock) {
+            return currentMovement;
+        }
+    }
+
     public void cancelAll() {
         synchronized (stateLock) {
             movements.clear();

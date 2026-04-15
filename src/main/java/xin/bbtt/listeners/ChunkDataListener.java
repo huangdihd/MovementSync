@@ -15,8 +15,17 @@ public class ChunkDataListener extends SessionAdapter {
         if (packet instanceof ClientboundLevelChunkWithLightPacket levelChunkWithLightPacket) {
             MovementSync.Instance.getWorld().handleLevelChunkAndLightUpdate(levelChunkWithLightPacket);
         }
-        if (packet instanceof ClientboundSectionBlocksUpdatePacket sectionBlocksUpdatePacket) MovementSync.Instance.getWorld().handleSectionBlocksUpdatePacket(sectionBlocksUpdatePacket);
-        if (packet instanceof ClientboundBlockUpdatePacket blockUpdatePacket) MovementSync.Instance.getWorld().handleBlockUpdatePacket(blockUpdatePacket);
-        if (packet instanceof ClientboundForgetLevelChunkPacket forgetLevelChunkPacket) MovementSync.Instance.getWorld().handleForgetLevelChunkPacket(forgetLevelChunkPacket);
+        if (packet instanceof ClientboundSectionBlocksUpdatePacket sectionBlocksUpdatePacket) {
+            MovementSync.Instance.getWorld().handleSectionBlocksUpdatePacket(sectionBlocksUpdatePacket);
+            MovementSync.Instance.requestRepath();
+        }
+        if (packet instanceof ClientboundBlockUpdatePacket blockUpdatePacket) {
+            MovementSync.Instance.getWorld().handleBlockUpdatePacket(blockUpdatePacket);
+            MovementSync.Instance.requestRepath();
+        }
+        if (packet instanceof ClientboundForgetLevelChunkPacket forgetLevelChunkPacket) {
+            MovementSync.Instance.getWorld().handleForgetLevelChunkPacket(forgetLevelChunkPacket);
+            MovementSync.Instance.requestRepath();
+        }
     }
 }
