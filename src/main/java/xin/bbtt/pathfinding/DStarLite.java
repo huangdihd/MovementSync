@@ -57,6 +57,31 @@ public class DStarLite {
                     if (isPassable(nx, u.y + 2, nz) && isStandable(nx, u.y + 1, nz)) {
                         neighbors.add(new Node(nx, u.y + 1, nz));
                     }
+                    // Jump over gaps (1 to 2 blocks)
+                    if (isPassable(u.x, u.y + 2, u.z)) {
+                        for (int gap = 1; gap <= 2; gap++) {
+                            int targetX = u.x + (gap + 1) * dx[i];
+                            int targetZ = u.z + (gap + 1) * dz[i];
+                            
+                            boolean clearPath = true;
+                            for (int step = 1; step <= gap; step++) {
+                                int midX = u.x + step * dx[i];
+                                int midZ = u.z + step * dz[i];
+                                if (!isPassable(midX, u.y, midZ) || !isPassable(midX, u.y + 1, midZ) || !isPassable(midX, u.y + 2, midZ)) {
+                                    clearPath = false;
+                                    break;
+                                }
+                            }
+                            
+                            if (!clearPath) break; // Blocked by wall
+                            
+                            if (isStandable(targetX, u.y, targetZ) && isPassable(targetX, u.y + 2, targetZ)) {
+                                neighbors.add(new Node(targetX, u.y, targetZ));
+                                // Don't break here, could potentially jump even further if there's another platform, 
+                                // but typically we just take the first valid landing to keep it simple, or we can allow all.
+                            }
+                        }
+                    }
                     // Fall down (up to 3 blocks)
                     for (int dy = -1; dy >= -3; dy--) {
                         if (isStandable(nx, u.y + dy, nz)) {

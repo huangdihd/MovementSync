@@ -8,7 +8,7 @@ import xin.bbtt.pathfinding.Node;
 import java.util.List;
 
 public class PathMovement extends Movement {
-    private final List<Node> path;
+    private List<Node> path;
     private int currentIndex = 0;
 
     public PathMovement(List<Node> path) {
@@ -48,8 +48,17 @@ public class PathMovement extends Movement {
         if (isPathDeviated(currentPos, targetNode)) return;
         if (isFallingUnexpectedly(currentPos, targetPos)) return;
 
+        boolean isGapJump = false;
+        if (currentIndex > 0) {
+            Node prevNode = path.get(currentIndex - 1);
+            double distSq = Math.pow(targetNode.x - prevNode.x, 2) + Math.pow(targetNode.z - prevNode.z, 2);
+            if (distSq > 2.5) {
+                isGapJump = true;
+            }
+        }
+
         // 3. Move towards the target
-        applyPreciseMovement(currentPos, targetPos);
+        applyPreciseMovement(currentPos, targetPos, isGapJump);
         
         // 4. Look at the current target
         MovementSync.Instance.directLookAt(targetPos);
@@ -69,7 +78,7 @@ public class PathMovement extends Movement {
         return dx < horizontalTolerance && dz < horizontalTolerance && dy < verticalTolerance;
     }
 
-    private void applyPreciseMovement(Vector3d currentPos, Vector3d targetPos) {
+    private void applyPreciseMovement(Vector3d currentPos, Vector3d targetPos, boolean isGapJump) {
         Vector3d diff = new Vector3d(targetPos).sub(currentPos);
         double verticalDist = diff.y;
         diff.y = 0;
@@ -98,16 +107,79 @@ public class PathMovement extends Movement {
         MovementSync.Instance.velocity.set(new Vector3d(diff.x, MovementSync.Instance.velocity.get().y, diff.z));
 
         // Jump if needed
-        if (verticalDist > 0.5 && MovementSync.Instance.onGround.get()) {
-            MovementSync.Instance.jump();
+        if (MovementSync.Instance.onGround.get()) {
+            if (verticalDist > 0.5) {
+                MovementSync.Instance.jump();
+            } else if (isGapJump) {
+                MovementSync.Instance.jump();
+            }
         }
     }
 
     private void finishPath() {
-        setFinished(true);
-        stopHorizontal();
-        MovementSync.Instance.velocity.set(new Vector3d(0, 0, 0));
-        MovementSync.Instance.setActiveGoal(null);
+        org.joml.Vector3i goal = MovementSync.Instance.getActiveGoal();
+        if (goal != null) {
+            Vector3d currentPos = MovementSync.Instance.position.get();
+            double dx = Math.abs(currentPos.x - (goal.x + 0.5));
+            double dz = Math.abs(currentPos.z - (goal.z + 0.5));
+            double dy = Math.abs(currentPos.y - goal.y);
+            
+            if (dx < 0.5 && dz < 0.5 && dy < 1.0) {
+                setFinished(true);
+                stopHorizontal();
+                MovementSync.Instance.velocity.set(new Vector3d(0, 0, 0));
+                MovementSync.Instance.setActiveGoal(null);
+            } else {
+                // Repath internally to continue towards the unreached goal!
+                repathInternally();
+            }
+        } else {
+            setFinished(true);
+            stopHorizontal();
+            MovementSync.Instance.velocity.set(new Vector3d(0, 0, 0));
+            MovementSync.Instance.setActiveGoal(null);
+        }
+    }
+
+    private void repathInternally() {
+        org.joml.Vector3i targetNodePos = MovementSync.Instance.getActiveGoal();
+        
+        if (MovementSync.Instance.getFollowTargetId() != -1) {
+            xin.bbtt.Entity.Entity entity = MovementSync.Instance.getWorld().getEntity(MovementSync.Instance.getFollowTargetId());
+            if (entity != null) {
+                Vector3d p = entity.getPosition();
+                targetNodePos = new org.joml.Vector3i((int)Math.floor(p.x), (int)Math.floor(p.y), (int)Math.floor(p.z));
+            }
+        }
+
+        if (targetNodePos == null) {
+            setFinished(true);
+            return;
+        }
+
+        Vector3d currentPos = MovementSync.Instance.position.get();
+        Node start = new Node((int)Math.floor(currentPos.x), (int)Math.floor(currentPos.y), (int)Math.floor(currentPos.z));
+        Node goalNode = new Node(targetNodePos.x, targetNodePos.y, targetNodePos.z);
+
+        if (start.equals(goalNode) && MovementSync.Instance.getFollowTargetId() == -1) {
+            setFinished(true);
+            MovementSync.Instance.setActiveGoal(null);
+            return;
+        }
+
+        xin.bbtt.pathfinding.DStarLite pathfinder = new xin.bbtt.pathfinding.DStarLite(start, goalNode, MovementSync.Instance.getWorld());
+        List<Node> newPath = pathfinder.findPath(2000);
+
+        if (newPath != null && newPath.size() > 1) {
+            this.path = newPath;
+            this.currentIndex = 0;
+        } else {
+            setFinished(true);
+            stopHorizontal();
+            if (MovementSync.Instance.getFollowTargetId() == -1) {
+                MovementSync.Instance.setActiveGoal(null);
+            }
+        }
     }
 
     private void stopHorizontal() {

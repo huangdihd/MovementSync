@@ -119,6 +119,7 @@ public class MovementSync implements Plugin {
     public void jump() {
         if (!onGround.get()) return;
         velocity.updateAndGet(v -> new Vector3d(v).add(0, 0.42, 0));
+        onGround.set(false);
     }
 
     public void lookAt(Vector3d target) {
@@ -163,7 +164,8 @@ public class MovementSync implements Plugin {
         java.util.List<xin.bbtt.pathfinding.Node> path = pathfinder.findPath(2000);
 
         if (path.size() > 1) {
-            getMovementController().insertMovement(new xin.bbtt.movements.PathMovement(path));
+            getMovementController().cancelAll();
+            getMovementController().addMovement(new xin.bbtt.movements.PathMovement(path));
         }
     }
 
