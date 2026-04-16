@@ -2,8 +2,9 @@ movementsync.plugin.loading=正在加载 MovementSync
 movementsync.plugin.unloading=正在卸载 MovementSync
 movementsync.plugin.enabling=正在启用 MovementSync
 movementsync.plugin.disabling=正在禁用 MovementSync
-movementsync.command.whereami.response=你在 %s，坐标为 (%s, %s, %s)
-movementsync.command.getblockat.response=%s
+movementsync.command.whereami.response=坐标: %.2f, %.2f, %.2f | 偏航角: %.1f | 俯仰角: %.1f
+movementsync.command.getblockat.response=坐标 %d, %d, %d 的方块: %s (%d)
+movementsync.command.getblockat.properties=属性: %s
 movementsync.movement.error.pause=暂停运动失败
 movementsync.movement.error.resume=恢复运动失败
 movementsync.movement.error.run=运行运动失败
@@ -13,29 +14,41 @@ movementsync.movement.jump=正在跳跃
 movementsync.listener.entityid=已接收到 EntityId: {}
 movementsync.command.inventory.not_loaded=背包尚未加载。
 movementsync.command.inventory.header=--- 玩家背包 ---
-movementsync.command.inventory.entry=[%s] ID: %s 数量: %s
+movementsync.command.inventory.entry=[%d] %s x%d
 movementsync.command.container.no_open=当前没有打开的容器。
 movementsync.command.container.header=--- 容器 %s ---
 movementsync.command.movement.paused=运动控制器已暂停。
 movementsync.command.movement.resumed=运动控制器已恢复。
-movementsync.command.movement.cancelled=已取消运动控制器中的所有运动。
+movementsync.command.movement.cancelled=运动已全部停止并清空队列。
 movementsync.command.movement.cancel_current=已取消当前正在执行的运动。
+movementsync.command.movement.list.current=当前运动: %s
+movementsync.command.movement.list.queue=队列 (%d):
+movementsync.command.movement.list.entry= [%d] %s
+movementsync.command.movement.remove.success=已删除索引为 %d 的运动。
+movementsync.command.movement.remove.invalid=无效的索引。
+movementsync.command.movement.remove.format=索引格式错误。
 
 movementsync.command.common.usage=用法: %s
-movementsync.command.interactentity.success=已向实体 %2$s 发送 %1$s 动作
-movementsync.command.interactblock.success=已向坐标 %2$s, %3$s, %4$s 的方块发送 %1$s 动作
-movementsync.command.entities.header=已加载实体 (%s):
-movementsync.command.entities.entry=[%s] %s
-movementsync.command.entities.entry_with_pos=[%s] %s %s
-movementsync.command.ispassable.response=方块 %s 是否可通行: %s
+movementsync.command.interactentity.success=已向实体 %2$d 发送 %1$s 动作
+movementsync.command.interactblock.success=已向坐标 %2$d, %3$d, %4$d 的方块发送 %1$s 动作
+movementsync.command.interactblock.dig.started=开始挖掘 %s (于 %d, %d, %d)。预计耗时: %.2f秒
+movementsync.command.interactblock.dig.not_diggable=坐标 %d, %d, %d 处的方块不可挖掘。
+movementsync.command.entities.header=已加载实体 (%d):
+movementsync.command.entities.entry_with_pos=[%d] %s %s
+movementsync.command.ispassable.response=坐标 %d, %d, %d 是否可通行: %s
 
 movementsync.command.lookentity.not_found=未找到 ID 为 %s 的实体。
-movementsync.command.lookentity.success=正在看向实体 %s (%s)
-movementsync.command.goto.searching=正在搜索去往 %s, %s, %s 的路径...
-movementsync.command.goto.not_found=未找到通往目标的有效路径。
-movementsync.command.goto.invalid_goal=目标位置不可站立（下方是空气或流体）。
-movementsync.command.goto.success=已找到包含 %s 个节点的路径。开始移动。
+movementsync.command.lookentity.success=正在看向实体 %d (%s)
+movementsync.command.goto.searching=正在搜索去往 %d, %d, %d 的路径...
+movementsync.command.goto.not_found=未找到通往 (%d, %d, %d) 的路径。在 %d 次迭代后找到最佳部分路径。
+movementsync.command.goto.invalid_goal=目标位置不可站立。
+movementsync.command.goto.success=已找到路径: 长度=%d, 迭代次数=%d, 耗时=%dms
 
+movementsync.pathfinding.obstacle_detected=在 (%d, %d, %d) 检测到障碍物: %s。开始挖掘...
+movementsync.pathfinding.no_blocks=检测到空隙但快捷栏中没有方块！停止寻路。
+movementsync.pathfinding.pillaring=正在 (%d, %d, %d) 处垫脚上移...
+movementsync.pathfinding.bridging=正在 (%d, %d, %d) 处搭桥跨越...
 
-
-
+movementsync.movement.digging.start=正在挖掘 (%d, %d, %d) 处的方块。预计耗时: %dms
+movementsync.movement.digging.finished=方块已破坏。
+movementsync.movement.placing.start=正在使用 %4$s 面在 (%1$d, %2$d, %3$d) 放置方块

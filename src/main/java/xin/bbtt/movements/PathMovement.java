@@ -5,11 +5,9 @@ import xin.bbtt.MovementSync;
 import xin.bbtt.movement.Movement;
 import xin.bbtt.pathfinding.Node;
 import xin.bbtt.Block.BlockState;
-import xin.bbtt.inventory.EnchantmentRegistry;
-import xin.bbtt.inventory.ItemRegistry;
+import xin.bbtt.mcbot.LangManager;
 
 import java.util.List;
-import java.util.Map;
 
 public class PathMovement extends Movement {
     private List<Node> path;
@@ -89,13 +87,8 @@ public class PathMovement extends Movement {
     private boolean calculateIsGapJump(Node targetNode) {
         if (currentIndex <= 0) return false;
         Node prevNode = path.get(currentIndex - 1);
-        
-        // If the horizontal distance is more than 1 block (cardinal) or 1.41 (diagonal),
-        // it means we are jumping over a gap or across a larger distance.
         int dx = Math.abs(targetNode.x - prevNode.x);
         int dz = Math.abs(targetNode.z - prevNode.z);
-        
-        // Threshold: dx > 1 or dz > 1 means they are not adjacent
         return dx > 1 || dz > 1;
     }
 
@@ -236,12 +229,11 @@ public class PathMovement extends Movement {
 
     private void stopHorizontal() {
         Vector3d vel = MovementSync.Instance.velocity.get();
-        MovementSync.Instance.velocity.set(new Vector3d(0, vel.y, 0));
+        if (vel != null) MovementSync.Instance.velocity.set(new Vector3d(0, vel.y, 0));
     }
 
     private boolean isPathDeviated(Vector3d currentPos, Node targetNode) {
         if (currentPos.y >= targetNode.y - 1.2) return false;
-        MovementSync.Instance.getLogger().warn("Path deviation: fell below target. Stopping.");
         finishPath();
         return true;
     }
@@ -250,7 +242,6 @@ public class PathMovement extends Movement {
         if (MovementSync.Instance.onGround.get()) return false;
         if (MovementSync.Instance.velocity.get().y > 0.01) return false;
         if (targetPos.y <= currentPos.y + 0.5) return false;
-        
         stopHorizontal();
         return true;
     }
@@ -267,6 +258,7 @@ public class PathMovement extends Movement {
             BlockState state = MovementSync.Instance.getWorld().getBlockStateAt(new Vector3d(p.x, p.y, p.z));
             if (state.isPassable() || !state.diggable()) continue;
 
+            MovementSync.Instance.getLogger().info(LangManager.get("movementsync.pathfinding.obstacle_detected", p.x, p.y, p.z, state.blockName()));
             int toolSlot = MovementSync.Instance.getInventoryManager().findBestTool(state.material());
             if (toolSlot != -1) MovementSync.Instance.getInventoryManager().switchToSlot(toolSlot);
             MovementSync.Instance.getMovementController().insertMovement(new DigBlockMovement(org.cloudburstmc.math.vector.Vector3i.from(p.x, p.y, p.z)));
@@ -281,7 +273,11 @@ public class PathMovement extends Movement {
         if (ground.isSolid()) return false;
 
         int blockSlot = MovementSync.Instance.getInventoryManager().findBlock();
-        if (blockSlot == -1) return false;
+        if (blockSlot == -1) {
+            MovementSync.Instance.getLogger().warn(LangManager.get("movementsync.pathfinding.no_blocks"));
+            finishPath();
+            return true;
+        }
 
         int[] dx = {0, 0, 0, 0, 1, -1}, dy = {1, -1, 0, 0, 0, 0}, dz = {0, 0, 1, -1, 0, 0};
         org.geysermc.mcprotocollib.protocol.data.game.entity.object.Direction[] sides = {
@@ -298,9 +294,11 @@ public class PathMovement extends Movement {
             boolean isPillar = (target.x == (int)Math.floor(currentPos.x) && target.z == (int)Math.floor(currentPos.z) && target.y > (int)Math.floor(currentPos.y));
             
             if (isPillar) {
+                MovementSync.Instance.getLogger().info(LangManager.get("movementsync.pathfinding.pillaring", target.x, target.y - 1, target.z));
                 MovementSync.Instance.getMovementController().insertMovement(new PlaceBlockMovement(org.cloudburstmc.math.vector.Vector3i.from(target.x, target.y - 1, target.z), org.cloudburstmc.math.vector.Vector3i.from(neighbor.x, neighbor.y, neighbor.z), sides[i], false));
                 MovementSync.Instance.getMovementController().insertMovement(new JumpMovement());
             } else {
+                MovementSync.Instance.getLogger().info(LangManager.get("movementsync.pathfinding.bridging", target.x, target.y - 1, target.z));
                 MovementSync.Instance.getMovementController().insertMovement(new PlaceBlockMovement(org.cloudburstmc.math.vector.Vector3i.from(target.x, target.y - 1, target.z), org.cloudburstmc.math.vector.Vector3i.from(neighbor.x, neighbor.y, neighbor.z), sides[i], true));
             }
             return true;

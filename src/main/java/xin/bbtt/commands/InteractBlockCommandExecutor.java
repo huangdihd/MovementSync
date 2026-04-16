@@ -25,13 +25,13 @@ public class InteractBlockCommandExecutor extends SubCommandExecutor {
                     double breakTicks = xin.bbtt.inventory.ToolUtils.calculateBreakTicks(held, state);
                     
                     if (breakTicks < 0) {
-                        MovementSync.Instance.getLogger().info("Block at " + x + ", " + y + ", " + z + " is not diggable.");
+                        MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.interactblock.dig.not_diggable", x, y, z));
                         return;
                     }
                     
                     long estimatedTimeMs = (long)(Math.ceil(breakTicks) * 50);
                     MovementSync.Instance.getMovementController().addMovement(new DigBlockMovement(pos));
-                    MovementSync.Instance.getLogger().info(String.format("Started digging %s at %d, %d, %d. Estimated time: %.2fs", 
+                    MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.interactblock.dig.started", 
                         state.blockName(), x, y, z, estimatedTimeMs / 1000.0));
                 } catch (NumberFormatException e) {
                     MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.common.usage", command.getUsage()));

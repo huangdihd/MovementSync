@@ -2,6 +2,7 @@ package xin.bbtt.pathfinding;
 
 import org.joml.Vector3d;
 import xin.bbtt.world.World;
+import xin.bbtt.mcbot.LangManager;
 
 import java.util.*;
 
@@ -108,7 +109,6 @@ public class DStarLite {
                     int bx = u.x + dx[i];
                     int bz = u.z + dz[i];
                     if (isPassable(bx, u.y, bz) && isPassable(bx, u.y + 1, bz)) {
-                        // This node requires placement underneath
                         neighbors.add(new Node(bx, u.y, bz));
                     }
                 }
@@ -138,38 +138,26 @@ public class DStarLite {
     private double cost(Node a, Node b) {
         double baseCost = heuristic(a, b);
         
-        // 1. High penalty for digging blocks
         if (!isPassable(b.x, b.y, b.z) || !isPassable(b.x, b.y + 1, b.z)) {
             baseCost += 100.0; 
         }
 
-        // 2. Penalty for bridging/placing blocks
         if (!world.getBlockStateAt(new Vector3d(b.x, b.y - 1, b.z)).isSolid()) {
             baseCost += 5.0; 
         }
 
-        // 3. Penalty for "skipping" blocks (Gap Jumps)
-        // A direct cardinal move is distance 1.0. A 1-block gap jump is distance 2.0.
-        // By adding a 0.5 penalty to any move > 1.5, walking (1.0 + 1.0 = 2.0) 
-        // becomes cheaper than jumping (2.0 + 0.5 = 2.5).
         double horizontalDistSq = Math.pow(a.x - b.x, 2) + Math.pow(a.z - b.z, 2);
         if (horizontalDistSq > 1.5) {
             baseCost += 0.5; 
         }
 
-        // 4. Vertical penalties
-        if (b.y < a.y) {
-            baseCost += (a.y - b.y) * 2.0; 
-        }
-        
-        if (b.y > a.y) {
-            baseCost += 0.5;
-        }
-
+        if (b.y < a.y) baseCost += (a.y - b.y) * 2.0; 
+        if (b.y > a.y) baseCost += 0.5;
         return baseCost;
     }
 
     public List<Node> findPath(int maxIterations) {
+        long startTime = System.currentTimeMillis();
         PriorityQueue<NodeEntry> openSet = new PriorityQueue<>();
         Map<Node, Double> gScore = new HashMap<>();
         Map<Node, Node> cameFrom = new HashMap<>();
@@ -181,7 +169,11 @@ public class DStarLite {
         while (!openSet.isEmpty()) {
             if (iterations++ > maxIterations) break;
             Node curr = openSet.poll().node;
-            if (curr.equals(goal)) return reconstructPath(cameFrom, curr);
+            if (curr.equals(goal)) {
+                List<Node> path = reconstructPath(cameFrom, curr);
+                xin.bbtt.MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.goto.success", path.size(), iterations, System.currentTimeMillis() - startTime));
+                return path;
+            }
             double h = heuristic(curr, goal);
             if (h < minH) { minH = h; bestNode = curr; }
             for (Node neighbor : getSuccessors(curr)) {
@@ -194,6 +186,7 @@ public class DStarLite {
                 }
             }
         }
+        xin.bbtt.MovementSync.Instance.getLogger().warn(LangManager.get("movementsync.command.goto.not_found", goal.x, goal.y, goal.z, iterations));
         if (!bestNode.equals(start)) return reconstructPath(cameFrom, bestNode);
         return new ArrayList<>();
     }

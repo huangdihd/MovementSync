@@ -31,7 +31,7 @@ public class InventoryCommandExecutor extends CommandExecutor {
             String name = entry != null ? entry.getDisplayName() : "Unknown (" + item.getId() + ")";
             
             StringBuilder sb = new StringBuilder();
-            sb.append(String.format("[%d] %s x%d", i, name, item.getAmount()));
+            sb.append(LangManager.get("movementsync.command.inventory.entry", i, name, item.getAmount()));
             
             appendEnchantments(item, sb);
             MovementSync.Instance.getLogger().info(sb.toString());

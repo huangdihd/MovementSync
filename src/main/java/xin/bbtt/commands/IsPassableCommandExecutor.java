@@ -6,6 +6,8 @@ import xin.bbtt.MovementSync;
 import xin.bbtt.mcbot.command.Command;
 import xin.bbtt.mcbot.command.TabHighlightExecutor;
 
+import xin.bbtt.mcbot.LangManager;
+
 import java.util.List;
 
 public class IsPassableCommandExecutor extends TabHighlightExecutor {
@@ -17,7 +19,7 @@ public class IsPassableCommandExecutor extends TabHighlightExecutor {
             int y = Integer.parseInt(args[1]);
             int z = Integer.parseInt(args[2]);
             boolean passable = MovementSync.Instance.getWorld().isPassable(new Vector3d(x, y, z));
-            MovementSync.Instance.getLogger().info("Passable at " + x + ", " + y + ", " + z + ": " + passable);
+            MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.ispassable.response", x, y, z, passable));
         } catch (NumberFormatException ignored) {}
     }
 

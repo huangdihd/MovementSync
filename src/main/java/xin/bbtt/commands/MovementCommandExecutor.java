@@ -45,10 +45,10 @@ public class MovementCommandExecutor extends SubCommandExecutor {
             public void onCommand(Command command, String label, String[] args) {
                 java.util.List<xin.bbtt.movement.Movement> list = MovementSync.Instance.getMovementController().getMovements();
                 xin.bbtt.movement.Movement current = MovementSync.Instance.getMovementController().getCurrentMovement();
-                MovementSync.Instance.getLogger().info("Current Movement: " + (current != null ? current.getClass().getSimpleName() : "None"));
-                MovementSync.Instance.getLogger().info("Queue (" + list.size() + "):");
+                MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.movement.list.current", current != null ? current.getClass().getSimpleName() : "None"));
+                MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.movement.list.queue", list.size()));
                 for (int i = 0; i < list.size(); i++) {
-                    MovementSync.Instance.getLogger().info(" [" + i + "] " + list.get(i).getClass().getSimpleName());
+                    MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.movement.list.entry", i, list.get(i).getClass().getSimpleName()));
                 }
             }
         });
@@ -57,19 +57,19 @@ public class MovementCommandExecutor extends SubCommandExecutor {
             @Override
             public void onCommand(Command command, String label, String[] args) {
                 if (args.length < 1) {
-                    MovementSync.Instance.getLogger().info("Usage: movement remove <index>");
+                    MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.common.usage", "movement remove <index>"));
                     return;
                 }
                 try {
                     int index = Integer.parseInt(args[0]);
                     boolean removed = MovementSync.Instance.getMovementController().removeMovement(index);
                     if (removed) {
-                        MovementSync.Instance.getLogger().info("Removed movement at index " + index);
+                        MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.movement.remove.success", index));
                     } else {
-                        MovementSync.Instance.getLogger().info("Invalid index.");
+                        MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.movement.remove.invalid"));
                     }
                 } catch (NumberFormatException e) {
-                    MovementSync.Instance.getLogger().info("Invalid index format.");
+                    MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.movement.remove.format"));
                 }
             }
 

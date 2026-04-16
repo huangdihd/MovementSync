@@ -92,14 +92,15 @@ public class PlaceBlockMovement extends Movement {
     private void sendInput(boolean sneak) {
         Bot.Instance.getSession().send(new ServerboundPlayerInputPacket(false, false, false, false, false, sneak, false));
     }
-
     private void place() {
+        MovementSync.Instance.getLogger().info(xin.bbtt.mcbot.LangManager.get("movementsync.movement.placing.start", pos.getX(), pos.getY(), pos.getZ(), side));
+        // Send use item packet
         Bot.Instance.getSession().send(new ServerboundUseItemOnPacket(
             targetPos, side, Hand.MAIN_HAND, 0.5f, 0.5f, 0.5f, false, false, Bot.Instance.getAndIncreaseSequence()
         ));
+        // Swing arm
         Bot.Instance.getSession().send(new ServerboundSwingPacket(Hand.MAIN_HAND));
     }
-
     @Override
     public long getTime() {
         return 1000;

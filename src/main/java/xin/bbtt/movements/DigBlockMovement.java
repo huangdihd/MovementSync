@@ -54,6 +54,7 @@ public class DigBlockMovement extends Movement {
     @Override
     public void onTick() {
         if (!started) {
+            MovementSync.Instance.getLogger().info(xin.bbtt.mcbot.LangManager.get("movementsync.movement.digging.start", pos.getX(), pos.getY(), pos.getZ(), breakTime));
             Bot.Instance.getSession().send(new ServerboundPlayerActionPacket(PlayerAction.START_DIGGING, pos, side, Bot.Instance.getAndIncreaseSequence()));
             startTime = System.currentTimeMillis();
             started = true;
@@ -72,6 +73,7 @@ public class DigBlockMovement extends Movement {
     private void finishDigging() {
         Bot.Instance.getSession().send(new ServerboundPlayerActionPacket(PlayerAction.FINISH_DIGGING, pos, side, Bot.Instance.getAndIncreaseSequence()));
         setFinished(true);
+        MovementSync.Instance.getLogger().info(xin.bbtt.mcbot.LangManager.get("movementsync.movement.digging.finished"));
     }
 
     @Override

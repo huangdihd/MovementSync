@@ -42,11 +42,10 @@ public class GotoCommandExecutor extends TabHighlightExecutor {
             List<Node> path = pathfinder.findPath(5000);
 
             if (path.size() <= 1) {
-                MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.goto.not_found"));
+                // Warning logged in findPath
                 return;
             }
 
-            MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.goto.success", path.size()));
             MovementSync.Instance.setActiveGoal(new org.joml.Vector3i(tx, ty, tz));
             MovementSync.Instance.getMovementController().addMovement(new PathMovement(path));
 
