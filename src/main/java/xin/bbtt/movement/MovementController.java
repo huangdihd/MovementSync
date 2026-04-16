@@ -83,6 +83,29 @@ public class MovementController {
         }
     }
 
+    public java.util.List<Movement> getMovements() {
+        synchronized (stateLock) {
+            return new java.util.ArrayList<>(movements);
+        }
+    }
+
+    public boolean removeMovement(int index) {
+        synchronized (stateLock) {
+            if (index < 0 || index >= movements.size()) return false;
+            int i = 0;
+            var it = movements.iterator();
+            while (it.hasNext()) {
+                it.next();
+                if (i == index) {
+                    it.remove();
+                    return true;
+                }
+                i++;
+            }
+            return false;
+        }
+    }
+
     public void cancelAll() {
         synchronized (stateLock) {
             movements.clear();

@@ -1,31 +1,41 @@
 package xin.bbtt.commands;
 
 import org.joml.Vector3d;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import xin.bbtt.Block.BlockStateParser;
+import org.jline.utils.AttributedStyle;
 import xin.bbtt.MovementSync;
-import xin.bbtt.mcbot.LangManager;
 import xin.bbtt.mcbot.command.Command;
-import xin.bbtt.mcbot.command.CommandExecutor;
+import xin.bbtt.mcbot.command.TabHighlightExecutor;
+import xin.bbtt.Block.BlockState;
 
-public class GetBlockAtCommandExecutor extends CommandExecutor {
-    private static final Logger log = LoggerFactory.getLogger(GetBlockAtCommandExecutor.class.getSimpleName());
+import java.util.List;
+
+public class GetBlockAtCommandExecutor extends TabHighlightExecutor {
     @Override
-    public void onCommand(Command command, String s, String[] args) {
-        if (args.length != 3) {
-            return;
-        }
-        int z;
-        int x;
-        int y;
+    public void onCommand(Command command, String label, String[] args) {
+        if (args.length < 3) return;
         try {
-            x = Integer.parseInt(args[0]);
-            y = Integer.parseInt(args[1]);
-            z = Integer.parseInt(args[2]);
-        } catch (NumberFormatException e) {
-            return;
+            int x = Integer.parseInt(args[0]);
+            int y = Integer.parseInt(args[1]);
+            int z = Integer.parseInt(args[2]);
+            BlockState state = MovementSync.Instance.getWorld().getBlockStateAt(new Vector3d(x, y, z));
+            MovementSync.Instance.getLogger().info("Block at " + x + ", " + y + ", " + z + ": " + state.blockName() + " (" + state.stateId() + ")");
+            if (state.properties() != null && !state.properties().isEmpty()) {
+                MovementSync.Instance.getLogger().info("Properties: " + state.properties());
+            }
+        } catch (NumberFormatException ignored) {}
+    }
+
+    @Override
+    public List<String> onTabComplete(Command command, String label, String[] args) {
+        return List.of();
+    }
+
+    @Override
+    public AttributedStyle[] onHighlight(Command command, String label, String[] args) {
+        AttributedStyle[] styles = new AttributedStyle[args.length];
+        for (int i = 0; i < Math.min(args.length, 3); i++) {
+            styles[i] = new AttributedStyle().foreground(AttributedStyle.YELLOW);
         }
-        log.info(LangManager.get("movementsync.command.getblockat.response", BlockStateParser.Instance.parseStateId(MovementSync.Instance.getWorld().getBlockAt(new Vector3d(x, y, z)))));
+        return styles;
     }
 }

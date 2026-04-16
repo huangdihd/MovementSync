@@ -5,21 +5,21 @@ import xin.bbtt.mcbot.command.Command;
 public class GetBlockAtCommand extends Command {
     @Override
     public String getName() {
-        return "block";
+        return "getblockat";
     }
 
     @Override
     public String[] getAliases() {
-        return new String[]{"block"};
+        return new String[]{"getblockat", "block"};
     }
 
     @Override
     public String getDescription() {
-        return "A command to get the block at the specific coordinate.";
+        return "Get block info at a coordinate";
     }
 
     @Override
     public String getUsage() {
-        return "block [x] [y] [z]";
+        return "getblockat <x> <y> <z>";
     }
 }

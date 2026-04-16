@@ -10,12 +10,12 @@ public class GotoCommand extends Command {
 
     @Override
     public String[] getAliases() {
-        return new String[]{"goto", "move"};
+        return new String[]{"goto"};
     }
 
     @Override
     public String getDescription() {
-        return "Pathfind to a target position";
+        return "Pathfind to a coordinate";
     }
 
     @Override

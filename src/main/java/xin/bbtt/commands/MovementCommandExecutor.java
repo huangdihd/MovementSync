@@ -39,6 +39,62 @@ public class MovementCommandExecutor extends SubCommandExecutor {
                 MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.movement.cancel_current"));
             }
         });
+
+        registerSubCommand("list", new CommandExecutor() {
+            @Override
+            public void onCommand(Command command, String label, String[] args) {
+                java.util.List<xin.bbtt.movement.Movement> list = MovementSync.Instance.getMovementController().getMovements();
+                xin.bbtt.movement.Movement current = MovementSync.Instance.getMovementController().getCurrentMovement();
+                MovementSync.Instance.getLogger().info("Current Movement: " + (current != null ? current.getClass().getSimpleName() : "None"));
+                MovementSync.Instance.getLogger().info("Queue (" + list.size() + "):");
+                for (int i = 0; i < list.size(); i++) {
+                    MovementSync.Instance.getLogger().info(" [" + i + "] " + list.get(i).getClass().getSimpleName());
+                }
+            }
+        });
+
+        registerSubCommand("remove", new CommandExecutor() {
+            @Override
+            public void onCommand(Command command, String label, String[] args) {
+                if (args.length < 1) {
+                    MovementSync.Instance.getLogger().info("Usage: movement remove <index>");
+                    return;
+                }
+                try {
+                    int index = Integer.parseInt(args[0]);
+                    boolean removed = MovementSync.Instance.getMovementController().removeMovement(index);
+                    if (removed) {
+                        MovementSync.Instance.getLogger().info("Removed movement at index " + index);
+                    } else {
+                        MovementSync.Instance.getLogger().info("Invalid index.");
+                    }
+                } catch (NumberFormatException e) {
+                    MovementSync.Instance.getLogger().info("Invalid index format.");
+                }
+            }
+
+            @Override
+            public java.util.List<String> onTabComplete(Command command, String label, String[] args) {
+                if (args.length == 1) {
+                    int size = MovementSync.Instance.getMovementController().getMovements().size();
+                    java.util.List<String> list = new java.util.ArrayList<>();
+                    for (int i = 0; i < size; i++) {
+                        list.add(String.valueOf(i));
+                    }
+                    return list;
+                }
+                return java.util.Collections.emptyList();
+            }
+
+            @Override
+            public org.jline.utils.AttributedStyle[] onHighlight(Command command, String label, String[] args) {
+                org.jline.utils.AttributedStyle[] styles = new org.jline.utils.AttributedStyle[args.length];
+                if (args.length > 0) {
+                    styles[0] = new org.jline.utils.AttributedStyle().foreground(org.jline.utils.AttributedStyle.YELLOW);
+                }
+                return styles;
+            }
+        });
     }
 
     @Override

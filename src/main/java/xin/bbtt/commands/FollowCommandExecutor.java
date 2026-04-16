@@ -1,12 +1,14 @@
 package xin.bbtt.commands;
 
-import xin.bbtt.Entity.Entity;
 import xin.bbtt.MovementSync;
 import xin.bbtt.mcbot.command.Command;
-import xin.bbtt.mcbot.command.CommandExecutor;
+import xin.bbtt.mcbot.command.TabHighlightExecutor;
 import xin.bbtt.mcbot.LangManager;
 
-public class FollowCommandExecutor extends CommandExecutor {
+import java.util.List;
+import java.util.stream.Collectors;
+
+public class FollowCommandExecutor extends TabHighlightExecutor {
     @Override
     public void onCommand(Command command, String label, String[] args) {
         if (args.length < 1) {
@@ -14,26 +16,33 @@ public class FollowCommandExecutor extends CommandExecutor {
             return;
         }
 
-        if (args[0].equalsIgnoreCase("stop")) {
-            MovementSync.Instance.setFollowTargetId(-1);
-            MovementSync.Instance.getMovementController().finishCurrentMovement();
-            MovementSync.Instance.getLogger().info("Stopped following.");
-            return;
-        }
-
         try {
-            int id = Integer.parseInt(args[0]);
-            Entity target = MovementSync.Instance.getWorld().getEntity(id);
-            if (target == null) {
-                MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.lookentity.not_found", id));
-                return;
-            }
-
-            MovementSync.Instance.setFollowTargetId(id);
+            int entityId = Integer.parseInt(args[0]);
+            MovementSync.Instance.setFollowTargetId(entityId);
             MovementSync.Instance.triggerAutoRepath();
-            MovementSync.Instance.getLogger().info("Now following entity " + id);
+            MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.follow.success", entityId));
         } catch (NumberFormatException e) {
             MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.common.usage", command.getUsage()));
         }
+    }
+
+    @Override
+    public List<String> onTabComplete(Command command, String label, String[] args) {
+        if (args.length == 1) {
+            return MovementSync.Instance.getWorld().getEntities().keySet().stream()
+                    .map(String::valueOf)
+                    .filter(s -> s.startsWith(args[0]))
+                    .collect(Collectors.toList());
+        }
+        return List.of();
+    }
+
+    @Override
+    public org.jline.utils.AttributedStyle[] onHighlight(Command command, String label, String[] args) {
+        org.jline.utils.AttributedStyle[] styles = new org.jline.utils.AttributedStyle[args.length];
+        if (args.length > 0) {
+            styles[0] = new org.jline.utils.AttributedStyle().foreground(org.jline.utils.AttributedStyle.CYAN);
+        }
+        return styles;
     }
 }

@@ -1,10 +1,17 @@
 package xin.bbtt.commands;
 
 import org.geysermc.mcprotocollib.protocol.data.game.item.ItemStack;
+import org.geysermc.mcprotocollib.protocol.data.game.item.component.DataComponentTypes;
+import org.geysermc.mcprotocollib.protocol.data.game.item.component.DataComponents;
+import org.geysermc.mcprotocollib.protocol.data.game.item.component.ItemEnchantments;
 import xin.bbtt.MovementSync;
+import xin.bbtt.inventory.EnchantmentRegistry;
+import xin.bbtt.inventory.ItemRegistry;
 import xin.bbtt.mcbot.command.Command;
 import xin.bbtt.mcbot.command.CommandExecutor;
 import xin.bbtt.mcbot.LangManager;
+
+import java.util.Map;
 
 public class InventoryCommandExecutor extends CommandExecutor {
     @Override
@@ -14,12 +21,44 @@ public class InventoryCommandExecutor extends CommandExecutor {
             MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.inventory.not_loaded"));
             return;
         }
+
         MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.inventory.header"));
         for (int i = 0; i < items.length; i++) {
             ItemStack item = items[i];
-            if (item != null && item.getId() != 0) {
-                MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.inventory.entry", i, item.getId(), item.getAmount()));
-            }
+            if (item == null || item.getId() == 0) continue;
+
+            ItemRegistry.ItemEntry entry = ItemRegistry.Instance.getItem(item.getId());
+            String name = entry != null ? entry.getDisplayName() : "Unknown (" + item.getId() + ")";
+            
+            StringBuilder sb = new StringBuilder();
+            sb.append(String.format("[%d] %s x%d", i, name, item.getAmount()));
+            
+            appendEnchantments(item, sb);
+            MovementSync.Instance.getLogger().info(sb.toString());
         }
+    }
+
+    private void appendEnchantments(ItemStack item, StringBuilder sb) {
+        try {
+            DataComponents components = item.getDataComponentsPatch();
+            if (components == null) return;
+
+            ItemEnchantments enchantmentsObj = components.get(DataComponentTypes.ENCHANTMENTS);
+            if (enchantmentsObj == null) return;
+
+            Map<Integer, Integer> enchantments = enchantmentsObj.getEnchantments();
+            if (enchantments.isEmpty()) return;
+
+            sb.append(" {");
+            boolean first = true;
+            for (Map.Entry<Integer, Integer> ench : enchantments.entrySet()) {
+                if (!first) sb.append(", ");
+                EnchantmentRegistry.EnchantmentEntry eEntry = EnchantmentRegistry.Instance.getByNetworkId(ench.getKey());
+                String eName = eEntry != null ? eEntry.getDisplayName() : "ID:" + ench.getKey();
+                sb.append(eName).append(" ").append(ench.getValue());
+                first = false;
+            }
+            sb.append("}");
+        } catch (Exception ignored) {}
     }
 }

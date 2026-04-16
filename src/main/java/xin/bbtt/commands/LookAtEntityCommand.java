@@ -5,21 +5,21 @@ import xin.bbtt.mcbot.command.Command;
 public class LookAtEntityCommand extends Command {
     @Override
     public String getName() {
-        return "lookentity";
+        return "lookatentity";
     }
 
     @Override
     public String[] getAliases() {
-        return new String[]{"lookentity", "le"};
+        return new String[]{"lookatentity"};
     }
 
     @Override
     public String getDescription() {
-        return "Look at a specific entity by ID";
+        return "Look at an entity by ID";
     }
 
     @Override
     public String getUsage() {
-        return "lookentity <id>";
+        return "lookatentity <entityId>";
     }
 }

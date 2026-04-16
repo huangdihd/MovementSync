@@ -4,13 +4,18 @@ import org.joml.Vector3d;
 import xin.bbtt.MovementSync;
 import xin.bbtt.movement.Movement;
 import xin.bbtt.pathfinding.Node;
+import xin.bbtt.Block.BlockState;
+import xin.bbtt.inventory.EnchantmentRegistry;
+import xin.bbtt.inventory.ItemRegistry;
 
 import java.util.List;
+import java.util.Map;
 
 public class PathMovement extends Movement {
     private List<Node> path;
     private int currentIndex = 0;
     private volatile boolean repathRequested = false;
+    private int repathThrottler = 0;
 
     public PathMovement(List<Node> path) {
         this.path = path;
@@ -29,10 +34,13 @@ public class PathMovement extends Movement {
 
     @Override
     public void onTick() {
+        repathThrottler++;
         if (repathRequested) {
             repathRequested = false;
             repathInternally();
         }
+
+        handleFollowTargetRepath();
 
         if (currentIndex >= path.size()) {
             finishPath();
@@ -43,7 +51,6 @@ public class PathMovement extends Movement {
         Vector3d targetPos = new Vector3d(targetNode.x + 0.5, targetNode.y, targetNode.z + 0.5);
         Vector3d currentPos = MovementSync.Instance.position.get();
 
-        // 1. Check if we reached the current node
         if (hasReachedNode(currentPos, targetPos)) {
             currentIndex++;
             if (currentIndex >= path.size()) {
@@ -54,25 +61,48 @@ public class PathMovement extends Movement {
             targetPos = new Vector3d(targetNode.x + 0.5, targetNode.y, targetNode.z + 0.5);
         }
 
-        // 2. Safety checks
         if (isPathDeviated(currentPos, targetNode)) return;
         if (isFallingUnexpectedly(currentPos, targetPos)) return;
 
-        boolean isGapJump = false;
-        if (currentIndex > 0) {
-            Node prevNode = path.get(currentIndex - 1);
-            double distSq = Math.pow(targetNode.x - prevNode.x, 2) + Math.pow(targetNode.z - prevNode.z, 2);
-            if (distSq > 2.5) {
-                isGapJump = true;
-            }
-        }
+        if (checkAndDig(targetNode)) return;
+        if (checkAndPlace(currentPos, targetNode)) return;
 
-        // 3. Move towards the target
-        applyPreciseMovement(currentPos, targetPos, isGapJump);
+        applyPreciseMovement(currentPos, targetPos, calculateIsGapJump(targetNode));
+        updateLookDirection(currentPos, targetPos);
+    }
+
+    private void handleFollowTargetRepath() {
+        int followTargetId = MovementSync.Instance.getFollowTargetId();
+        if (followTargetId == -1 || repathThrottler % 20 != 0) return;
+
+        xin.bbtt.Entity.Entity entity = MovementSync.Instance.getWorld().getEntity(followTargetId);
+        if (entity == null) return;
+
+        Vector3d targetPos = entity.getPosition();
+        Node lastNode = path.get(path.size() - 1);
+        double distSq = Math.pow(targetPos.x - (lastNode.x + 0.5), 2) + Math.pow(targetPos.z - (lastNode.z + 0.5), 2);
+        if (distSq > 4.0) {
+            repathInternally();
+        }
+    }
+
+    private boolean calculateIsGapJump(Node targetNode) {
+        if (currentIndex <= 0) return false;
+        Node prevNode = path.get(currentIndex - 1);
         
-        // 4. Look in the direction of the target horizontally
+        // If the horizontal distance is more than 1 block (cardinal) or 1.41 (diagonal),
+        // it means we are jumping over a gap or across a larger distance.
+        int dx = Math.abs(targetNode.x - prevNode.x);
+        int dz = Math.abs(targetNode.z - prevNode.z);
+        
+        // Threshold: dx > 1 or dz > 1 means they are not adjacent
+        return dx > 1 || dz > 1;
+    }
+
+    private void updateLookDirection(Vector3d currentPos, Vector3d targetPos) {
         Vector3d lookDiff = new Vector3d(targetPos).sub(currentPos);
         float targetYaw = (float) Math.toDegrees(Math.atan2(-lookDiff.x, lookDiff.z));
+        targetYaw = (targetYaw + 180.0f) % 360.0f;
         MovementSync.Instance.yaw.set(targetYaw);
         MovementSync.Instance.pitch.set(0f);
     }
@@ -81,13 +111,9 @@ public class PathMovement extends Movement {
         double dx = Math.abs(currentPos.x - targetPos.x);
         double dz = Math.abs(currentPos.z - targetPos.z);
         double dy = Math.abs(currentPos.y - targetPos.y);
-
         boolean isLastNode = currentIndex == path.size() - 1;
-        // Strict tolerance for ALL nodes to prevent cutting too much, 
-        // but slightly looser for intermediate nodes to keep speed
         double horizontalTolerance = isLastNode ? 0.15 : 0.3;
         double verticalTolerance = 0.5;
-
         return dx < horizontalTolerance && dz < horizontalTolerance && dy < verticalTolerance;
     }
 
@@ -95,8 +121,8 @@ public class PathMovement extends Movement {
         Vector3d diff = new Vector3d(targetPos).sub(currentPos);
         double verticalDist = diff.y;
         diff.y = 0;
-
         double horizontalDistSq = diff.lengthSquared();
+        
         if (horizontalDistSq <= 0.0001) {
             stopHorizontal();
             return;
@@ -104,11 +130,8 @@ public class PathMovement extends Movement {
 
         double dist = Math.sqrt(horizontalDistSq);
         double currentSpeed = MovementSync.movementSpeed;
-
-        // Braking: if we are close to the target, slow down to avoid orbiting
         if (dist < 0.25) {
             currentSpeed *= (dist / 0.25);
-            // Snap to target if extremely close to stop oscillation
             if (dist < 0.05) {
                 MovementSync.Instance.position.set(new Vector3d(targetPos.x, currentPos.y, targetPos.z));
                 stopHorizontal();
@@ -118,45 +141,64 @@ public class PathMovement extends Movement {
 
         diff.normalize().mul(currentSpeed);
         MovementSync.Instance.velocity.set(new Vector3d(diff.x, MovementSync.Instance.velocity.get().y, diff.z));
-
-        // Jump if needed
-        if (MovementSync.Instance.onGround.get()) {
-            if (verticalDist > 0.5) {
-                MovementSync.Instance.jump();
-            } else if (isGapJump) {
-                MovementSync.Instance.jump();
-            }
+        
+        if (MovementSync.Instance.onGround.get() && (verticalDist > 0.5 || isGapJump)) {
+            MovementSync.Instance.jump();
         }
     }
 
     private void finishPath() {
         org.joml.Vector3i goal = MovementSync.Instance.getActiveGoal();
-        if (goal != null) {
-            Vector3d currentPos = MovementSync.Instance.position.get();
-            double dx = Math.abs(currentPos.x - (goal.x + 0.5));
-            double dz = Math.abs(currentPos.z - (goal.z + 0.5));
-            double dy = Math.abs(currentPos.y - goal.y);
-            
-            if (dx < 0.5 && dz < 0.5 && dy < 1.0) {
-                setFinished(true);
-                stopHorizontal();
-                MovementSync.Instance.velocity.set(new Vector3d(0, 0, 0));
-                MovementSync.Instance.setActiveGoal(null);
-            } else {
-                // Repath internally to continue towards the unreached goal!
-                repathInternally();
-            }
-        } else {
-            setFinished(true);
-            stopHorizontal();
-            MovementSync.Instance.velocity.set(new Vector3d(0, 0, 0));
-            MovementSync.Instance.setActiveGoal(null);
+        int followTargetId = MovementSync.Instance.getFollowTargetId();
+        
+        if (followTargetId != -1) {
+            handleFollowFinish(followTargetId);
+            return;
         }
+
+        if (goal != null) {
+            handleGoalFinish(goal);
+            return;
+        }
+
+        markFinished();
+    }
+
+    private void handleFollowFinish(int followTargetId) {
+        xin.bbtt.Entity.Entity entity = MovementSync.Instance.getWorld().getEntity(followTargetId);
+        if (entity == null) { markFinished(); return; }
+
+        Vector3d currentPos = MovementSync.Instance.position.get();
+        Vector3d targetPos = entity.getPosition();
+        double distSq = Math.pow(currentPos.x - targetPos.x, 2) + Math.pow(currentPos.z - targetPos.z, 2);
+        
+        if (distSq > 9.0) { repathInternally(); return; }
+        
+        stopHorizontal();
+        MovementSync.Instance.velocity.set(new Vector3d(0, 0, 0));
+        if (distSq < 4.0) repathInternally();
+    }
+
+    private void handleGoalFinish(org.joml.Vector3i goal) {
+        Vector3d currentPos = MovementSync.Instance.position.get();
+        double dx = Math.abs(currentPos.x - (goal.x + 0.5)), dz = Math.abs(currentPos.z - (goal.z + 0.5)), dy = Math.abs(currentPos.y - goal.y);
+        
+        if (dx < 0.5 && dz < 0.5 && dy < 1.0) {
+            markFinished();
+        } else {
+            repathInternally();
+        }
+    }
+
+    private void markFinished() {
+        setFinished(true);
+        stopHorizontal();
+        MovementSync.Instance.velocity.set(new Vector3d(0, 0, 0));
+        MovementSync.Instance.setActiveGoal(null);
     }
 
     private void repathInternally() {
         org.joml.Vector3i targetNodePos = MovementSync.Instance.getActiveGoal();
-        
         if (MovementSync.Instance.getFollowTargetId() != -1) {
             xin.bbtt.Entity.Entity entity = MovementSync.Instance.getWorld().getEntity(MovementSync.Instance.getFollowTargetId());
             if (entity != null) {
@@ -164,34 +206,31 @@ public class PathMovement extends Movement {
                 targetNodePos = new org.joml.Vector3i((int)Math.floor(p.x), (int)Math.floor(p.y), (int)Math.floor(p.z));
             }
         }
-
-        if (targetNodePos == null) {
-            setFinished(true);
-            return;
-        }
-
+        
+        if (targetNodePos == null) { markFinished(); return; }
+        
         Vector3d currentPos = MovementSync.Instance.position.get();
         Node start = new Node((int)Math.floor(currentPos.x), (int)Math.floor(currentPos.y), (int)Math.floor(currentPos.z));
         Node goalNode = new Node(targetNodePos.x, targetNodePos.y, targetNodePos.z);
-
+        
         if (start.equals(goalNode) && MovementSync.Instance.getFollowTargetId() == -1) {
-            setFinished(true);
-            MovementSync.Instance.setActiveGoal(null);
+            markFinished();
             return;
         }
 
         xin.bbtt.pathfinding.DStarLite pathfinder = new xin.bbtt.pathfinding.DStarLite(start, goalNode, MovementSync.Instance.getWorld());
         List<Node> newPath = pathfinder.findPath(2000);
-
+        
         if (newPath != null && newPath.size() > 1) {
             this.path = newPath;
             this.currentIndex = 0;
-        } else {
-            setFinished(true);
+        } else if (MovementSync.Instance.getFollowTargetId() != -1) {
             stopHorizontal();
-            if (MovementSync.Instance.getFollowTargetId() == -1) {
-                MovementSync.Instance.setActiveGoal(null);
-            }
+            MovementSync.Instance.velocity.set(new Vector3d(0, 0, 0));
+            this.path = List.of(start);
+            this.currentIndex = 0;
+        } else {
+            markFinished();
         }
     }
 
@@ -210,11 +249,10 @@ public class PathMovement extends Movement {
     private boolean isFallingUnexpectedly(Vector3d currentPos, Vector3d targetPos) {
         if (MovementSync.Instance.onGround.get()) return false;
         if (MovementSync.Instance.velocity.get().y > 0.01) return false;
-        if (targetPos.y > currentPos.y + 0.5) {
-            stopHorizontal();
-            return true;
-        }
-        return false;
+        if (targetPos.y <= currentPos.y + 0.5) return false;
+        
+        stopHorizontal();
+        return true;
     }
 
     @Override
@@ -222,4 +260,51 @@ public class PathMovement extends Movement {
 
     @Override
     public void onStop() { stopHorizontal(); }
+
+    private boolean checkAndDig(Node target) {
+        org.joml.Vector3i[] toCheck = { new org.joml.Vector3i(target.x, target.y, target.z), new org.joml.Vector3i(target.x, target.y + 1, target.z) };
+        for (org.joml.Vector3i p : toCheck) {
+            BlockState state = MovementSync.Instance.getWorld().getBlockStateAt(new Vector3d(p.x, p.y, p.z));
+            if (state.isPassable() || !state.diggable()) continue;
+
+            int toolSlot = MovementSync.Instance.getInventoryManager().findBestTool(state.material());
+            if (toolSlot != -1) MovementSync.Instance.getInventoryManager().switchToSlot(toolSlot);
+            MovementSync.Instance.getMovementController().insertMovement(new DigBlockMovement(org.cloudburstmc.math.vector.Vector3i.from(p.x, p.y, p.z)));
+            return true;
+        }
+        return false;
+    }
+
+    private boolean checkAndPlace(Vector3d currentPos, Node target) {
+        Vector3d groundPos = new Vector3d(target.x, target.y - 1, target.z);
+        BlockState ground = MovementSync.Instance.getWorld().getBlockStateAt(groundPos);
+        if (ground.isSolid()) return false;
+
+        int blockSlot = MovementSync.Instance.getInventoryManager().findBlock();
+        if (blockSlot == -1) return false;
+
+        int[] dx = {0, 0, 0, 0, 1, -1}, dy = {1, -1, 0, 0, 0, 0}, dz = {0, 0, 1, -1, 0, 0};
+        org.geysermc.mcprotocollib.protocol.data.game.entity.object.Direction[] sides = {
+            org.geysermc.mcprotocollib.protocol.data.game.entity.object.Direction.DOWN, org.geysermc.mcprotocollib.protocol.data.game.entity.object.Direction.UP,
+            org.geysermc.mcprotocollib.protocol.data.game.entity.object.Direction.NORTH, org.geysermc.mcprotocollib.protocol.data.game.entity.object.Direction.SOUTH,
+            org.geysermc.mcprotocollib.protocol.data.game.entity.object.Direction.WEST, org.geysermc.mcprotocollib.protocol.data.game.entity.object.Direction.EAST
+        };
+
+        for (int i = 0; i < 6; i++) {
+            org.joml.Vector3i neighbor = new org.joml.Vector3i(target.x + dx[i], (target.y - 1) + dy[i], target.z + dz[i]);
+            if (!MovementSync.Instance.getWorld().getBlockStateAt(new Vector3d(neighbor.x, neighbor.y, neighbor.z)).isSolid()) continue;
+
+            MovementSync.Instance.getInventoryManager().switchToSlot(blockSlot);
+            boolean isPillar = (target.x == (int)Math.floor(currentPos.x) && target.z == (int)Math.floor(currentPos.z) && target.y > (int)Math.floor(currentPos.y));
+            
+            if (isPillar) {
+                MovementSync.Instance.getMovementController().insertMovement(new PlaceBlockMovement(org.cloudburstmc.math.vector.Vector3i.from(target.x, target.y - 1, target.z), org.cloudburstmc.math.vector.Vector3i.from(neighbor.x, neighbor.y, neighbor.z), sides[i], false));
+                MovementSync.Instance.getMovementController().insertMovement(new JumpMovement());
+            } else {
+                MovementSync.Instance.getMovementController().insertMovement(new PlaceBlockMovement(org.cloudburstmc.math.vector.Vector3i.from(target.x, target.y - 1, target.z), org.cloudburstmc.math.vector.Vector3i.from(neighbor.x, neighbor.y, neighbor.z), sides[i], true));
+            }
+            return true;
+        }
+        return false;
+    }
 }

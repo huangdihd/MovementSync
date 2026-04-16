@@ -15,11 +15,11 @@ public class WalkCommand extends Command {
 
     @Override
     public String getDescription() {
-        return "A command to walk";
+        return "Walk in a direction for a duration";
     }
 
     @Override
     public String getUsage() {
-        return "walk direction time(milliseconds)";
+        return "walk <direction> [ms]";
     }
 }

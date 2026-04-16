@@ -7,8 +7,7 @@ import xin.bbtt.movements.JumpMovement;
 
 public class JumpCommandExecutor extends CommandExecutor {
     @Override
-    public void onCommand(Command command, String s, String[] strings) {
+    public void onCommand(Command command, String label, String[] args) {
         MovementSync.Instance.getMovementController().addMovement(new JumpMovement());
     }
 }
-

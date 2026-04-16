@@ -7,6 +7,9 @@ import java.util.List;
 public class BlockEntry {
     private int id;
     private String name;
+    private double hardness;
+    private boolean diggable;
+    private String material;
     private int minStateId;
     private int maxStateId;
     private int defaultState;

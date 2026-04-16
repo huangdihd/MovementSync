@@ -5,21 +5,21 @@ import xin.bbtt.mcbot.command.Command;
 public class LookAtCommand extends Command {
     @Override
     public String getName() {
-        return "look";
+        return "lookat";
     }
 
     @Override
     public String[] getAliases() {
-        return new String[]{"look"};
+        return new String[]{"lookat"};
     }
 
     @Override
     public String getDescription() {
-        return "A command to make bot look at a coordinate";
+        return "Look at a coordinate";
     }
 
     @Override
     public String getUsage() {
-        return "look [x] [y] [z]";
+        return "lookat <x> <y> <z>";
     }
 }

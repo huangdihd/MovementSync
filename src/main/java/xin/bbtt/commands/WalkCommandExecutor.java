@@ -19,29 +19,31 @@ public class WalkCommandExecutor extends TabExecutor {
             args = new String[]{args[0], "1000"};
         }
         Vector3d velocity;
-        switch (args[0]) {
-            case "FRONT" ->
-                    velocity = Direction.getUnitVectorByYaw(MovementSync.Instance.yaw.get()).mul(MovementSync.movementSpeed);
-            case "LEFT" -> {
-                Vector3d right = new Vector3d();
-                Direction.getUnitVectorByYaw(MovementSync.Instance.yaw.get()).cross(Direction.UP.getUnitVector(), right).normalize();
-                velocity = right.negate().mul(MovementSync.movementSpeed);
+        try {
+            switch (args[0].toUpperCase()) {
+                case "FRONT" ->
+                        velocity = Direction.getUnitVectorByYaw(MovementSync.Instance.yaw.get()).mul(MovementSync.movementSpeed);
+                case "LEFT" -> {
+                    Vector3d right = new Vector3d();
+                    Direction.getUnitVectorByYaw(MovementSync.Instance.yaw.get()).cross(Direction.UP.getUnitVector(), right).normalize();
+                    velocity = right.negate().mul(MovementSync.movementSpeed);
+                }
+                case "BACK" ->
+                        velocity = Direction.getUnitVectorByYaw(MovementSync.Instance.yaw.get()).negate().mul(MovementSync.movementSpeed);
+                case "RIGHT" -> {
+                    Vector3d right = new Vector3d();
+                    Direction.getUnitVectorByYaw(MovementSync.Instance.yaw.get()).cross(Direction.UP.getUnitVector(), right).normalize();
+                    velocity = right.mul(MovementSync.movementSpeed);
+                }
+                default -> {
+                    Direction direction = Direction.valueOf(args[0].toUpperCase());
+                    if (direction.getUnitVector().y() != 0) return;
+                    velocity = direction.getVector(MovementSync.movementSpeed);
+                }
             }
-            case "BACK" ->
-                    velocity = Direction.getUnitVectorByYaw(MovementSync.Instance.yaw.get()).negate().mul(MovementSync.movementSpeed);
-            case "RIGHT" -> {
-                Vector3d right = new Vector3d();
-                Direction.getUnitVectorByYaw(MovementSync.Instance.yaw.get()).cross(Direction.UP.getUnitVector(), right).normalize();
-                velocity = right.mul(MovementSync.movementSpeed);
-            }
-            default -> {
-                Direction direction = Direction.valueOf(args[0]);
-                if (direction.getUnitVector().y() != 0) return;
-                velocity = direction.getVector(MovementSync.movementSpeed);
-            }
-        }
-        long time = Integer.parseInt(args[1]);
-        MovementSync.Instance.movementController.addMovement(new WalkMovement(velocity, time));
+            long time = Long.parseLong(args[1]);
+            MovementSync.Instance.getMovementController().addMovement(new WalkMovement(velocity, time));
+        } catch (Exception ignored) {}
     }
 
     @Override
@@ -55,7 +57,7 @@ public class WalkCommandExecutor extends TabExecutor {
             directions.add("LEFT");
             directions.add("BACK");
             directions.add("RIGHT");
-            return directions;
+            return directions.stream().filter(s -> s.toLowerCase().startsWith(args[0].toLowerCase())).collect(Collectors.toList());
         }
         return List.of();
     }

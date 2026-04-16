@@ -15,11 +15,11 @@ public class EntitiesCommand extends Command {
 
     @Override
     public String getDescription() {
-        return "List all loaded entities";
+        return "List entities in the world";
     }
 
     @Override
     public String getUsage() {
-        return "entities";
+        return "entities [filter]";
     }
 }

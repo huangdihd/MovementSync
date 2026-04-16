@@ -42,6 +42,17 @@ public class BlockStateParser {
         blockStateRegistrySize = maxId + 1;
     }
 
+    public BlockEntry getBlockByStateId(int stateId) {
+        Map.Entry<Integer, BlockEntry> floorEntry = rangeMap.floorEntry(stateId);
+        if (floorEntry == null || stateId > floorEntry.getValue().getMaxStateId()) return null;
+        return floorEntry.getValue();
+    }
+
+    public boolean isSolidBlock(int stateId) {
+        BlockEntry entry = getBlockByStateId(stateId);
+        return entry != null && "block".equals(entry.getBoundingBox());
+    }
+
     public BlockState parseStateId(int stateId) {
         Map.Entry<Integer, BlockEntry> floorEntry = rangeMap.floorEntry(stateId);
 
@@ -52,7 +63,7 @@ public class BlockStateParser {
         BlockEntry block = floorEntry.getValue();
         Map<String, String> properties = getProperties(stateId, block);
 
-        return new BlockState(block.getName(), stateId, properties, block.getBoundingBox());
+        return new BlockState(block.getName(), stateId, properties, block.getBoundingBox(), block.getHardness(), block.isDiggable(), block.getMaterial());
     }
 
     private static @NotNull Map<String, String> getProperties(int stateId, BlockEntry block) {

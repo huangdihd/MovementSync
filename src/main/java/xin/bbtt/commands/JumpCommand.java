@@ -3,7 +3,6 @@ package xin.bbtt.commands;
 import xin.bbtt.mcbot.command.Command;
 
 public class JumpCommand extends Command {
-
     @Override
     public String getName() {
         return "jump";
@@ -11,12 +10,12 @@ public class JumpCommand extends Command {
 
     @Override
     public String[] getAliases() {
-        return new String[] {"jump"};
+        return new String[]{"jump"};
     }
 
     @Override
     public String getDescription() {
-        return "Make the bot jumping";
+        return "Perform a jump";
     }
 
     @Override

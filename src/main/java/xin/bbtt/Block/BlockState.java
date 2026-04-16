@@ -5,7 +5,7 @@ import org.jetbrains.annotations.NotNull;
 import java.util.Map;
 import java.util.stream.Collectors;
 
-public record BlockState(String blockName, int stateId, Map<String, String> properties, String boundingBox) {
+public record BlockState(String blockName, int stateId, Map<String, String> properties, String boundingBox, double hardness, boolean diggable, String material) {
 
     public String getProperty(String key) {
         return properties.get(key);
@@ -44,6 +44,15 @@ public record BlockState(String blockName, int stateId, Map<String, String> prop
      */
     public boolean isLiquid() {
         return "water".equals(blockName) || "lava".equals(blockName);
+    }
+
+    /**
+     * Returns the estimated break time in milliseconds.
+     */
+    public long getBreakTime() {
+        if (!diggable) return -1;
+        // Basic calculation: hardness * 1.5 * 20 (ticks) for now.
+        return (long)(hardness * 1.5 * 20 * 50);
     }
 
     @Override
