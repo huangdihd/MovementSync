@@ -10,7 +10,6 @@ import xin.bbtt.mcbot.Bot;
 import xin.bbtt.mcbot.LangManager;
 import xin.bbtt.mcbot.plugin.Plugin;
 import xin.bbtt.movement.MovementController;
-import xin.bbtt.movements.LookAtMovement;
 import xin.bbtt.tasks.updateMotionTask;
 import xin.bbtt.world.Direction;
 import xin.bbtt.world.World;
@@ -58,8 +57,6 @@ public class MovementSync implements Plugin {
         try {
             LangManager.loadFromStream(getClass().getResourceAsStream("/zh_cn.lang"));
             LangManager.loadFromStream(getClass().getResourceAsStream("/en_us.lang"));
-            LangManager.loadFromStream(getClass().getResourceAsStream("/lang/zh_cn.lang"));
-            LangManager.loadFromStream(getClass().getResourceAsStream("/lang/en_us.lang"));
         } catch (Exception ignored) {}
         
         getLogger().info(LangManager.get("movementsync.plugin.loading"));
@@ -73,6 +70,7 @@ public class MovementSync implements Plugin {
     @Override
     public void onEnable() {
         getLogger().info(LangManager.get("movementsync.plugin.enabling"));
+        Config.load();
         position.set(new Vector3d(0, 0, 0));
         velocity.set(new Vector3d(0, 0, 0));
         pitch.set(0f);
@@ -84,6 +82,7 @@ public class MovementSync implements Plugin {
         Bot.Instance.addPacketListener(new ChunkDataListener(), this);
         Bot.Instance.addPacketListener(new RegistryDataListener(), this);
         Bot.Instance.addPacketListener(new InventoryPacketListener(), this);
+        Bot.Instance.addPacketListener(new NoFallListener(), this);
 
         Bot.Instance.getPluginManager().registerCommand(new WhereAmICommand(), new WhereAmICommandExecutor(),  this);
         Bot.Instance.getPluginManager().registerCommand(new JumpCommand(), new JumpCommandExecutor(),  this);
@@ -112,6 +111,7 @@ public class MovementSync implements Plugin {
     @Override
     public void onDisable() {
         getLogger().info(LangManager.get("movementsync.plugin.disabling"));
+        Config.save();
         physicalSimulationService.shutdown();
         movementService.shutdown();
     }

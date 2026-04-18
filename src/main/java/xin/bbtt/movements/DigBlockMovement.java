@@ -78,7 +78,7 @@ public class DigBlockMovement extends Movement {
 
     @Override
     public long getTime() {
-        return breakTime + 1000;
+        return breakTime + 50;
     }
 
     @Override

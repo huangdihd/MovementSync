@@ -6,6 +6,8 @@ import xin.bbtt.mcbot.LangManager;
 
 import java.util.*;
 
+import static xin.bbtt.Config.noFall;
+
 public class DStarLite {
     private final Node start;
     private final Node goal;
@@ -69,21 +71,12 @@ public class DStarLite {
                     }
                 }
 
-                // 3. Fall Down (up to 3 blocks)
-                for (int dy = -1; dy >= -3; dy--) {
-                    if (isStandable(nx, u.y + dy, nz)) {
-                        neighbors.add(new Node(nx, u.y + dy, nz));
-                        break;
-                    }
-                    if (!isPassable(nx, u.y + dy, nz)) break; 
-                }
-
-                // 4. Jump Gaps (1-2 blocks)
+                // 3. Jump Gaps (1-2 blocks)
                 if (isPassable(u.x, u.y + 2, u.z)) {
                     for (int gap = 1; gap <= 2; gap++) {
                         int tx = u.x + (gap + 1) * dx[i];
                         int tz = u.z + (gap + 1) * dz[i];
-                        
+
                         boolean gapPassable = true;
                         for (int step = 1; step <= gap; step++) {
                             int midX = u.x + step * dx[i];
@@ -93,11 +86,22 @@ public class DStarLite {
                                 break;
                             }
                         }
-                        
+
                         if (gapPassable && isStandable(tx, u.y, tz) && isPassable(tx, u.y + 2, tz)) {
                             neighbors.add(new Node(tx, u.y, tz));
                         }
                     }
+                }
+
+                // 4. Fall Down (up to 3 blocks)
+                int fallDownHeight = -3;
+                if (noFall) fallDownHeight = -320;
+                for (int dy = -1; dy >= fallDownHeight; dy--) {
+                    if (isStandable(nx, u.y + dy, nz)) {
+                        neighbors.add(new Node(nx, u.y + dy, nz));
+                        break;
+                    }
+                    if (!isPassable(nx, u.y + dy, nz)) break; 
                 }
 
                 // 5. Bridge / Pillar Up (Jump & Place) - Only if we have blocks
