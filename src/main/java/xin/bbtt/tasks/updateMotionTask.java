@@ -17,8 +17,9 @@ public class updateMotionTask implements Runnable {
     float lastYaw = 0;
 
     public void syncPositionToServer() {
+        boolean onGround = MovementSync.Instance.onGround.get();
         Bot.Instance.getSession().send(new ServerboundMovePlayerPosRotPacket(
-                MovementSync.Instance.onGround.get(),
+                onGround,
                 false,
                 MovementSync.Instance.position.get().x,
                 MovementSync.Instance.position.get().y,
@@ -38,9 +39,29 @@ public class updateMotionTask implements Runnable {
     }
 
     private boolean isPlayerBoxColliding(Vector3d pos) {
-        double w = 0.299;
+        double w = 0.299; // Half width for player (0.6 / 2)
+        double hMax = 1.8;
 
-        double[] heights = {0.0, 0.9, 1.79};
+        if (MovementSync.Instance.isRiding()) {
+            xin.bbtt.Entity.Entity vehicle = MovementSync.Instance.getWorld().getEntity(MovementSync.Instance.getVehicleId());
+            if (vehicle != null) {
+                w = vehicle.getWidth() / 2.0;
+                hMax = vehicle.getHeight();
+            }
+        } else {
+            // Adjust player height based on pose
+            Object pose = MovementSync.Instance.getSelfMetadata().get("pose");
+            if (pose != null) {
+                String poseName = pose.toString();
+                if (poseName.contains("SNEAKING")) {
+                    hMax = 1.5;
+                } else if (poseName.contains("SWIMMING") || poseName.contains("FALL_FLYING")) {
+                    hMax = 0.6;
+                }
+            }
+        }
+
+        double[] heights = {0.0, hMax / 2.0, hMax - 0.01};
 
         for (double h : heights) {
             Vector3d[] corners = {
@@ -60,6 +81,20 @@ public class updateMotionTask implements Runnable {
     public void run() {
         if (!Bot.Instance.isRunning()) return;
         if (Bot.Instance.getServer() != Server.Xin) return;
+
+        if (MovementSync.Instance.isRiding()) {
+            xin.bbtt.Entity.Entity vehicle = MovementSync.Instance.getWorld().getEntity(MovementSync.Instance.getVehicleId());
+            if (vehicle != null) {
+                MovementSync.Instance.position.get().set(vehicle.getPosition());
+            }
+            float sideways = MovementSync.Instance.getRidingSideways();
+            float forward = MovementSync.Instance.getRidingForward();
+            Bot.Instance.getSession().send(new org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.level.ServerboundPlayerInputPacket(
+                sideways > 0, sideways < 0, forward > 0, forward < 0, false, false, false));
+            syncPositionToServer();
+            return;
+        }
+
         Vector3d velocity = MovementSync.Instance.velocity.get();
         Vector3d displacement = new Vector3d();
 

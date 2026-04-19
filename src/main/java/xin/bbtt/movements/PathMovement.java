@@ -122,6 +122,22 @@ public class PathMovement extends Movement {
         }
 
         double dist = Math.sqrt(horizontalDistSq);
+        
+        if (MovementSync.Instance.isRiding()) {
+            float yawRad = (float) Math.toRadians(MovementSync.Instance.yaw.get());
+            Vector3d forwardDir = new Vector3d(-Math.sin(yawRad), 0, Math.cos(yawRad));
+            Vector3d sideDir = new Vector3d(-Math.cos(yawRad), 0, -Math.sin(yawRad));
+            
+            Vector3d moveDir = new Vector3d(diff).normalize();
+            float forwardInput = (float) moveDir.dot(forwardDir);
+            float sideInput = (float) moveDir.dot(sideDir);
+            
+            // Normalize inputs to -1..1 or similar if needed, here just basic projection
+            MovementSync.Instance.setRidingForward(forwardInput > 0.1 ? 1.0f : (forwardInput < -0.1 ? -1.0f : 0));
+            MovementSync.Instance.setRidingSideways(sideInput > 0.1 ? 1.0f : (sideInput < -0.1 ? -1.0f : 0));
+            return;
+        }
+
         double currentSpeed = MovementSync.movementSpeed;
         if (dist < 0.25) {
             currentSpeed *= (dist / 0.25);
@@ -230,15 +246,19 @@ public class PathMovement extends Movement {
     private void stopHorizontal() {
         Vector3d vel = MovementSync.Instance.velocity.get();
         if (vel != null) MovementSync.Instance.velocity.set(new Vector3d(0, vel.y, 0));
+        MovementSync.Instance.setRidingForward(0);
+        MovementSync.Instance.setRidingSideways(0);
     }
 
     private boolean isPathDeviated(Vector3d currentPos, Node targetNode) {
+        if (MovementSync.Instance.isRiding()) return false;
         if (currentPos.y >= targetNode.y - 1.2) return false;
         finishPath();
         return true;
     }
 
     private boolean isFallingUnexpectedly(Vector3d currentPos, Vector3d targetPos) {
+        if (MovementSync.Instance.isRiding()) return false;
         if (MovementSync.Instance.onGround.get()) return false;
         if (MovementSync.Instance.velocity.get().y > 0.01) return false;
         if (targetPos.y <= currentPos.y + 0.5) return false;

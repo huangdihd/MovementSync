@@ -14,6 +14,7 @@ import xin.bbtt.tasks.updateMotionTask;
 import xin.bbtt.world.Direction;
 import xin.bbtt.world.World;
 
+import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -33,13 +34,24 @@ public class MovementSync implements Plugin {
     public AtomicBoolean onGround = new AtomicBoolean(true);
     private ScheduledExecutorService physicalSimulationService;
     public ScheduledExecutorService movementService;
+
+    @Getter
+    private final Map<String, Object> selfMetadata = new java.util.concurrent.ConcurrentHashMap<>();
+
+    @Getter @Setter
+    private int vehicleId = -1;
     
     @Setter @Getter
     private org.joml.Vector3i activeGoal = null;
     
-    @Setter @Getter
+    @Getter @Setter
     private int followTargetId = -1;
-    
+
+    @Getter @Setter
+    private float ridingSideways = 0;
+    @Getter @Setter
+    private float ridingForward = 0;
+
     @Getter
     public final World world = new World();
     @Getter
@@ -70,7 +82,6 @@ public class MovementSync implements Plugin {
     @Override
     public void onEnable() {
         getLogger().info(LangManager.get("movementsync.plugin.enabling"));
-        Config.load();
         position.set(new Vector3d(0, 0, 0));
         velocity.set(new Vector3d(0, 0, 0));
         pitch.set(0f);
@@ -82,7 +93,6 @@ public class MovementSync implements Plugin {
         Bot.Instance.addPacketListener(new ChunkDataListener(), this);
         Bot.Instance.addPacketListener(new RegistryDataListener(), this);
         Bot.Instance.addPacketListener(new InventoryPacketListener(), this);
-        Bot.Instance.addPacketListener(new NoFallListener(), this);
 
         Bot.Instance.getPluginManager().registerCommand(new WhereAmICommand(), new WhereAmICommandExecutor(),  this);
         Bot.Instance.getPluginManager().registerCommand(new JumpCommand(), new JumpCommandExecutor(),  this);
@@ -99,6 +109,7 @@ public class MovementSync implements Plugin {
         Bot.Instance.getPluginManager().registerCommand(new LookAtEntityCommand(), new LookAtEntityCommandExecutor(), this);
         Bot.Instance.getPluginManager().registerCommand(new GotoCommand(), new GotoCommandExecutor(), this);
         Bot.Instance.getPluginManager().registerCommand(new FollowCommand(), new FollowCommandExecutor(), this);
+        Bot.Instance.getPluginManager().registerCommand(new RideCommand(), new RideCommandExecutor(), this);
 
         Bot.Instance.getPluginManager().events().registerEvents(new ServerChangeListener(),  this);
         Bot.Instance.getPluginManager().events().registerEvents(new EntityPacketListener(), this);
@@ -111,7 +122,6 @@ public class MovementSync implements Plugin {
     @Override
     public void onDisable() {
         getLogger().info(LangManager.get("movementsync.plugin.disabling"));
-        Config.save();
         physicalSimulationService.shutdown();
         movementService.shutdown();
     }
@@ -178,5 +188,9 @@ public class MovementSync implements Plugin {
 
     public Vector3d getHeadPosition() {
         return new Vector3d(MovementSync.Instance.position.get()).add(Direction.UP.getVector(1.62));
+    }
+
+    public boolean isRiding() {
+        return vehicleId != -1;
     }
 }

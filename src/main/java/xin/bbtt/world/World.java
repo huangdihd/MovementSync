@@ -194,6 +194,12 @@ public class World {
         }
     }
 
+    public void handleSetEntityMetadataPacket(ClientboundSetEntityDataPacket setEntityMetadataPacket) {
+        Entity entity = entities.get(setEntityMetadataPacket.getEntityId());
+        if (entity == null) return;
+        entity.updateMetadata(setEntityMetadataPacket.getMetadata());
+    }
+
     public Vector3i getChunk(org.cloudburstmc.math.vector.Vector3i blockPosition) {
         return getChunk(new Vector3i(
                         blockPosition.getX(),
