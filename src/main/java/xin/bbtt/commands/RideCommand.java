@@ -10,7 +10,7 @@ public class RideCommand extends Command {
 
     @Override
     public String[] getAliases() {
-        return new String[]{"mount"};
+        return new String[]{"ride", "mount"};
     }
 
     @Override

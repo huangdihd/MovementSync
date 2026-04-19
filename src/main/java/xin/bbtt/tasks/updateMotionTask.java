@@ -86,11 +86,25 @@ public class updateMotionTask implements Runnable {
             xin.bbtt.Entity.Entity vehicle = MovementSync.Instance.getWorld().getEntity(MovementSync.Instance.getVehicleId());
             if (vehicle != null) {
                 MovementSync.Instance.position.get().set(vehicle.getPosition());
+                
+                // Special handling for boats: need to paddle
+                if (vehicle.getType().name().contains("BOAT")) {
+                    float forward = MovementSync.Instance.getRidingForward();
+                    float sideways = MovementSync.Instance.getRidingSideways();
+                    boolean leftPaddle = forward > 0 || sideways > 0;
+                    boolean rightPaddle = forward > 0 || sideways < 0;
+                    if (leftPaddle || rightPaddle) {
+                        Bot.Instance.getSession().send(new org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.level.ServerboundPaddleBoatPacket(leftPaddle, rightPaddle));
+                    }
+                }
             }
             float sideways = MovementSync.Instance.getRidingSideways();
             float forward = MovementSync.Instance.getRidingForward();
+            boolean jump = MovementSync.Instance.isRidingJump();
+            boolean sneak = MovementSync.Instance.isRidingSneak();
+            
             Bot.Instance.getSession().send(new org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.level.ServerboundPlayerInputPacket(
-                sideways > 0, sideways < 0, forward > 0, forward < 0, false, false, false));
+                sideways > 0, sideways < 0, forward > 0, forward < 0, jump, sneak, false));
             syncPositionToServer();
             return;
         }

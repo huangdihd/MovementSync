@@ -51,6 +51,10 @@ public class MovementSync implements Plugin {
     private float ridingSideways = 0;
     @Getter @Setter
     private float ridingForward = 0;
+    @Getter @Setter
+    private boolean ridingJump = false;
+    @Getter @Setter
+    private boolean ridingSneak = false;
 
     @Getter
     public final World world = new World();

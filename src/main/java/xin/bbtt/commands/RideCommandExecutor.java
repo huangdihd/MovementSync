@@ -17,9 +17,11 @@ public class RideCommandExecutor extends SubCommandExecutor {
             @Override
             public void onCommand(Command command, String label, String[] args) {
                 if (MovementSync.Instance.isRiding()) {
-                    // Temporarily disabled due to unknown enum values in this version of mcprotocollib
-                    // Bot.Instance.getSession().send(new ServerboundPlayerCommandPacket(MovementSync.Instance.entityId, PlayerState.START_SNEAKING));
-                    MovementSync.Instance.getLogger().info("Dismounting is temporarily disabled in this version.");
+                    MovementSync.Instance.setRidingSneak(true);
+                    MovementSync.Instance.getLogger().info("Dismounting (sending sneak input)...");
+                    // Reset sneak after a short delay or in next tick if needed, 
+                    // but usually sending it once is enough to trigger the server-side dismount.
+                    MovementSync.Instance.movementService.schedule(() -> MovementSync.Instance.setRidingSneak(false), 200, java.util.concurrent.TimeUnit.MILLISECONDS);
                 } else {
                     MovementSync.Instance.getLogger().info("Not riding any entity.");
                 }
