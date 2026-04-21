@@ -150,16 +150,16 @@ public class MovementController {
                 return;
             }
 
-            if (MovementSync.Instance.movementService == null || MovementSync.Instance.movementService.isShutdown()) {
-                MovementSync.Instance.movementService = Executors.newScheduledThreadPool(1);
+            if (MovementSync.INSTANCE.movementService == null || MovementSync.INSTANCE.movementService.isShutdown()) {
+                MovementSync.INSTANCE.movementService = Executors.newScheduledThreadPool(1);
             }
 
             try {
                 currentMovement.init();
                 MovementTask task = new MovementTask(currentMovement, this);
-                currentTaskFuture = MovementSync.Instance.movementService.scheduleAtFixedRate(task, 0L, 50L, TimeUnit.MILLISECONDS);
+                currentTaskFuture = MovementSync.INSTANCE.movementService.scheduleAtFixedRate(task, 0L, 50L, TimeUnit.MILLISECONDS);
             } catch (Exception e) {
-                MovementSync.Instance.getLogger().error(LangManager.get("movementsync.movement.error.run"), e);
+                MovementSync.getLogger().error(LangManager.get("movementsync.movement.error.run"), e);
                 isExecuting.set(false);
                 tryExecuteNext();
             }

@@ -1,0 +1,80 @@
+whereami:
+  description: "movementsync.command.whereami.description"
+  usage: "movementsync.command.whereami.usage"
+  aliases: ["whereami", "pos"]
+  executor: "xin.bbtt.commands.WhereAmICommandExecutor"
+jump:
+  description: "movementsync.command.jump.description"
+  usage: "movementsync.command.jump.usage"
+  aliases: ["jump"]
+  executor: "xin.bbtt.commands.JumpCommandExecutor"
+getblockat:
+  description: "movementsync.command.getblockat.description"
+  usage: "movementsync.command.getblockat.usage"
+  aliases: ["getblockat", "block"]
+  executor: "xin.bbtt.commands.GetBlockAtCommandExecutor"
+walk:
+  description: "movementsync.command.walk.description"
+  usage: "movementsync.command.walk.usage"
+  aliases: ["walk"]
+  executor: "xin.bbtt.commands.WalkCommandExecutor"
+lookat:
+  description: "movementsync.command.lookat.description"
+  usage: "movementsync.command.lookat.usage"
+  aliases: ["lookat"]
+  executor: "xin.bbtt.commands.LookAtCommandExecutor"
+movement:
+  description: "movementsync.command.movement.description"
+  usage: "movementsync.command.movement.usage"
+  aliases: ["movement"]
+  executor: "xin.bbtt.commands.MovementCommandExecutor"
+entities:
+  description: "movementsync.command.entities.description"
+  usage: "movementsync.command.entities.usage"
+  aliases: ["entities"]
+  executor: "xin.bbtt.commands.EntitiesCommandExecutor"
+interactblock:
+  description: "movementsync.command.interactblock.description"
+  usage: "movementsync.command.interactblock.usage"
+  aliases: ["interactblock"]
+  executor: "xin.bbtt.commands.InteractBlockCommandExecutor"
+interactentity:
+  description: "movementsync.command.interactentity.description"
+  usage: "movementsync.command.interactentity.usage"
+  aliases: ["interactentity"]
+  executor: "xin.bbtt.commands.InteractEntityCommandExecutor"
+inventory:
+  description: "movementsync.command.inventory.description"
+  usage: "movementsync.command.inventory.usage"
+  aliases: ["inventory", "inv"]
+  executor: "xin.bbtt.commands.InventoryCommandExecutor"
+container:
+  description: "movementsync.command.container.description"
+  usage: "movementsync.command.container.usage"
+  aliases: ["container", "ct"]
+  executor: "xin.bbtt.commands.ContainerCommandExecutor"
+ispassable:
+  description: "movementsync.command.ispassable.description"
+  usage: "movementsync.command.ispassable.usage"
+  aliases: ["ispassable"]
+  executor: "xin.bbtt.commands.IsPassableCommandExecutor"
+lookatentity:
+  description: "movementsync.command.lookatentity.description"
+  usage: "movementsync.command.lookatentity.usage"
+  aliases: ["lookatentity"]
+  executor: "xin.bbtt.commands.LookAtEntityCommandExecutor"
+goto:
+  description: "movementsync.command.goto.description"
+  usage: "movementsync.command.goto.usage"
+  aliases: ["goto"]
+  executor: "xin.bbtt.commands.GotoCommandExecutor"
+follow:
+  description: "movementsync.command.follow.description"
+  usage: "movementsync.command.follow.usage"
+  aliases: ["follow"]
+  executor: "xin.bbtt.commands.FollowCommandExecutor"
+ride:
+  description: "movementsync.command.ride.description"
+  usage: "movementsync.command.ride.usage"
+  aliases: ["ride", "mount"]
+  executor: "xin.bbtt.commands.RideCommandExecutor"

@@ -17,7 +17,7 @@ public class LookAtCommandExecutor extends TabHighlightExecutor {
             double y = Double.parseDouble(args[1]);
             double z = Double.parseDouble(args[2]);
             Vector3d target = new Vector3d(x, y, z);
-            MovementSync.Instance.lookAt(target);
+            MovementSync.INSTANCE.lookAt(target);
         } catch (NumberFormatException ignored) {}
     }
 

@@ -10,7 +10,7 @@ public class EntityIdRecorder extends SessionAdapter {
     @Override
     public void packetReceived(Session session, Packet packet) {
         if (!(packet instanceof ClientboundLoginPacket loginPacket)) return;
-        MovementSync.Instance.getLogger().info(xin.bbtt.mcbot.LangManager.get("movementsync.listener.entityid"), loginPacket.getEntityId());
-        MovementSync.Instance.entityId = loginPacket.getEntityId();
+        MovementSync.getLogger().info(xin.bbtt.mcbot.LangManager.get("movementsync.listener.entityid"), loginPacket.getEntityId());
+        MovementSync.INSTANCE.entityId = loginPacket.getEntityId();
     }
 }

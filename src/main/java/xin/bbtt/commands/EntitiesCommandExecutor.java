@@ -17,7 +17,7 @@ import java.util.stream.Collectors;
 public class EntitiesCommandExecutor extends TabHighlightExecutor {
     @Override
     public void onCommand(Command command, String label, String[] args) {
-        Map<Integer, Entity> entities = MovementSync.Instance.getWorld().getEntities();
+        Map<Integer, Entity> entities = MovementSync.INSTANCE.getWorld().getEntities();
         String filter = args.length > 0 ? args[0].toLowerCase() : null;
 
         int count = 0;
@@ -27,14 +27,14 @@ public class EntitiesCommandExecutor extends TabHighlightExecutor {
             }
         }
 
-        MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.entities.header", count));
+        MovementSync.getLogger().info(LangManager.get("movementsync.command.entities.header", count));
         for (Map.Entry<Integer, Entity> entry : entities.entrySet()) {
             Entity e = entry.getValue();
             if (filter != null && !e.getType().name().toLowerCase().contains(filter)) {
                 continue;
             }
             String posStr = String.format("(%.1f, %.1f, %.1f)", e.getPosition().x, e.getPosition().y, e.getPosition().z);
-            MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.entities.entry_with_pos", entry.getKey(), e.getType(), posStr));
+            MovementSync.getLogger().info(LangManager.get("movementsync.command.entities.entry_with_pos", entry.getKey(), e.getType(), posStr));
         }
     }
 

@@ -16,13 +16,13 @@ import java.util.Map;
 public class InventoryCommandExecutor extends CommandExecutor {
     @Override
     public void onCommand(Command command, String label, String[] args) {
-        ItemStack[] items = MovementSync.Instance.getInventoryManager().getInventory();
+        ItemStack[] items = MovementSync.INSTANCE.getInventoryManager().getInventory();
         if (items == null) {
-            MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.inventory.not_loaded"));
+            MovementSync.getLogger().info(LangManager.get("movementsync.command.inventory.not_loaded"));
             return;
         }
 
-        MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.inventory.header"));
+        MovementSync.getLogger().info(LangManager.get("movementsync.command.inventory.header"));
         for (int i = 0; i < items.length; i++) {
             ItemStack item = items[i];
             if (item == null || item.getId() == 0) continue;
@@ -34,7 +34,7 @@ public class InventoryCommandExecutor extends CommandExecutor {
             sb.append(LangManager.get("movementsync.command.inventory.entry", i, name, item.getAmount()));
             
             appendEnchantments(item, sb);
-            MovementSync.Instance.getLogger().info(sb.toString());
+            MovementSync.getLogger().info(sb.toString());
         }
     }
 

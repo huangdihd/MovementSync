@@ -41,7 +41,7 @@ public class PlaceBlockMovement extends Movement {
             case EAST -> dx = 0.5;
         }
         
-        MovementSync.Instance.lookAt(new Vector3d(
+        MovementSync.INSTANCE.lookAt(new Vector3d(
             targetPos.getX() + 0.5 + dx, 
             targetPos.getY() + 0.5 + dy, 
             targetPos.getZ() + 0.5 + dz
@@ -60,11 +60,11 @@ public class PlaceBlockMovement extends Movement {
                     break;
                 case 1: // Wait and move to edge
                     if (elapsed > 100) {
-                        Vector3d current = MovementSync.Instance.position.get();
+                        Vector3d current = MovementSync.INSTANCE.position.get();
                         Vector3d edge = new Vector3d(pos.getX() + 0.5, current.y, pos.getZ() + 0.5);
                         Vector3d diff = new Vector3d(edge).sub(current);
                         if (diff.length() > 0.1) diff.normalize().mul(0.05);
-                        MovementSync.Instance.velocity.set(diff);
+                        MovementSync.INSTANCE.velocity.set(diff);
                         
                         if (elapsed > 300) step = 2;
                     }
@@ -90,16 +90,16 @@ public class PlaceBlockMovement extends Movement {
     }
 
     private void sendInput(boolean sneak) {
-        Bot.Instance.getSession().send(new ServerboundPlayerInputPacket(false, false, false, false, false, sneak, false));
+        Bot.INSTANCE.getSession().send(new ServerboundPlayerInputPacket(false, false, false, false, false, sneak, false));
     }
     private void place() {
-        MovementSync.Instance.getLogger().info(xin.bbtt.mcbot.LangManager.get("movementsync.movement.placing.start", pos.getX(), pos.getY(), pos.getZ(), side));
+        MovementSync.getLogger().info(xin.bbtt.mcbot.LangManager.get("movementsync.movement.placing.start", pos.getX(), pos.getY(), pos.getZ(), side));
         // Send use item packet
-        Bot.Instance.getSession().send(new ServerboundUseItemOnPacket(
-            targetPos, side, Hand.MAIN_HAND, 0.5f, 0.5f, 0.5f, false, false, Bot.Instance.getAndIncreaseSequence()
+        Bot.INSTANCE.getSession().send(new ServerboundUseItemOnPacket(
+            targetPos, side, Hand.MAIN_HAND, 0.5f, 0.5f, 0.5f, false, false, Bot.INSTANCE.getAndIncreaseSequence()
         ));
         // Swing arm
-        Bot.Instance.getSession().send(new ServerboundSwingPacket(Hand.MAIN_HAND));
+        Bot.INSTANCE.getSession().send(new ServerboundSwingPacket(Hand.MAIN_HAND));
     }
     @Override
     public long getTime() {
@@ -108,7 +108,7 @@ public class PlaceBlockMovement extends Movement {
 
     @Override
     public void onStop() {
-        MovementSync.Instance.velocity.set(new Vector3d(0, 0, 0));
+        MovementSync.INSTANCE.velocity.set(new Vector3d(0, 0, 0));
         if (bridge && step < 3) {
             sendInput(false);
         }

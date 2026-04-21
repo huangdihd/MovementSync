@@ -18,9 +18,9 @@ public class JumpMovement extends Movement {
 
     @Override
     public void init() {
-        if (!MovementSync.Instance.onGround.get()) return;
-        MovementSync.Instance.getLogger().info(LangManager.get("movementsync.movement.jump"));
-        MovementSync.Instance.velocity.updateAndGet(p -> new Vector3d(p).add(new Vector3d(0, 0.42, 0)));
+        if (!MovementSync.INSTANCE.onGround.get()) return;
+        MovementSync.getLogger().info(LangManager.get("movementsync.movement.jump"));
+        MovementSync.INSTANCE.velocity.updateAndGet(p -> new Vector3d(p).add(new Vector3d(0, 0.42, 0)));
     }
 
     @Override

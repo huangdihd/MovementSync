@@ -29,7 +29,7 @@ public class MovementTask implements Runnable {
                 controller.finishCurrentMovement();
             }
         } catch (Exception e) {
-            MovementSync.Instance.getLogger().error("Failed to run onTick", e);
+            MovementSync.getLogger().error("Failed to run onTick", e);
             controller.finishCurrentMovement();
         }
     }

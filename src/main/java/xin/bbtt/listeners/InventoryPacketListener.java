@@ -16,36 +16,29 @@ public class InventoryPacketListener extends SessionAdapter {
     @Override
     public void packetReceived(Session session, Packet packet) {
         if (packet instanceof ClientboundContainerSetContentPacket p) {
-            MovementSync.Instance.getInventoryManager().setContainerItems(p.getContainerId(), p.getItems());
-            MovementSync.Instance.getInventoryManager().setCurrentStateId(p.getStateId());
-            return;
+            MovementSync.INSTANCE.getInventoryManager().setContainerItems(p.getContainerId(), p.getItems());
+            MovementSync.INSTANCE.getInventoryManager().setCurrentStateId(p.getStateId());
         }
-        
-        if (packet instanceof ClientboundContainerSetSlotPacket p) {
-            MovementSync.Instance.getInventoryManager().setSlot(p.getContainerId(), p.getSlot(), p.getItem());
-            MovementSync.Instance.getInventoryManager().setCurrentStateId(p.getStateId());
-            return;
-        }
-        
-        if (packet instanceof ClientboundOpenScreenPacket p) {
-            MovementSync.Instance.getInventoryManager().setCurrentContainerId(p.getContainerId());
-            return;
-        }
-        
-        if (packet instanceof ClientboundContainerClosePacket) {
-            MovementSync.Instance.getInventoryManager().setCurrentContainerId(0);
-            return;
-        }
-        
-        if (packet instanceof ClientboundSetHeldSlotPacket p) {
-            MovementSync.Instance.getInventoryManager().setHeldSlot(p.getSlot());
-        }
-    }
 
-    @Override
-    public void packetSending(PacketSendingEvent event) {
-        if (event.getPacket() instanceof ServerboundSetCarriedItemPacket p) {
-            MovementSync.Instance.getInventoryManager().setHeldSlot(p.getSlot());
+        if (packet instanceof ClientboundContainerSetSlotPacket p) {
+            MovementSync.INSTANCE.getInventoryManager().setSlot(p.getContainerId(), p.getSlot(), p.getItem());
+            MovementSync.INSTANCE.getInventoryManager().setCurrentStateId(p.getStateId());
+        }
+
+        if (packet instanceof ClientboundOpenScreenPacket p) {
+            MovementSync.INSTANCE.getInventoryManager().setCurrentContainerId(p.getContainerId());
+        }
+
+        if (packet instanceof ClientboundContainerClosePacket) {
+            MovementSync.INSTANCE.getInventoryManager().setCurrentContainerId(0);
+        }
+
+        if (packet instanceof ClientboundSetHeldSlotPacket p) {
+            MovementSync.INSTANCE.getInventoryManager().setHeldSlot(p.getSlot());
+        }
+
+        if (packet instanceof ServerboundSetCarriedItemPacket p) {
+            MovementSync.INSTANCE.getInventoryManager().setHeldSlot(p.getSlot());
         }
     }
 }

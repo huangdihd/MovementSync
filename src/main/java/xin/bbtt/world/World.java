@@ -50,7 +50,7 @@ public class World {
                         entry.getPosition().getY(),
                         entry.getPosition().getZ()
                 ), section.getBlock(relativeX, relativeY, relativeZ), entry.getBlock());
-                Bot.Instance.getPluginManager().events().callEvent(blockChangeEvent);
+                Bot.INSTANCE.getPluginManager().events().callEvent(blockChangeEvent);
                 section.setBlock(relativeX, relativeY, relativeZ, blockChangeEvent.getChangeTo());
                 section.setBlock(relativeX, relativeY, relativeZ, entry.getBlock());
             }
@@ -118,8 +118,8 @@ public class World {
             }
             chunks.get(levelChunkWithLightPacket.getX()).put(levelChunkWithLightPacket.getZ(), sections);
             LoadChunkEvent loadChunkEvent = new LoadChunkEvent(levelChunkWithLightPacket.getX(), levelChunkWithLightPacket.getZ());
-            Bot.Instance.getPluginManager().events().callEvent(loadChunkEvent);
-            MovementSync.Instance.getLogger().debug("Loaded chunk: ({}, {})", levelChunkWithLightPacket.getX(), levelChunkWithLightPacket.getZ());
+            Bot.INSTANCE.getPluginManager().events().callEvent(loadChunkEvent);
+            MovementSync.getLogger().debug("Loaded chunk: ({}, {})", levelChunkWithLightPacket.getX(), levelChunkWithLightPacket.getZ());
 
         } finally {
             chunkBuf.release();
@@ -139,9 +139,9 @@ public class World {
         if (!chunks.containsKey(forgetLevelChunkPacket.getX())) return;
         if (!chunks.get(forgetLevelChunkPacket.getX()).containsKey(forgetLevelChunkPacket.getZ())) return;
         UnloadChunkEvent unloadChunkEvent = new UnloadChunkEvent(forgetLevelChunkPacket.getX(), forgetLevelChunkPacket.getZ());
-        Bot.Instance.getPluginManager().events().callEvent(unloadChunkEvent);
+        Bot.INSTANCE.getPluginManager().events().callEvent(unloadChunkEvent);
         chunks.get(forgetLevelChunkPacket.getX()).remove(forgetLevelChunkPacket.getZ());
-        MovementSync.Instance.getLogger().debug("Unloaded chunk: ({}, {})", forgetLevelChunkPacket.getX(), forgetLevelChunkPacket.getZ());
+        MovementSync.getLogger().debug("Unloaded chunk: ({}, {})", forgetLevelChunkPacket.getX(), forgetLevelChunkPacket.getZ());
     }
 
     public Entity getEntity(int entityId) {

@@ -3,7 +3,8 @@ package xin.bbtt;
 import lombok.Getter;
 import lombok.Setter;
 import org.joml.Vector3d;
-import xin.bbtt.commands.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import xin.bbtt.inventory.InventoryManager;
 import xin.bbtt.listeners.*;
 import xin.bbtt.mcbot.Bot;
@@ -22,7 +23,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class MovementSync implements Plugin {
-    public static MovementSync Instance;
+    @Getter
+    private static final Logger logger = LoggerFactory.getLogger(MovementSync.class.getSimpleName());
+    public static MovementSync INSTANCE;
+
     public int entityId = -1;
     public AtomicReference<Vector3d> position = new AtomicReference<>(new Vector3d(0, 0, 0));
     public AtomicReference<Vector3d> velocity = new AtomicReference<>(new Vector3d(0, 0, 0));
@@ -64,7 +68,7 @@ public class MovementSync implements Plugin {
     public final InventoryManager inventoryManager = new InventoryManager();
 
     public MovementSync() {
-        Instance = this;
+        INSTANCE = this;
     }
 
     @Override
@@ -91,32 +95,15 @@ public class MovementSync implements Plugin {
         pitch.set(0f);
         yaw.set(0f);
 
-        Bot.Instance.addPacketListener(new TeleportPacketListener(), this);
-        Bot.Instance.addPacketListener(new EntityIdRecorder(), this);
-        Bot.Instance.addPacketListener(new RespawnPacketListener(), this);
-        Bot.Instance.addPacketListener(new ChunkDataListener(), this);
-        Bot.Instance.addPacketListener(new RegistryDataListener(), this);
-        Bot.Instance.addPacketListener(new InventoryPacketListener(), this);
+        Bot.INSTANCE.addPacketListener(new TeleportPacketListener(), this);
+        Bot.INSTANCE.addPacketListener(new EntityIdRecorder(), this);
+        Bot.INSTANCE.addPacketListener(new RespawnPacketListener(), this);
+        Bot.INSTANCE.addPacketListener(new ChunkDataListener(), this);
+        Bot.INSTANCE.addPacketListener(new RegistryDataListener(), this);
+        Bot.INSTANCE.addPacketListener(new InventoryPacketListener(), this);
 
-        Bot.Instance.getPluginManager().registerCommand(new WhereAmICommand(), new WhereAmICommandExecutor(),  this);
-        Bot.Instance.getPluginManager().registerCommand(new JumpCommand(), new JumpCommandExecutor(),  this);
-        Bot.Instance.getPluginManager().registerCommand(new GetBlockAtCommand(), new GetBlockAtCommandExecutor(), this);
-        Bot.Instance.getPluginManager().registerCommand(new WalkCommand(), new WalkCommandExecutor(), this);
-        Bot.Instance.getPluginManager().registerCommand(new LookAtCommand(), new LookAtCommandExecutor(), this);
-        Bot.Instance.getPluginManager().registerCommand(new MovementCommand(), new MovementCommandExecutor(), this);
-        Bot.Instance.getPluginManager().registerCommand(new EntitiesCommand(), new EntitiesCommandExecutor(), this);
-        Bot.Instance.getPluginManager().registerCommand(new InteractBlockCommand(), new InteractBlockCommandExecutor(), this);
-        Bot.Instance.getPluginManager().registerCommand(new InteractEntityCommand(), new InteractEntityCommandExecutor(), this);
-        Bot.Instance.getPluginManager().registerCommand(new InventoryCommand(), new InventoryCommandExecutor(), this);
-        Bot.Instance.getPluginManager().registerCommand(new ContainerCommand(), new ContainerCommandExecutor(), this);
-        Bot.Instance.getPluginManager().registerCommand(new IsPassableCommand(), new IsPassableCommandExecutor(), this);
-        Bot.Instance.getPluginManager().registerCommand(new LookAtEntityCommand(), new LookAtEntityCommandExecutor(), this);
-        Bot.Instance.getPluginManager().registerCommand(new GotoCommand(), new GotoCommandExecutor(), this);
-        Bot.Instance.getPluginManager().registerCommand(new FollowCommand(), new FollowCommandExecutor(), this);
-        Bot.Instance.getPluginManager().registerCommand(new RideCommand(), new RideCommandExecutor(), this);
-
-        Bot.Instance.getPluginManager().events().registerEvents(new ServerChangeListener(),  this);
-        Bot.Instance.getPluginManager().events().registerEvents(new EntityPacketListener(), this);
+        Bot.INSTANCE.getPluginManager().events().registerEvents(new ServerChangeListener(),  this);
+        Bot.INSTANCE.getPluginManager().events().registerEvents(new EntityPacketListener(), this);
 
         physicalSimulationService = Executors.newScheduledThreadPool(1);
         physicalSimulationService.scheduleAtFixedRate(new updateMotionTask(), 0, 50, TimeUnit.MILLISECONDS);
@@ -191,7 +178,7 @@ public class MovementSync implements Plugin {
     }
 
     public Vector3d getHeadPosition() {
-        return new Vector3d(MovementSync.Instance.position.get()).add(Direction.UP.getVector(1.62));
+        return new Vector3d(MovementSync.INSTANCE.position.get()).add(Direction.UP.getVector(1.62));
     }
 
     public boolean isRiding() {

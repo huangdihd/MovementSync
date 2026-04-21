@@ -19,10 +19,10 @@ public class GetBlockAtCommandExecutor extends TabHighlightExecutor {
             int x = Integer.parseInt(args[0]);
             int y = Integer.parseInt(args[1]);
             int z = Integer.parseInt(args[2]);
-            BlockState state = MovementSync.Instance.getWorld().getBlockStateAt(new Vector3d(x, y, z));
-            MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.getblockat.response", x, y, z, state.blockName(), state.stateId()));
+            BlockState state = MovementSync.INSTANCE.getWorld().getBlockStateAt(new Vector3d(x, y, z));
+            MovementSync.getLogger().info(LangManager.get("movementsync.command.getblockat.response", x, y, z, state.blockName(), state.stateId()));
             if (state.properties() != null && !state.properties().isEmpty()) {
-                MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.getblockat.properties", state.properties().toString()));
+                MovementSync.getLogger().info(LangManager.get("movementsync.command.getblockat.properties", state.properties().toString()));
             }
         } catch (NumberFormatException ignored) {}
     }

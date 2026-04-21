@@ -18,8 +18,8 @@ public class IsPassableCommandExecutor extends TabHighlightExecutor {
             int x = Integer.parseInt(args[0]);
             int y = Integer.parseInt(args[1]);
             int z = Integer.parseInt(args[2]);
-            boolean passable = MovementSync.Instance.getWorld().isPassable(new Vector3d(x, y, z));
-            MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.ispassable.response", x, y, z, passable));
+            boolean passable = MovementSync.INSTANCE.getWorld().isPassable(new Vector3d(x, y, z));
+            MovementSync.getLogger().info(LangManager.get("movementsync.command.ispassable.response", x, y, z, passable));
         } catch (NumberFormatException ignored) {}
     }
 

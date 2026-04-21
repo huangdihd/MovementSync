@@ -14,7 +14,7 @@ public class BridgePillarStrategy extends AbstractMovementStrategy {
     @Override
     public List<Edge> findEdges(Node u, World world) {
         List<Edge> edges = new ArrayList<>();
-        boolean hasBlocks = MovementSync.Instance.getInventoryManager().findBlock() != -1;
+        boolean hasBlocks = MovementSync.INSTANCE.getInventoryManager().findBlock() != -1;
         if (!hasBlocks) return edges;
         
         // Needs head space to jump/pillar

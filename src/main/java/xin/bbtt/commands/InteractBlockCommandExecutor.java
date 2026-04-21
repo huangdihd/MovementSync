@@ -20,21 +20,21 @@ public class InteractBlockCommandExecutor extends SubCommandExecutor {
                     int z = Integer.parseInt(args[2]);
                     Vector3i pos = Vector3i.from(x, y, z);
                     
-                    xin.bbtt.Block.BlockState state = MovementSync.Instance.getWorld().getBlockStateAt(new org.joml.Vector3d(x, y, z));
-                    org.geysermc.mcprotocollib.protocol.data.game.item.ItemStack held = MovementSync.Instance.getInventoryManager().getHeldItem();
+                    xin.bbtt.Block.BlockState state = MovementSync.INSTANCE.getWorld().getBlockStateAt(new org.joml.Vector3d(x, y, z));
+                    org.geysermc.mcprotocollib.protocol.data.game.item.ItemStack held = MovementSync.INSTANCE.getInventoryManager().getHeldItem();
                     double breakTicks = xin.bbtt.inventory.ToolUtils.calculateBreakTicks(held, state);
                     
                     if (breakTicks < 0) {
-                        MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.interactblock.dig.not_diggable", x, y, z));
+                        MovementSync.getLogger().info(LangManager.get("movementsync.command.interactblock.dig.not_diggable", x, y, z));
                         return;
                     }
                     
                     long estimatedTimeMs = (long)(Math.ceil(breakTicks) * 50);
-                    MovementSync.Instance.getMovementController().addMovement(new DigBlockMovement(pos));
-                    MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.interactblock.dig.started", 
+                    MovementSync.INSTANCE.getMovementController().addMovement(new DigBlockMovement(pos));
+                    MovementSync.getLogger().info(LangManager.get("movementsync.command.interactblock.dig.started", 
                         state.blockName(), x, y, z, estimatedTimeMs / 1000.0));
                 } catch (NumberFormatException e) {
-                    MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.common.usage", command.getUsage()));
+                    MovementSync.getLogger().info(LangManager.get("movementsync.command.common.usage", command.getUsage()));
                 }
             }
 
@@ -49,6 +49,6 @@ public class InteractBlockCommandExecutor extends SubCommandExecutor {
 
     @Override
     protected void onNoSubCommand(Command command, String label) {
-        MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.common.usage", command.getUsage()));
+        MovementSync.getLogger().info(LangManager.get("movementsync.command.common.usage", command.getUsage()));
     }
 }

@@ -29,9 +29,9 @@ public class InteractEntityMovement extends Movement {
     @Override
     public void onTick() {
         if (action == InteractAction.INTERACT_AT && target != null) {
-            Bot.Instance.getSession().send(new ServerboundInteractPacket(entityId, action, (float)target.x, (float)target.y, (float)target.z, Hand.MAIN_HAND, false));
+            Bot.INSTANCE.getSession().send(new ServerboundInteractPacket(entityId, action, (float)target.x, (float)target.y, (float)target.z, Hand.MAIN_HAND, false));
         } else {
-            Bot.Instance.getSession().send(new ServerboundInteractPacket(entityId, action, Hand.MAIN_HAND, false));
+            Bot.INSTANCE.getSession().send(new ServerboundInteractPacket(entityId, action, Hand.MAIN_HAND, false));
         }
         setFinished(true);
     }

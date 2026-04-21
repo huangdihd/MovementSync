@@ -15,7 +15,7 @@ public class WalkMovement extends Movement {
 
     @Override
     public void init() {
-        MovementSync.Instance.velocity.updateAndGet(p -> new Vector3d(p).add(velocity));
+        MovementSync.INSTANCE.velocity.updateAndGet(p -> new Vector3d(p).add(velocity));
     }
 
     @Override
@@ -30,6 +30,6 @@ public class WalkMovement extends Movement {
 
     @Override
     public void onStop() {
-        MovementSync.Instance.velocity.updateAndGet(p -> new Vector3d(p).sub(velocity));
+        MovementSync.INSTANCE.velocity.updateAndGet(p -> new Vector3d(p).sub(velocity));
     }
 }

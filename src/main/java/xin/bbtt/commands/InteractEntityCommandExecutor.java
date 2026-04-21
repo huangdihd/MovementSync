@@ -24,15 +24,15 @@ public class InteractEntityCommandExecutor extends SubCommandExecutor {
                     double x = Double.parseDouble(args[1]);
                     double y = Double.parseDouble(args[2]);
                     double z = Double.parseDouble(args[3]);
-                    MovementSync.Instance.getMovementController().addMovement(new InteractEntityMovement(id, InteractAction.INTERACT_AT, new org.joml.Vector3d(x, y, z)));
-                    MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.interactentity.success", InteractAction.INTERACT_AT, id));
+                    MovementSync.INSTANCE.getMovementController().addMovement(new InteractEntityMovement(id, InteractAction.INTERACT_AT, new org.joml.Vector3d(x, y, z)));
+                    MovementSync.getLogger().info(LangManager.get("movementsync.command.interactentity.success", InteractAction.INTERACT_AT, id));
                 } catch (Exception ignored) {}
             }
 
             @Override
             public java.util.List<String> onTabComplete(Command command, String label, String[] args) {
                 if (args.length == 1) {
-                    return MovementSync.Instance.getWorld().getEntities().keySet().stream().map(String::valueOf).filter(s -> s.startsWith(args[0])).collect(java.util.stream.Collectors.toList());
+                    return MovementSync.INSTANCE.getWorld().getEntities().keySet().stream().map(String::valueOf).filter(s -> s.startsWith(args[0])).collect(java.util.stream.Collectors.toList());
                 }
                 return java.util.Collections.emptyList();
             }
@@ -54,15 +54,15 @@ public class InteractEntityCommandExecutor extends SubCommandExecutor {
                 if (args.length < 1) return;
                 try {
                     int id = Integer.parseInt(args[0]);
-                    MovementSync.Instance.getMovementController().addMovement(new InteractEntityMovement(id, action));
-                    MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.interactentity.success", action, id));
+                    MovementSync.INSTANCE.getMovementController().addMovement(new InteractEntityMovement(id, action));
+                    MovementSync.getLogger().info(LangManager.get("movementsync.command.interactentity.success", action, id));
                 } catch (Exception ignored) {}
             }
 
             @Override
             public java.util.List<String> onTabComplete(Command command, String label, String[] args) {
                 if (args.length == 1) {
-                    return MovementSync.Instance.getWorld().getEntities().keySet().stream().map(String::valueOf).filter(s -> s.startsWith(args[0])).collect(java.util.stream.Collectors.toList());
+                    return MovementSync.INSTANCE.getWorld().getEntities().keySet().stream().map(String::valueOf).filter(s -> s.startsWith(args[0])).collect(java.util.stream.Collectors.toList());
                 }
                 return java.util.Collections.emptyList();
             }
@@ -78,6 +78,6 @@ public class InteractEntityCommandExecutor extends SubCommandExecutor {
 
     @Override
     protected void onNoSubCommand(Command command, String label) {
-        MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.common.usage", command.getUsage()));
+        MovementSync.getLogger().info(LangManager.get("movementsync.command.common.usage", command.getUsage()));
     }
 }

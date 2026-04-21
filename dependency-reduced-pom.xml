@@ -3,7 +3,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>xin.bbtt</groupId>
   <artifactId>MovementSync</artifactId>
-  <version>1.3.3-RELEASE</version>
+  <version>1.5.0-RELEASE</version>
   <build>
     <plugins>
       <plugin>

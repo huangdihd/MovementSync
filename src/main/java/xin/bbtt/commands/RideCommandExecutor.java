@@ -16,14 +16,14 @@ public class RideCommandExecutor extends SubCommandExecutor {
         registerSubCommand("dismount", new CommandExecutor() {
             @Override
             public void onCommand(Command command, String label, String[] args) {
-                if (MovementSync.Instance.isRiding()) {
-                    MovementSync.Instance.setRidingSneak(true);
-                    MovementSync.Instance.getLogger().info("Dismounting (sending sneak input)...");
+                if (MovementSync.INSTANCE.isRiding()) {
+                    MovementSync.INSTANCE.setRidingSneak(true);
+                    MovementSync.getLogger().info("Dismounting (sending sneak input)...");
                     // Reset sneak after a short delay or in next tick if needed, 
                     // but usually sending it once is enough to trigger the server-side dismount.
-                    MovementSync.Instance.movementService.schedule(() -> MovementSync.Instance.setRidingSneak(false), 200, java.util.concurrent.TimeUnit.MILLISECONDS);
+                    MovementSync.INSTANCE.movementService.schedule(() -> MovementSync.INSTANCE.setRidingSneak(false), 200, java.util.concurrent.TimeUnit.MILLISECONDS);
                 } else {
-                    MovementSync.Instance.getLogger().info("Not riding any entity.");
+                    MovementSync.getLogger().info("Not riding any entity.");
                 }
             }
         });
@@ -43,8 +43,8 @@ public class RideCommandExecutor extends SubCommandExecutor {
 
         try {
             int entityId = Integer.parseInt(args[0]);
-            MovementSync.Instance.getMovementController().addMovement(new InteractEntityMovement(entityId, InteractAction.INTERACT));
-            MovementSync.Instance.getLogger().info("Attempting to ride entity " + entityId);
+            MovementSync.INSTANCE.getMovementController().addMovement(new InteractEntityMovement(entityId, InteractAction.INTERACT));
+            MovementSync.getLogger().info("Attempting to ride entity " + entityId);
         } catch (NumberFormatException e) {
             onNoSubCommand(command, label);
         }
@@ -53,7 +53,7 @@ public class RideCommandExecutor extends SubCommandExecutor {
     @Override
     public List<String> onTabComplete(Command command, String label, String[] args) {
         if (args.length == 1) {
-            List<String> suggestions = MovementSync.Instance.getWorld().getEntities().keySet().stream()
+            List<String> suggestions = MovementSync.INSTANCE.getWorld().getEntities().keySet().stream()
                     .map(String::valueOf)
                     .filter(s -> s.startsWith(args[0]))
                     .collect(Collectors.toList());
@@ -67,6 +67,6 @@ public class RideCommandExecutor extends SubCommandExecutor {
 
     @Override
     protected void onNoSubCommand(Command command, String label) {
-        MovementSync.Instance.getLogger().info("Usage: " + command.getUsage());
+        MovementSync.getLogger().info("Usage: {}", command.getUsage());
     }
 }

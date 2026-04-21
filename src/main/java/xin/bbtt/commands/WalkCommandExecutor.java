@@ -22,17 +22,17 @@ public class WalkCommandExecutor extends TabExecutor {
         try {
             switch (args[0].toUpperCase()) {
                 case "FRONT" ->
-                        velocity = Direction.getUnitVectorByYaw(MovementSync.Instance.yaw.get()).mul(MovementSync.movementSpeed);
+                        velocity = Direction.getUnitVectorByYaw(MovementSync.INSTANCE.yaw.get()).mul(MovementSync.movementSpeed);
                 case "LEFT" -> {
                     Vector3d right = new Vector3d();
-                    Direction.getUnitVectorByYaw(MovementSync.Instance.yaw.get()).cross(Direction.UP.getUnitVector(), right).normalize();
+                    Direction.getUnitVectorByYaw(MovementSync.INSTANCE.yaw.get()).cross(Direction.UP.getUnitVector(), right).normalize();
                     velocity = right.negate().mul(MovementSync.movementSpeed);
                 }
                 case "BACK" ->
-                        velocity = Direction.getUnitVectorByYaw(MovementSync.Instance.yaw.get()).negate().mul(MovementSync.movementSpeed);
+                        velocity = Direction.getUnitVectorByYaw(MovementSync.INSTANCE.yaw.get()).negate().mul(MovementSync.movementSpeed);
                 case "RIGHT" -> {
                     Vector3d right = new Vector3d();
-                    Direction.getUnitVectorByYaw(MovementSync.Instance.yaw.get()).cross(Direction.UP.getUnitVector(), right).normalize();
+                    Direction.getUnitVectorByYaw(MovementSync.INSTANCE.yaw.get()).cross(Direction.UP.getUnitVector(), right).normalize();
                     velocity = right.mul(MovementSync.movementSpeed);
                 }
                 default -> {
@@ -42,7 +42,7 @@ public class WalkCommandExecutor extends TabExecutor {
                 }
             }
             long time = Long.parseLong(args[1]);
-            MovementSync.Instance.getMovementController().addMovement(new WalkMovement(velocity, time));
+            MovementSync.INSTANCE.getMovementController().addMovement(new WalkMovement(velocity, time));
         } catch (Exception ignored) {}
     }
 

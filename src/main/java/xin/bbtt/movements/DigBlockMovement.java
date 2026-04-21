@@ -25,8 +25,8 @@ public class DigBlockMovement extends Movement {
 
     @Override
     public void init() {
-        BlockState state = MovementSync.Instance.getWorld().getBlockStateAt(new Vector3d(pos.getX(), pos.getY(), pos.getZ()));
-        ItemStack held = MovementSync.Instance.getInventoryManager().getHeldItem();
+        BlockState state = MovementSync.INSTANCE.getWorld().getBlockStateAt(new Vector3d(pos.getX(), pos.getY(), pos.getZ()));
+        ItemStack held = MovementSync.INSTANCE.getInventoryManager().getHeldItem();
         
         double breakTicks = ToolUtils.calculateBreakTicks(held, state);
         if (breakTicks < 0) {
@@ -37,7 +37,7 @@ public class DigBlockMovement extends Movement {
         this.breakTime = (long)(Math.ceil(breakTicks) * 50);
 
         // Determine side based on bot position
-        Vector3d head = MovementSync.Instance.getHeadPosition();
+        Vector3d head = MovementSync.INSTANCE.getHeadPosition();
         double dx = head.x - (pos.getX() + 0.5);
         double dy = head.y - (pos.getY() + 0.5);
         double dz = head.z - (pos.getZ() + 0.5);
@@ -54,8 +54,8 @@ public class DigBlockMovement extends Movement {
     @Override
     public void onTick() {
         if (!started) {
-            MovementSync.Instance.getLogger().info(xin.bbtt.mcbot.LangManager.get("movementsync.movement.digging.start", pos.getX(), pos.getY(), pos.getZ(), breakTime));
-            Bot.Instance.getSession().send(new ServerboundPlayerActionPacket(PlayerAction.START_DIGGING, pos, side, Bot.Instance.getAndIncreaseSequence()));
+            MovementSync.getLogger().info(xin.bbtt.mcbot.LangManager.get("movementsync.movement.digging.start", pos.getX(), pos.getY(), pos.getZ(), breakTime));
+            Bot.INSTANCE.getSession().send(new ServerboundPlayerActionPacket(PlayerAction.START_DIGGING, pos, side, Bot.INSTANCE.getAndIncreaseSequence()));
             startTime = System.currentTimeMillis();
             started = true;
             
@@ -71,9 +71,9 @@ public class DigBlockMovement extends Movement {
     }
 
     private void finishDigging() {
-        Bot.Instance.getSession().send(new ServerboundPlayerActionPacket(PlayerAction.FINISH_DIGGING, pos, side, Bot.Instance.getAndIncreaseSequence()));
+        Bot.INSTANCE.getSession().send(new ServerboundPlayerActionPacket(PlayerAction.FINISH_DIGGING, pos, side, Bot.INSTANCE.getAndIncreaseSequence()));
         setFinished(true);
-        MovementSync.Instance.getLogger().info(xin.bbtt.mcbot.LangManager.get("movementsync.movement.digging.finished"));
+        MovementSync.getLogger().info(xin.bbtt.mcbot.LangManager.get("movementsync.movement.digging.finished"));
     }
 
     @Override
@@ -84,7 +84,7 @@ public class DigBlockMovement extends Movement {
     @Override
     public void onStop() {
         if (started && !isFinished()) {
-            Bot.Instance.getSession().send(new ServerboundPlayerActionPacket(PlayerAction.CANCEL_DIGGING, pos, side, Bot.Instance.getAndIncreaseSequence()));
+            Bot.INSTANCE.getSession().send(new ServerboundPlayerActionPacket(PlayerAction.CANCEL_DIGGING, pos, side, Bot.INSTANCE.getAndIncreaseSequence()));
         }
     }
 }

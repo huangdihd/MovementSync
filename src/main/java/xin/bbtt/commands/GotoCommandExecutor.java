@@ -16,7 +16,7 @@ public class GotoCommandExecutor extends TabHighlightExecutor {
     @Override
     public void onCommand(Command command, String label, String[] args) {
         if (args.length < 3) {
-            MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.common.usage", command.getUsage()));
+            MovementSync.getLogger().info(LangManager.get("movementsync.command.common.usage", command.getUsage()));
             return;
         }
 
@@ -25,20 +25,20 @@ public class GotoCommandExecutor extends TabHighlightExecutor {
             int ty = Integer.parseInt(args[1]);
             int tz = Integer.parseInt(args[2]);
 
-            Vector3d currentPos = MovementSync.Instance.position.get();
+            Vector3d currentPos = MovementSync.INSTANCE.position.get();
             Node start = new Node((int)Math.floor(currentPos.x), (int)Math.floor(currentPos.y), (int)Math.floor(currentPos.z));
             Node goal = new Node(tx, ty, tz);
 
-            if (MovementSync.Instance.getWorld().chunkLoaded(tx >> 4, tz >> 4)) {
-                if (!MovementSync.Instance.getWorld().getBlockStateAt(new Vector3d(tx, ty - 1, tz)).isSolid()) {
-                    MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.goto.invalid_goal"));
+            if (MovementSync.INSTANCE.getWorld().chunkLoaded(tx >> 4, tz >> 4)) {
+                if (!MovementSync.INSTANCE.getWorld().getBlockStateAt(new Vector3d(tx, ty - 1, tz)).isSolid()) {
+                    MovementSync.getLogger().info(LangManager.get("movementsync.command.goto.invalid_goal"));
                     return;
                 }
             }
 
-            MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.goto.searching", tx, ty, tz));
+            MovementSync.getLogger().info(LangManager.get("movementsync.command.goto.searching", tx, ty, tz));
 
-            DStarLite pathfinder = new DStarLite(start, goal, MovementSync.Instance.getWorld());
+            DStarLite pathfinder = new DStarLite(start, goal, MovementSync.INSTANCE.getWorld());
             List<Node> path = pathfinder.findPath(5000);
 
             if (path.size() <= 1) {
@@ -46,13 +46,13 @@ public class GotoCommandExecutor extends TabHighlightExecutor {
                 return;
             }
 
-            MovementSync.Instance.setActiveGoal(new org.joml.Vector3i(tx, ty, tz));
-            MovementSync.Instance.getMovementController().addMovement(new PathMovement(path));
+            MovementSync.INSTANCE.setActiveGoal(new org.joml.Vector3i(tx, ty, tz));
+            MovementSync.INSTANCE.getMovementController().addMovement(new PathMovement(path));
 
         } catch (NumberFormatException e) {
-            MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.common.usage", command.getUsage()));
+            MovementSync.getLogger().info(LangManager.get("movementsync.command.common.usage", command.getUsage()));
         } catch (Exception e) {
-            MovementSync.Instance.getLogger().error("Error during pathfinding", e);
+            MovementSync.getLogger().error("Error during pathfinding", e);
         }
     }
 

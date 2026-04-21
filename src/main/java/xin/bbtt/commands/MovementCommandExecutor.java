@@ -11,44 +11,44 @@ public class MovementCommandExecutor extends SubCommandExecutor {
         registerSubCommand("pause", new CommandExecutor() {
             @Override
             public void onCommand(Command command, String label, String[] args) {
-                MovementSync.Instance.getMovementController().pause();
-                MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.movement.paused"));
+                MovementSync.INSTANCE.getMovementController().pause();
+                MovementSync.getLogger().info(LangManager.get("movementsync.command.movement.paused"));
             }
         });
 
         registerSubCommand("resume", new CommandExecutor() {
             @Override
             public void onCommand(Command command, String label, String[] args) {
-                MovementSync.Instance.getMovementController().resume();
-                MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.movement.resumed"));
+                MovementSync.INSTANCE.getMovementController().resume();
+                MovementSync.getLogger().info(LangManager.get("movementsync.command.movement.resumed"));
             }
         });
 
         registerSubCommand("cancel", new CommandExecutor() {
             @Override
             public void onCommand(Command command, String label, String[] args) {
-                MovementSync.Instance.getMovementController().cancelAll();
-                MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.movement.cancelled"));
+                MovementSync.INSTANCE.getMovementController().cancelAll();
+                MovementSync.getLogger().info(LangManager.get("movementsync.command.movement.cancelled"));
             }
         });
 
         registerSubCommand("cancel_current", new CommandExecutor() {
             @Override
             public void onCommand(Command command, String label, String[] args) {
-                MovementSync.Instance.getMovementController().finishCurrentMovement();
-                MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.movement.cancel_current"));
+                MovementSync.INSTANCE.getMovementController().finishCurrentMovement();
+                MovementSync.getLogger().info(LangManager.get("movementsync.command.movement.cancel_current"));
             }
         });
 
         registerSubCommand("list", new CommandExecutor() {
             @Override
             public void onCommand(Command command, String label, String[] args) {
-                java.util.List<xin.bbtt.movement.Movement> list = MovementSync.Instance.getMovementController().getMovements();
-                xin.bbtt.movement.Movement current = MovementSync.Instance.getMovementController().getCurrentMovement();
-                MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.movement.list.current", current != null ? current.getClass().getSimpleName() : "None"));
-                MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.movement.list.queue", list.size()));
+                java.util.List<xin.bbtt.movement.Movement> list = MovementSync.INSTANCE.getMovementController().getMovements();
+                xin.bbtt.movement.Movement current = MovementSync.INSTANCE.getMovementController().getCurrentMovement();
+                MovementSync.getLogger().info(LangManager.get("movementsync.command.movement.list.current", current != null ? current.getClass().getSimpleName() : "None"));
+                MovementSync.getLogger().info(LangManager.get("movementsync.command.movement.list.queue", list.size()));
                 for (int i = 0; i < list.size(); i++) {
-                    MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.movement.list.entry", i, list.get(i).getClass().getSimpleName()));
+                    MovementSync.getLogger().info(LangManager.get("movementsync.command.movement.list.entry", i, list.get(i).getClass().getSimpleName()));
                 }
             }
         });
@@ -57,26 +57,26 @@ public class MovementCommandExecutor extends SubCommandExecutor {
             @Override
             public void onCommand(Command command, String label, String[] args) {
                 if (args.length < 1) {
-                    MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.common.usage", "movement remove <index>"));
+                    MovementSync.getLogger().info(LangManager.get("movementsync.command.common.usage", "movement remove <index>"));
                     return;
                 }
                 try {
                     int index = Integer.parseInt(args[0]);
-                    boolean removed = MovementSync.Instance.getMovementController().removeMovement(index);
+                    boolean removed = MovementSync.INSTANCE.getMovementController().removeMovement(index);
                     if (removed) {
-                        MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.movement.remove.success", index));
+                        MovementSync.getLogger().info(LangManager.get("movementsync.command.movement.remove.success", index));
                     } else {
-                        MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.movement.remove.invalid"));
+                        MovementSync.getLogger().info(LangManager.get("movementsync.command.movement.remove.invalid"));
                     }
                 } catch (NumberFormatException e) {
-                    MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.movement.remove.format"));
+                    MovementSync.getLogger().info(LangManager.get("movementsync.command.movement.remove.format"));
                 }
             }
 
             @Override
             public java.util.List<String> onTabComplete(Command command, String label, String[] args) {
                 if (args.length == 1) {
-                    int size = MovementSync.Instance.getMovementController().getMovements().size();
+                    int size = MovementSync.INSTANCE.getMovementController().getMovements().size();
                     java.util.List<String> list = new java.util.ArrayList<>();
                     for (int i = 0; i < size; i++) {
                         list.add(String.valueOf(i));
@@ -99,6 +99,6 @@ public class MovementCommandExecutor extends SubCommandExecutor {
 
     @Override
     protected void onNoSubCommand(Command command, String label) {
-        MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.common.usage", command.getUsage()));
+        MovementSync.getLogger().info(LangManager.get("movementsync.command.common.usage", command.getUsage()));
     }
 }

@@ -58,7 +58,7 @@ public class DStarLite {
             
             if (curr.equals(goal)) {
                 List<Node> path = reconstructPath(cameFrom, curr);
-                xin.bbtt.MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.goto.success", path.size(), iterations, System.currentTimeMillis() - startTime));
+                xin.bbtt.MovementSync.getLogger().info(LangManager.get("movementsync.command.goto.success", path.size(), iterations, System.currentTimeMillis() - startTime));
                 return path;
             }
             
@@ -80,7 +80,7 @@ public class DStarLite {
             }
         }
         
-        xin.bbtt.MovementSync.Instance.getLogger().warn(LangManager.get("movementsync.command.goto.not_found", goal.x, goal.y, goal.z, iterations));
+        xin.bbtt.MovementSync.getLogger().warn(LangManager.get("movementsync.command.goto.not_found", goal.x, goal.y, goal.z, iterations));
         if (!bestNode.equals(start)) return reconstructPath(cameFrom, bestNode);
         return new ArrayList<>();
     }

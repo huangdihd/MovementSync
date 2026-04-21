@@ -12,17 +12,17 @@ public class ContainerCommandExecutor extends SubCommandExecutor {
         registerSubCommand("list", new CommandExecutor() {
             @Override
             public void onCommand(Command command, String label, String[] args) {
-                int containerId = MovementSync.Instance.getInventoryManager().getCurrentContainerId();
-                ItemStack[] items = MovementSync.Instance.getInventoryManager().getOpenContainer();
-                if (items == null || containerId == 0) {
-                    MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.container.no_open"));
+                int containerId = MovementSync.INSTANCE.getInventoryManager().getCurrentContainerId();
+                ItemStack[] items = MovementSync.INSTANCE.getInventoryManager().getOpenContainer();
+                if (items == null) {
+                    MovementSync.getLogger().info(LangManager.get("movementsync.command.container.no_open"));
                     return;
                 }
-                MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.container.header", containerId));
+                MovementSync.getLogger().info(LangManager.get("movementsync.command.container.header", containerId));
                 for (int i = 0; i < items.length; i++) {
                     ItemStack item = items[i];
-                    if (item != null && item.getId() != 0) {
-                        MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.inventory.entry", i, item.getId(), item.getAmount()));
+                    if (item != null) {
+                        MovementSync.getLogger().info(LangManager.get("movementsync.command.inventory.entry", i, item.getId(), item.getAmount()));
                     }
                 }
             }

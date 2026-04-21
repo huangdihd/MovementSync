@@ -22,7 +22,7 @@ public class LookAtMovement extends Movement {
 
     public LookAtMovement(Vector3d target) {
         this.target = target;
-        Vector3d delta = new Vector3d(target).sub(MovementSync.Instance.getHeadPosition());
+        Vector3d delta = new Vector3d(target).sub(MovementSync.INSTANCE.getHeadPosition());
 
         double dx = delta.x;
         double dy = delta.y;
@@ -34,8 +34,8 @@ public class LookAtMovement extends Movement {
 
     @Override
     public void init() {
-        float dy = wrapDegrees(targetYaw - MovementSync.Instance.yaw.get());
-        float dp = wrapDegrees(targetPitch - MovementSync.Instance.pitch.get());
+        float dy = wrapDegrees(targetYaw - MovementSync.INSTANCE.yaw.get());
+        float dp = wrapDegrees(targetPitch - MovementSync.INSTANCE.pitch.get());
         this.time = (long) (Math.sqrt(dy * dy + dp * dp) / 90 * 1000);
         if (this.time <= 0) this.time = 1; // To avoid divide 0
         this.vy = dy / this.time * 50;
@@ -45,8 +45,8 @@ public class LookAtMovement extends Movement {
 
     @Override
     public void onTick() {
-        MovementSync.Instance.yaw.updateAndGet(yaw -> yaw + this.vy);
-        MovementSync.Instance.pitch.updateAndGet(pitch -> pitch + this.vp);
+        MovementSync.INSTANCE.yaw.updateAndGet(yaw -> yaw + this.vy);
+        MovementSync.INSTANCE.pitch.updateAndGet(pitch -> pitch + this.vp);
     }
 
     @Override
@@ -56,7 +56,7 @@ public class LookAtMovement extends Movement {
 
     @Override
     public void onStop() {
-        MovementSync.Instance.yaw.set(targetYaw);
-        MovementSync.Instance.pitch.set(targetPitch);
+        MovementSync.INSTANCE.yaw.set(targetYaw);
+        MovementSync.INSTANCE.pitch.set(targetPitch);
     }
 }

@@ -13,7 +13,7 @@ public class EntityPacketListener implements Listener {
 
     @EventHandler
     public void OnAddEntities(ReceivePacketEvent<ClientboundAddEntityPacket> receivePacketEvent) {
-        MovementSync.Instance.getWorld().handleAddEntityPacket(receivePacketEvent.getPacket());
+        MovementSync.INSTANCE.getWorld().handleAddEntityPacket(receivePacketEvent.getPacket());
     }
 
     @EventHandler
@@ -21,51 +21,51 @@ public class EntityPacketListener implements Listener {
         ClientboundSetPassengersPacket packet = event.getPacket();
         boolean isPassenger = false;
         for (int passengerId : packet.getPassengerIds()) {
-            if (passengerId == MovementSync.Instance.entityId) {
+            if (passengerId == MovementSync.INSTANCE.entityId) {
                 isPassenger = true;
                 break;
             }
         }
 
         if (isPassenger) {
-            MovementSync.Instance.setVehicleId(packet.getEntityId());
-        } else if (MovementSync.Instance.getVehicleId() == packet.getEntityId()) {
+            MovementSync.INSTANCE.setVehicleId(packet.getEntityId());
+        } else if (MovementSync.INSTANCE.getVehicleId() == packet.getEntityId()) {
             // If we were riding this entity but are no longer in the passenger list
-            MovementSync.Instance.setVehicleId(-1);
+            MovementSync.INSTANCE.setVehicleId(-1);
         }
     }
 
     @EventHandler
     public void OnMoveEntityPosition(ReceivePacketEvent<ClientboundMoveEntityPosPacket> receivePacketEvent) {
-        MovementSync.Instance.getWorld().handleMoveEntityPosPacket(receivePacketEvent.getPacket());
+        MovementSync.INSTANCE.getWorld().handleMoveEntityPosPacket(receivePacketEvent.getPacket());
     }
 
     @EventHandler
     public void OnMoveEntityRotation(ReceivePacketEvent<ClientboundMoveEntityRotPacket> receivePacketEvent) {
-        MovementSync.Instance.getWorld().handleMoveEntityRotPacket(receivePacketEvent.getPacket());
+        MovementSync.INSTANCE.getWorld().handleMoveEntityRotPacket(receivePacketEvent.getPacket());
     }
 
     @EventHandler
     public void OnMoveEntityPositronRotation(ReceivePacketEvent<ClientboundMoveEntityPosRotPacket> receivePacketEvent) {
-        MovementSync.Instance.getWorld().handleMoveEntityPosRotPacket(receivePacketEvent.getPacket());
+        MovementSync.INSTANCE.getWorld().handleMoveEntityPosRotPacket(receivePacketEvent.getPacket());
     }
 
     @EventHandler
     public void OnMoveEntityRotateHead(ReceivePacketEvent<ClientboundRotateHeadPacket> receivePacketEvent) {
-        MovementSync.Instance.getWorld().handleRotateHeadPacket(receivePacketEvent.getPacket());
+        MovementSync.INSTANCE.getWorld().handleRotateHeadPacket(receivePacketEvent.getPacket());
     }
 
     @EventHandler
     public void OnRemoveEntity(ReceivePacketEvent<ClientboundRemoveEntitiesPacket> receivePacketEvent) {
-        MovementSync.Instance.getWorld().handleRemoveEntitiesPacket(receivePacketEvent.getPacket());
+        MovementSync.INSTANCE.getWorld().handleRemoveEntitiesPacket(receivePacketEvent.getPacket());
     }
 
     @EventHandler
     public void OnSetEntityMetadata(ReceivePacketEvent<ClientboundSetEntityDataPacket> receivePacketEvent) {
         ClientboundSetEntityDataPacket packet = receivePacketEvent.getPacket();
-        MovementSync.Instance.getWorld().handleSetEntityMetadataPacket(packet);
+        MovementSync.INSTANCE.getWorld().handleSetEntityMetadataPacket(packet);
 
-        if (packet.getEntityId() == MovementSync.Instance.entityId) {
+        if (packet.getEntityId() == MovementSync.INSTANCE.entityId) {
             EntityRegistry.EntityEntry registryEntry = EntityRegistry.Instance.getEntity("PLAYER");
             if (registryEntry != null && registryEntry.getMetadataKeys() != null) {
                 List<String> keys = registryEntry.getMetadataKeys();
@@ -74,7 +74,7 @@ public class EntityPacketListener implements Listener {
                     if (id < keys.size()) {
                         String key = keys.get(id);
                         Object value = entry.getValue();
-                        MovementSync.Instance.getSelfMetadata().put(key, value);
+                        MovementSync.INSTANCE.getSelfMetadata().put(key, value);
                     }
                 }
             }

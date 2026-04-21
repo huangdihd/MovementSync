@@ -57,7 +57,7 @@ public class InventoryManager {
     public void switchToSlot(int slot) {
         if (slot < 0 || slot > 8) return;
         if (heldSlot == slot) return;
-        xin.bbtt.mcbot.Bot.Instance.getSession().send(new org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundSetCarriedItemPacket(slot));
+        xin.bbtt.mcbot.Bot.INSTANCE.getSession().send(new org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundSetCarriedItemPacket(slot));
         heldSlot = slot;
     }
 

@@ -12,24 +12,24 @@ public class FollowCommandExecutor extends TabHighlightExecutor {
     @Override
     public void onCommand(Command command, String label, String[] args) {
         if (args.length < 1) {
-            MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.common.usage", command.getUsage()));
+            MovementSync.getLogger().info(LangManager.get("movementsync.command.common.usage", command.getUsage()));
             return;
         }
 
         try {
             int entityId = Integer.parseInt(args[0]);
-            MovementSync.Instance.setFollowTargetId(entityId);
-            MovementSync.Instance.triggerAutoRepath();
-            MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.follow.success", entityId));
+            MovementSync.INSTANCE.setFollowTargetId(entityId);
+            MovementSync.INSTANCE.triggerAutoRepath();
+            MovementSync.getLogger().info(LangManager.get("movementsync.command.follow.success", entityId));
         } catch (NumberFormatException e) {
-            MovementSync.Instance.getLogger().info(LangManager.get("movementsync.command.common.usage", command.getUsage()));
+            MovementSync.getLogger().info(LangManager.get("movementsync.command.common.usage", command.getUsage()));
         }
     }
 
     @Override
     public List<String> onTabComplete(Command command, String label, String[] args) {
         if (args.length == 1) {
-            return MovementSync.Instance.getWorld().getEntities().keySet().stream()
+            return MovementSync.INSTANCE.getWorld().getEntities().keySet().stream()
                     .map(String::valueOf)
                     .filter(s -> s.startsWith(args[0]))
                     .collect(Collectors.toList());
