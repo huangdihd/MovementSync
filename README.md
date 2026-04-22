@@ -40,13 +40,24 @@ English / [简体中文](README_CN.md)
 
 ## Commands
 
-| Command   | Description |
+| Command | Description |
 |-----------|-------------|
-| `whereami` | Shows the server and current coordinates of the bot |
-| `block`    | Returns the block at a specific coordinate |
-| `jump`     | Makes the bot jump |
-| `look`     | Makes the bot look at a specific coordinate |
-| `walk`     | Makes the bot walk |
+| `whereami` | Show current position and rotation |
+| `jump` | Perform a jump |
+| `getblockat` | Get block info at a coordinate |
+| `walk` | Walk in a direction for a duration |
+| `lookat` | Look at a coordinate |
+| `movement` | Control the MovementController (pause/resume/cancel) |
+| `entities` | List entities in the world |
+| `interactblock` | Interact with a block |
+| `interactentity` | Interact with an entity |
+| `inventory` | Show inventory |
+| `container` | Show current container content |
+| `ispassable` | Check if a block is passable |
+| `lookatentity` | Look at an entity by ID |
+| `goto` | Pathfind to a coordinate |
+| `follow` | Follow an entity by ID |
+| `ride` | Ride an entity or dismount |
 
 ---
 
