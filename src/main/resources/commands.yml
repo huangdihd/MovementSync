@@ -1,3 +1,8 @@
+cansee:
+  description: "movementsync.command.cansee.description"
+  usage: "movementsync.command.cansee.usage"
+  aliases: ["cansee"]
+  executor: "xin.bbtt.commands.CanSeeCommandExecutor"
 whereami:
   description: "movementsync.command.whereami.description"
   usage: "movementsync.command.whereami.usage"
