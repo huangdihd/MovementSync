@@ -268,4 +268,85 @@ public class World {
     public boolean isSolid(Vector3d position) {
         return getBlockStateAt(position).isSolid();
     }
+
+    /**
+     * Determines if there is a clear line of sight from start to end using a 3D DDA algorithm.
+     * This implementation checks if any solid block is intersected by the ray before reaching the end point.
+     * @param start The starting point (e.g., bot's eye position).
+     * @param end The ending point.
+     * @return true if the line of sight is clear, false if obstructed by a solid block.
+     */
+    public boolean canSee(Vector3d start, Vector3d end) {
+        if (start.equals(end)) return true;
+
+        // Current voxel coordinates
+        int x = (int) Math.floor(start.x);
+        int y = (int) Math.floor(start.y);
+        int z = (int) Math.floor(start.z);
+
+        // If starting in a solid block, we can only see points within the same block.
+        if (isSolid(new Vector3d(x, y, z))) {
+            return (int) Math.floor(end.x) == x && (int) Math.floor(end.y) == y && (int) Math.floor(end.z) == z;
+        }
+
+        double dx = end.x - start.x;
+        double dy = end.y - start.y;
+        double dz = end.z - start.z;
+
+        int stepX = dx > 0 ? 1 : (dx < 0 ? -1 : 0);
+        int stepY = dy > 0 ? 1 : (dy < 0 ? -1 : 0);
+        int stepZ = dz > 0 ? 1 : (dz < 0 ? -1 : 0);
+
+        // tMax is the distance to the next voxel boundary in each direction, 
+        // expressed as a fraction of the total ray length (0.0 to 1.0).
+        double tMaxX = (dx == 0) ? Double.POSITIVE_INFINITY : ((stepX > 0 ? x + 1.0 - start.x : start.x - x) / Math.abs(dx));
+        double tMaxY = (dy == 0) ? Double.POSITIVE_INFINITY : ((stepY > 0 ? y + 1.0 - start.y : start.y - y) / Math.abs(dy));
+        double tMaxZ = (dz == 0) ? Double.POSITIVE_INFINITY : ((stepZ > 0 ? z + 1.0 - start.z : start.z - z) / Math.abs(dz));
+
+        double tDeltaX = (dx == 0) ? Double.POSITIVE_INFINITY : (1.0 / Math.abs(dx));
+        double tDeltaY = (dy == 0) ? Double.POSITIVE_INFINITY : (1.0 / Math.abs(dy));
+        double tDeltaZ = (dz == 0) ? Double.POSITIVE_INFINITY : (1.0 / Math.abs(dz));
+
+        // Iterate until we reach the target or hit a wall
+        for (int i = 0; i < 1000; i++) {
+            // Find the closest boundary
+            double tNext = Math.min(tMaxX, Math.min(tMaxY, tMaxZ));
+
+            // If the next boundary is at or beyond the end of our segment (t >= 1.0),
+            // it means we've reached the target point without hitting any new block.
+            if (tNext >= 1.0 - 1e-9) {
+                return true;
+            }
+
+            // Move to the next voxel
+            if (tMaxX == tNext) {
+                x += stepX;
+                tMaxX += tDeltaX;
+            } else if (tMaxY == tNext) {
+                y += stepY;
+                tMaxY += tDeltaY;
+            } else {
+                z += stepZ;
+                tMaxZ += tDeltaZ;
+            }
+
+            // Check if the voxel we just entered is solid.
+            // Since tNext < 1.0, this block is definitely between start and end.
+            if (isSolid(new Vector3d(x, y, z))) {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Determines if the bot can see a specific block.
+     * @param start The bot's eye position.
+     * @param targetBlock The block to check visibility for.
+     * @return true if the block is visible, false otherwise.
+     */
+    public boolean canSeeBlock(Vector3d start, Vector3i targetBlock) {
+        Vector3d end = new Vector3d(targetBlock.x + 0.5, targetBlock.y + 0.5, targetBlock.z + 0.5);
+        return canSee(start, end);
+    }
 }
