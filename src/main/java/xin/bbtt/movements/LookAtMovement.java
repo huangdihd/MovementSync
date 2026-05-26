@@ -4,11 +4,10 @@ import org.joml.Vector3d;
 import xin.bbtt.MovementSync;
 import xin.bbtt.movement.Movement;
 
-
 public class LookAtMovement extends Movement {
     public final Vector3d target;
-    public final float targetYaw;
-    public final float targetPitch;
+    public float targetYaw;
+    public float targetPitch;
     public float vy, vp;
     private long time = 0;
 
@@ -19,29 +18,30 @@ public class LookAtMovement extends Movement {
         return deg;
     }
 
-
     public LookAtMovement(Vector3d target) {
         this.target = target;
+    }
+
+    @Override
+    public void init() {
         Vector3d delta = new Vector3d(target).sub(MovementSync.INSTANCE.getHeadPosition());
 
         double dx = delta.x;
         double dy = delta.y;
         double dz = delta.z;
 
-        targetYaw = (float) Math.toDegrees(Math.atan2(dz, dx)) - 90;
-        targetPitch = (float) Math.toDegrees(-Math.atan2(dy, Math.sqrt(dx * dx + dz * dz)));
-    }
+        this.targetYaw = wrapDegrees((float) Math.toDegrees(Math.atan2(dz, dx)) - 90);
+        this.targetPitch = wrapDegrees((float) Math.toDegrees(-Math.atan2(dy, Math.sqrt(dx * dx + dz * dz))));
 
-    @Override
-    public void init() {
-        float dy = wrapDegrees(targetYaw - MovementSync.INSTANCE.yaw.get());
-        float dp = wrapDegrees(targetPitch - MovementSync.INSTANCE.pitch.get());
-        this.time = (long) (Math.sqrt(dy * dy + dp * dp) / 90 * 1000);
+        float dYaw = wrapDegrees(targetYaw - MovementSync.INSTANCE.yaw.get());
+        float dPitch = wrapDegrees(targetPitch - MovementSync.INSTANCE.pitch.get());
+
+        this.time = (long) (Math.sqrt(dYaw * dYaw + dPitch * dPitch) / 90 * 1000);
         if (this.time <= 0) this.time = 1; // To avoid divide 0
-        this.vy = dy / this.time * 50;
-        this.vp = dp / this.time * 50;
-    }
 
+        this.vy = dYaw / this.time * 50;
+        this.vp = dPitch / this.time * 50;
+    }
 
     @Override
     public void onTick() {
