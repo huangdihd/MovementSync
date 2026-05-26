@@ -85,3 +85,10 @@ movementsync.command.follow.description=通过 ID 跟随实体
 movementsync.command.follow.usage=follow <entityId>
 movementsync.command.ride.description=骑乘实体或下车
 movementsync.command.ride.usage=ride <entityId> | ride dismount
+
+movementsync.command.cansee.description=检查从机器人头部位置是否可见某个点
+movementsync.command.cansee.usage=cansee <x> <y> <z>
+movementsync.command.cansee.checking=正在检查从 %s 到 %s 的可见性...
+movementsync.command.cansee.visible=机器人可以看到坐标 (%.2f, %.2f, %.2f) 处的点
+movementsync.command.cansee.not_visible=机器人无法看到坐标 (%.2f, %.2f, %.2f) 处的点
+movementsync.command.cansee.invalid=无效的坐标。

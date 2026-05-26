@@ -85,3 +85,10 @@ movementsync.command.follow.description=Follow an entity by ID
 movementsync.command.follow.usage=follow <entityId>
 movementsync.command.ride.description=Ride an entity or dismount
 movementsync.command.ride.usage=ride <entityId> | ride dismount
+
+movementsync.command.cansee.description=Check if a point is visible from the bot's head position
+movementsync.command.cansee.usage=cansee <x> <y> <z>
+movementsync.command.cansee.checking=Checking visibility from %s to %s...
+movementsync.command.cansee.visible=The bot can see the point at (%.2f, %.2f, %.2f)
+movementsync.command.cansee.not_visible=The bot CANNOT see the point at (%.2f, %.2f, %.2f)
+movementsync.command.cansee.invalid=Invalid coordinates.

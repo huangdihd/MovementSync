@@ -5,6 +5,7 @@ import org.joml.Vector3d;
 import xin.bbtt.MovementSync;
 import xin.bbtt.mcbot.command.Command;
 import xin.bbtt.mcbot.command.TabHighlightExecutor;
+import xin.bbtt.mcbot.LangManager;
 
 import java.util.List;
 
@@ -12,7 +13,7 @@ public class CanSeeCommandExecutor extends TabHighlightExecutor {
     @Override
     public void onCommand(Command command, String label, String[] args) {
         if (args.length != 3) {
-            MovementSync.getLogger().info("Usage: cansee <x> <y> <z> (supports floating point)");
+            MovementSync.getLogger().info(LangManager.get("movementsync.command.common.usage", LangManager.get("movementsync.command.cansee.usage")));
             return;
         }
         try {
@@ -23,16 +24,16 @@ public class CanSeeCommandExecutor extends TabHighlightExecutor {
             Vector3d headPos = MovementSync.INSTANCE.getHeadPosition();
             Vector3d target = new Vector3d(x, y, z);
             
-            MovementSync.getLogger().info("Checking visibility from {} to {}...", headPos, target);
+            MovementSync.getLogger().info(LangManager.get("movementsync.command.cansee.checking", headPos.toString(), target.toString()));
             
             boolean canSee = MovementSync.INSTANCE.getWorld().canSee(headPos, target);
             if (canSee) {
-                MovementSync.getLogger().info("The bot can see the point at ({}, {}, {})", x, y, z);
+                MovementSync.getLogger().info(LangManager.get("movementsync.command.cansee.visible", x, y, z));
             } else {
-                MovementSync.getLogger().info("The bot CANNOT see the point at ({}, {}, {})", x, y, z);
+                MovementSync.getLogger().info(LangManager.get("movementsync.command.cansee.not_visible", x, y, z));
             }
         } catch (NumberFormatException e) {
-            MovementSync.getLogger().info("Invalid coordinates.");
+            MovementSync.getLogger().info(LangManager.get("movementsync.command.cansee.invalid"));
         }
     }
 
