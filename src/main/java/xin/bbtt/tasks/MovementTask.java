@@ -5,7 +5,7 @@ import xin.bbtt.movement.Movement;
 import xin.bbtt.movement.MovementController;
 
 public class MovementTask implements Runnable {
-    public Movement movement;
+    private final Movement movement;
     private final MovementController controller;
     private int elapsedTicks = 0;
 

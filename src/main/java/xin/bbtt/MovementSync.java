@@ -77,7 +77,10 @@ public class MovementSync implements Plugin {
         try {
             LangManager.loadFromStream(getClass().getResourceAsStream("/zh_cn.lang"));
             LangManager.loadFromStream(getClass().getResourceAsStream("/en_us.lang"));
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            // Lang not yet loaded, so log in plain text rather than via a lang key.
+            getLogger().warn("Failed to load language files; falling back to message keys", e);
+        }
         
         getLogger().info(LangManager.get("movementsync.plugin.loading"));
     }
@@ -96,6 +99,7 @@ public class MovementSync implements Plugin {
         yaw.set(0f);
 
         Bot.INSTANCE.addPacketListener(new TeleportPacketListener(), this);
+        Bot.INSTANCE.addPacketListener(new LoginPacketListener(), this);
         Bot.INSTANCE.addPacketListener(new EntityIdRecorder(), this);
         Bot.INSTANCE.addPacketListener(new RespawnPacketListener(), this);
         Bot.INSTANCE.addPacketListener(new ChunkDataListener(), this);

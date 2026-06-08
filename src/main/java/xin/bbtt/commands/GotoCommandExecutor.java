@@ -9,6 +9,7 @@ import xin.bbtt.mcbot.LangManager;
 import xin.bbtt.pathfinding.DStarLite;
 import xin.bbtt.pathfinding.Node;
 import xin.bbtt.movements.PathMovement;
+import xin.bbtt.world.World;
 
 import java.util.List;
 
@@ -24,6 +25,11 @@ public class GotoCommandExecutor extends TabHighlightExecutor {
             int tx = Integer.parseInt(args[0]);
             int ty = Integer.parseInt(args[1]);
             int tz = Integer.parseInt(args[2]);
+
+            if (!World.isWithinWorldBounds(ty)) {
+                MovementSync.getLogger().info(LangManager.get("movementsync.command.common.out_of_bounds", ty, World.getMinWorldY(), World.getMaxWorldY()));
+                return;
+            }
 
             Vector3d currentPos = MovementSync.INSTANCE.position.get();
             Node start = new Node((int)Math.floor(currentPos.x), (int)Math.floor(currentPos.y), (int)Math.floor(currentPos.z));

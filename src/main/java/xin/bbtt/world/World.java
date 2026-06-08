@@ -27,6 +27,23 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 public class World {
+    /**
+     * Returns true when {@code y} is within the current world height range,
+     * dynamically read from the dimension type registry.  Falls back to the
+     * vanilla overworld range (-64..319) if the registry has not arrived yet.
+     */
+    public static boolean isWithinWorldBounds(int y) {
+        return y >= getMinWorldY() && y <= getMaxWorldY();
+    }
+
+    public static int getMinWorldY() {
+        return xin.bbtt.listeners.RegistryDataListener.getMinWorldY();
+    }
+
+    public static int getMaxWorldY() {
+        return xin.bbtt.listeners.RegistryDataListener.getMaxWorldY();
+    }
+
     private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
     private final Map<Integer, Map<Integer, Map<Integer, ChunkSection>>> chunks = new ConcurrentHashMap<>();
     @Getter
@@ -52,7 +69,6 @@ public class World {
                 ), section.getBlock(relativeX, relativeY, relativeZ), entry.getBlock());
                 Bot.INSTANCE.getPluginManager().events().callEvent(blockChangeEvent);
                 section.setBlock(relativeX, relativeY, relativeZ, blockChangeEvent.getChangeTo());
-                section.setBlock(relativeX, relativeY, relativeZ, entry.getBlock());
             }
         }
         finally {

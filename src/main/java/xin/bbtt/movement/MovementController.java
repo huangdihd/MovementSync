@@ -40,7 +40,9 @@ public class MovementController {
             if (currentMovement != null) {
                 try {
                     currentMovement.onStop();
-                } catch (Exception ignored) {}
+                } catch (Exception e) {
+                    MovementSync.getLogger().warn(LangManager.get("movementsync.movement.error.stop"), e);
+                }
                 // Put it back to the head so it resumes after the inserted one
                 movements.addFirst(currentMovement);
                 currentMovement = null;
@@ -58,7 +60,7 @@ public class MovementController {
         if (!isPaused.compareAndSet(false, true)) return;
         synchronized (stateLock) {
             if (currentMovement != null) {
-                try { currentMovement.onPause(); } catch (Exception ignored) {}
+                try { currentMovement.onPause(); } catch (Exception e) { MovementSync.getLogger().warn(LangManager.get("movementsync.movement.error.pause"), e); }
             }
         }
     }
@@ -67,7 +69,7 @@ public class MovementController {
         if (!isPaused.compareAndSet(true, false)) return;
         synchronized (stateLock) {
             if (currentMovement != null) {
-                try { currentMovement.onResume(); } catch (Exception ignored) {}
+                try { currentMovement.onResume(); } catch (Exception e) { MovementSync.getLogger().warn(LangManager.get("movementsync.movement.error.resume"), e); }
             }
         }
         tryExecuteNext();
@@ -126,7 +128,7 @@ public class MovementController {
             currentTaskFuture = null;
         }
         if (currentMovement != null) {
-            try { currentMovement.onStop(); } catch (Exception ignored) {}
+            try { currentMovement.onStop(); } catch (Exception e) { MovementSync.getLogger().warn(LangManager.get("movementsync.movement.error.stop"), e); }
             currentMovement = null;
         }
         isExecuting.set(false);

@@ -58,6 +58,9 @@ English / [简体中文](README_CN.md)
 | `goto` | Pathfind to a coordinate |
 | `follow` | Follow an entity by ID |
 | `ride` | Ride an entity or dismount |
+| `cansee` | Check line-of-sight to a coordinate |
+| `stop` | Stop all movement and clear goals |
+| `debug` | Print current state for troubleshooting |
 
 ---
 

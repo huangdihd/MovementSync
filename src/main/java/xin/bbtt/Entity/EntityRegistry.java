@@ -23,7 +23,9 @@ public class EntityRegistry {
                     loadJson(reader.lines().collect(Collectors.joining("\n")));
                 }
             }
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            xin.bbtt.MovementSync.getLogger().error("Failed to load entities.json registry", e);
+        }
     }
 
     public void loadJson(String jsonContent) {

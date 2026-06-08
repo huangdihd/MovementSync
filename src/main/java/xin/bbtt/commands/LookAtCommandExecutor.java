@@ -5,6 +5,7 @@ import org.jline.utils.AttributedStyle;
 import xin.bbtt.MovementSync;
 import xin.bbtt.mcbot.command.Command;
 import xin.bbtt.mcbot.command.TabHighlightExecutor;
+import xin.bbtt.mcbot.LangManager;
 
 import java.util.List;
 
@@ -16,9 +17,15 @@ public class LookAtCommandExecutor extends TabHighlightExecutor {
             double x = Double.parseDouble(args[0]);
             double y = Double.parseDouble(args[1]);
             double z = Double.parseDouble(args[2]);
+            if (!xin.bbtt.world.World.isWithinWorldBounds((int) y)) {
+                MovementSync.getLogger().info(LangManager.get("movementsync.command.common.out_of_bounds", (int) y, xin.bbtt.world.World.getMinWorldY(), xin.bbtt.world.World.getMaxWorldY()));
+                return;
+            }
             Vector3d target = new Vector3d(x, y, z);
             MovementSync.INSTANCE.lookAt(target);
-        } catch (NumberFormatException ignored) {}
+        } catch (NumberFormatException e) {
+            MovementSync.getLogger().info(LangManager.get("movementsync.command.common.usage", command.getUsage()));
+        }
     }
 
     @Override
