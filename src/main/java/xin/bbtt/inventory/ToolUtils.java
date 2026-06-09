@@ -73,7 +73,9 @@ public class ToolUtils {
             if (effId != null && enchantments.containsKey(effId)) {
                 return enchantments.get(effId);
             }
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            xin.bbtt.MovementSync.getLogger().debug("Failed to read efficiency enchantment level; assuming 0", e);
+        }
         return 0;
     }
 }

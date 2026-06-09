@@ -83,3 +83,13 @@ ride:
   usage: "movementsync.command.ride.usage"
   aliases: ["ride", "mount"]
   executor: "xin.bbtt.commands.RideCommandExecutor"
+stop:
+  description: "movementsync.command.stop.description"
+  usage: "movementsync.command.stop.usage"
+  aliases: ["stop"]
+  executor: "xin.bbtt.commands.StopCommandExecutor"
+debug:
+  description: "movementsync.command.debug.description"
+  usage: "movementsync.command.debug.usage"
+  aliases: ["debug", "state"]
+  executor: "xin.bbtt.commands.DebugCommandExecutor"

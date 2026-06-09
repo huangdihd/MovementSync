@@ -4,6 +4,7 @@ import org.joml.Vector3d;
 import xin.bbtt.MovementSync;
 import xin.bbtt.mcbot.command.Command;
 import xin.bbtt.mcbot.command.TabExecutor;
+import xin.bbtt.mcbot.LangManager;
 import xin.bbtt.movements.WalkMovement;
 import xin.bbtt.world.Direction;
 
@@ -43,7 +44,12 @@ public class WalkCommandExecutor extends TabExecutor {
             }
             long time = Long.parseLong(args[1]);
             MovementSync.INSTANCE.getMovementController().addMovement(new WalkMovement(velocity, time));
-        } catch (Exception ignored) {}
+        } catch (IllegalArgumentException e) {
+            // Bad direction or duration argument.
+            MovementSync.getLogger().info(LangManager.get("movementsync.command.common.usage", command.getUsage()));
+        } catch (Exception e) {
+            MovementSync.getLogger().error(LangManager.get("movementsync.command.common.error", e.getMessage()), e);
+        }
     }
 
     @Override

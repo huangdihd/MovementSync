@@ -7,6 +7,7 @@ import xin.bbtt.mcbot.command.Command;
 import xin.bbtt.mcbot.command.TabHighlightExecutor;
 
 import xin.bbtt.mcbot.LangManager;
+import xin.bbtt.world.World;
 
 import java.util.List;
 
@@ -18,9 +19,15 @@ public class IsPassableCommandExecutor extends TabHighlightExecutor {
             int x = Integer.parseInt(args[0]);
             int y = Integer.parseInt(args[1]);
             int z = Integer.parseInt(args[2]);
+            if (!World.isWithinWorldBounds(y)) {
+                MovementSync.getLogger().info(LangManager.get("movementsync.command.common.out_of_bounds", y, World.getMinWorldY(), World.getMaxWorldY()));
+                return;
+            }
             boolean passable = MovementSync.INSTANCE.getWorld().isPassable(new Vector3d(x, y, z));
             MovementSync.getLogger().info(LangManager.get("movementsync.command.ispassable.response", x, y, z, passable));
-        } catch (NumberFormatException ignored) {}
+        } catch (NumberFormatException e) {
+            MovementSync.getLogger().info(LangManager.get("movementsync.command.common.usage", command.getUsage()));
+        }
     }
 
     @Override

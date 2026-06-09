@@ -13,7 +13,7 @@
 
     <groupId>xin.bbtt</groupId>
     <artifactId>MovementSync</artifactId>
-    <version>1.6.0-RELEASE</version>
+    <version>1.7.0-RELEASE</version>
 
     <dependencies>
         <dependency>
@@ -31,6 +31,12 @@
             <artifactId>lombok</artifactId>
             <version>1.18.44</version>
             <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>5.12.2</version>
+            <scope>test</scope>
         </dependency>
     </dependencies>
 
@@ -52,6 +58,11 @@
                         </path>
                     </annotationProcessorPaths>
                 </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.5.2</version>
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>

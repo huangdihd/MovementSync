@@ -26,7 +26,11 @@ public class InteractEntityCommandExecutor extends SubCommandExecutor {
                     double z = Double.parseDouble(args[3]);
                     MovementSync.INSTANCE.getMovementController().addMovement(new InteractEntityMovement(id, InteractAction.INTERACT_AT, new org.joml.Vector3d(x, y, z)));
                     MovementSync.getLogger().info(LangManager.get("movementsync.command.interactentity.success", InteractAction.INTERACT_AT, id));
-                } catch (Exception ignored) {}
+                } catch (NumberFormatException e) {
+                    MovementSync.getLogger().info(LangManager.get("movementsync.command.common.usage", command.getUsage()));
+                } catch (Exception e) {
+                    MovementSync.getLogger().error(LangManager.get("movementsync.command.common.error", e.getMessage()), e);
+                }
             }
 
             @Override
@@ -56,7 +60,11 @@ public class InteractEntityCommandExecutor extends SubCommandExecutor {
                     int id = Integer.parseInt(args[0]);
                     MovementSync.INSTANCE.getMovementController().addMovement(new InteractEntityMovement(id, action));
                     MovementSync.getLogger().info(LangManager.get("movementsync.command.interactentity.success", action, id));
-                } catch (Exception ignored) {}
+                } catch (NumberFormatException e) {
+                    MovementSync.getLogger().info(LangManager.get("movementsync.command.common.usage", command.getUsage()));
+                } catch (Exception e) {
+                    MovementSync.getLogger().error(LangManager.get("movementsync.command.common.error", e.getMessage()), e);
+                }
             }
 
             @Override

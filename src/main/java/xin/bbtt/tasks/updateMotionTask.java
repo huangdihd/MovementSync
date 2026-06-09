@@ -6,6 +6,7 @@ import xin.bbtt.MovementSync;
 import xin.bbtt.mcbot.Bot;
 import xin.bbtt.mcbot.Server;
 import xin.bbtt.world.Direction;
+import xin.bbtt.world.World;
 
 import static xin.bbtt.MovementSync.gravitationalAcceleration;
 import static xin.bbtt.MovementSync.terminalVelocity;
@@ -160,7 +161,7 @@ public class updateMotionTask implements Runnable {
         lowest.y = Math.ceil(position.y);
 
         if (!MovementSync.INSTANCE.onGround.get()) {
-            while (!MovementSync.INSTANCE.getWorld().isOnGround(lowest) && lowest.y > -64) {
+            while (!MovementSync.INSTANCE.getWorld().isOnGround(lowest) && lowest.y > World.getMinWorldY()) {
                 lowest.add(Direction.DOWN.getUnitVector());
             }
         }

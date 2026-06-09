@@ -59,6 +59,8 @@ public class InventoryCommandExecutor extends CommandExecutor {
                 first = false;
             }
             sb.append("}");
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            xin.bbtt.MovementSync.getLogger().debug("Failed to render item enchantments", e);
+        }
     }
 }

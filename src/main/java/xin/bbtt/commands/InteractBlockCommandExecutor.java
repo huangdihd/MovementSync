@@ -6,6 +6,7 @@ import xin.bbtt.mcbot.command.Command;
 import xin.bbtt.mcbot.command.CommandExecutor;
 import xin.bbtt.mcbot.command.SubCommandExecutor;
 import xin.bbtt.mcbot.LangManager;
+import xin.bbtt.world.World;
 import xin.bbtt.movements.DigBlockMovement;
 
 public class InteractBlockCommandExecutor extends SubCommandExecutor {
@@ -18,6 +19,10 @@ public class InteractBlockCommandExecutor extends SubCommandExecutor {
                     int x = Integer.parseInt(args[0]);
                     int y = Integer.parseInt(args[1]);
                     int z = Integer.parseInt(args[2]);
+                    if (!World.isWithinWorldBounds(y)) {
+                        MovementSync.getLogger().info(LangManager.get("movementsync.command.common.out_of_bounds", y, World.getMinWorldY(), World.getMaxWorldY()));
+                        return;
+                    }
                     Vector3i pos = Vector3i.from(x, y, z);
                     
                     xin.bbtt.Block.BlockState state = MovementSync.INSTANCE.getWorld().getBlockStateAt(new org.joml.Vector3d(x, y, z));
