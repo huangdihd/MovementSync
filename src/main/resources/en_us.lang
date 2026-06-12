@@ -53,7 +53,6 @@ movementsync.pathfinding.obstacle_detected=Obstacle detected at (%d, %d, %d): %s
 movementsync.pathfinding.no_blocks=Gap detected but NO BLOCKS found in hotbar! Stopping path.
 movementsync.pathfinding.pillaring=Pillaring up at (%d, %d, %d)...
 movementsync.pathfinding.bridging=Bridging gap at (%d, %d, %d)...
-movementsync.pathfinding.gap_jump=Gap jump segment: (%d, %d, %d) → (%d, %d, %d), onGround=%s
 
 movementsync.movement.digging.start=Breaking block at (%d, %d, %d). Estimated time: %dms
 movementsync.movement.digging.finished=Block broken.

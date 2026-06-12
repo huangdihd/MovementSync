@@ -53,7 +53,6 @@ movementsync.pathfinding.obstacle_detected=在 (%d, %d, %d) 检测到障碍物: 
 movementsync.pathfinding.no_blocks=检测到空隙但快捷栏中没有方块！停止寻路。
 movementsync.pathfinding.pillaring=正在 (%d, %d, %d) 处垫脚上移...
 movementsync.pathfinding.bridging=正在 (%d, %d, %d) 处搭桥跨越...
-movementsync.pathfinding.gap_jump=跳坑段: (%d, %d, %d) → (%d, %d, %d), onGround=%s
 
 movementsync.movement.digging.start=正在挖掘 (%d, %d, %d) 处的方块。预计耗时: %dms
 movementsync.movement.digging.finished=方块已破坏。

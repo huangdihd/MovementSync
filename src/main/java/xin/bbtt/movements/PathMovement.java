@@ -17,7 +17,6 @@ public class PathMovement extends Movement {
     private int currentIndex = 0;
     private volatile boolean repathRequested = false;
     private int repathThrottler = 0;
-    private int lastGapJumpLoggedIndex = -1;
     /** While following, stay put as long as the target is within this horizontal distance (squared). */
     private final double followKeepDistanceSq;
 
@@ -76,16 +75,7 @@ public class PathMovement extends Movement {
         if (checkAndDig(targetNode)) return;
         if (checkAndPlace(currentPos, targetNode)) return;
 
-        boolean isGapJump = calculateIsGapJump(targetNode);
-        if (isGapJump && currentIndex != lastGapJumpLoggedIndex) {
-            lastGapJumpLoggedIndex = currentIndex;
-            Node prevNode = path.get(currentIndex - 1);
-            MovementSync.getLogger().info(LangManager.get("movementsync.pathfinding.gap_jump",
-                    prevNode.x, prevNode.y, prevNode.z,
-                    targetNode.x, targetNode.y, targetNode.z,
-                    String.valueOf(MovementSync.INSTANCE.onGround.get())));
-        }
-        applyPreciseMovement(currentPos, targetPos, isGapJump);
+        applyPreciseMovement(currentPos, targetPos, calculateIsGapJump(targetNode));
         updateLookDirection(currentPos, targetPos);
     }
 
