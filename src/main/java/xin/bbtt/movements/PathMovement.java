@@ -72,10 +72,17 @@ public class PathMovement extends Movement {
         if (isPathDeviated(currentPos, targetNode)) return;
         if (isFallingUnexpectedly(currentPos, targetPos)) return;
 
-        if (checkAndDig(targetNode)) return;
-        if (checkAndPlace(currentPos, targetNode)) return;
+        boolean isGapJump = calculateIsGapJump(targetNode);
 
-        applyPreciseMovement(currentPos, targetPos, calculateIsGapJump(targetNode));
+        // Never dig or bridge while gap-jumping or airborne: mid-flight the target
+        // node hangs over the gap, and a misfired "no blocks" check would kill the
+        // whole path in the middle of the jump.
+        if (!isGapJump && MovementSync.INSTANCE.onGround.get()) {
+            if (checkAndDig(targetNode)) return;
+            if (checkAndPlace(currentPos, targetNode)) return;
+        }
+
+        applyPreciseMovement(currentPos, targetPos, isGapJump);
         updateLookDirection(currentPos, targetPos);
     }
 
