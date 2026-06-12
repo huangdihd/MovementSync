@@ -23,7 +23,7 @@ public class BridgePillarStrategy extends AbstractMovementStrategy {
         // Pillar Up
         Node pillarTarget = new Node(u.x, u.y + 1, u.z);
         if (!world.getBlockStateAt(new Vector3d(pillarTarget.x, pillarTarget.y - 1, pillarTarget.z)).isSolid()) {
-            edges.add(new Edge(pillarTarget, getEuclideanDistance(u, pillarTarget) + 5.0));
+            edges.add(new Edge(pillarTarget, getEuclideanDistance(u, pillarTarget) + 5.0, BuiltinMovementType.PILLAR));
         }
         
         // Bridge
@@ -35,7 +35,7 @@ public class BridgePillarStrategy extends AbstractMovementStrategy {
             if (world.isPassable(new Vector3d(bx, u.y, bz)) && world.isPassable(new Vector3d(bx, u.y + 1, bz))) {
                 if (!world.getBlockStateAt(new Vector3d(bx, u.y - 1, bz)).isSolid()) {
                     Node bridgeTarget = new Node(bx, u.y, bz);
-                    edges.add(new Edge(bridgeTarget, getEuclideanDistance(u, bridgeTarget) + 5.0));
+                    edges.add(new Edge(bridgeTarget, getEuclideanDistance(u, bridgeTarget) + 5.0, BuiltinMovementType.BRIDGE));
                 }
             }
         }

@@ -47,14 +47,14 @@ public class GotoCommandExecutor extends TabHighlightExecutor {
             MovementSync.getLogger().info(LangManager.get("movementsync.command.goto.searching", tx, ty, tz));
 
             DStarLite pathfinder = new DStarLite(start, goal, MovementSync.INSTANCE.getWorld());
-            List<Node> path = pathfinder.findPath(5000);
+            List<xin.bbtt.pathfinding.PathStep> path = pathfinder.findPath(5000);
 
             if (path.size() <= 1) {
                 MovementSync.getLogger().info(LangManager.get("movementsync.command.goto.no_path", tx, ty, tz));
                 return;
             }
 
-            Node end = path.get(path.size() - 1);
+            Node end = path.get(path.size() - 1).getNode();
             if (!end.equals(goal)) {
                 MovementSync.getLogger().info(LangManager.get("movementsync.command.goto.partial", end.x, end.y, end.z));
             }

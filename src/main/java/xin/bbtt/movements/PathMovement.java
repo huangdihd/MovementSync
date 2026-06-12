@@ -4,8 +4,8 @@ import org.joml.Vector3d;
 import xin.bbtt.MovementSync;
 import xin.bbtt.movement.Movement;
 import xin.bbtt.pathfinding.Node;
-import xin.bbtt.Block.BlockState;
-import xin.bbtt.mcbot.LangManager;
+import xin.bbtt.pathfinding.PathStep;
+import xin.bbtt.pathfinding.BuiltinMovementType;
 
 import java.util.List;
 
@@ -13,18 +13,18 @@ public class PathMovement extends Movement {
     /** Default follow keep radius in blocks. */
     private static final double DEFAULT_FOLLOW_KEEP_DISTANCE = 1.0;
 
-    private List<Node> path;
+    private List<PathStep> path;
     private int currentIndex = 0;
     private volatile boolean repathRequested = false;
     private int repathThrottler = 0;
     /** While following, stay put as long as the target is within this horizontal distance (squared). */
     private final double followKeepDistanceSq;
 
-    public PathMovement(List<Node> path) {
+    public PathMovement(List<PathStep> path) {
         this(path, DEFAULT_FOLLOW_KEEP_DISTANCE);
     }
 
-    public PathMovement(List<Node> path, double followKeepDistance) {
+    public PathMovement(List<PathStep> path, double followKeepDistance) {
         this.path = path;
         this.followKeepDistanceSq = followKeepDistance * followKeepDistance;
     }
@@ -55,7 +55,9 @@ public class PathMovement extends Movement {
             return;
         }
 
-        Node targetNode = path.get(currentIndex);
+        PathStep currentStep = path.get(currentIndex);
+        Node targetNode = currentStep.getNode();
+        xin.bbtt.pathfinding.MovementType currentType = currentStep.getType();
         Vector3d targetPos = new Vector3d(targetNode.x + 0.5, targetNode.y, targetNode.z + 0.5);
         Vector3d currentPos = MovementSync.INSTANCE.position.get();
 
@@ -65,21 +67,36 @@ public class PathMovement extends Movement {
                 finishPath();
                 return;
             }
-            targetNode = path.get(currentIndex);
+            currentStep = path.get(currentIndex);
+            targetNode = currentStep.getNode();
+            currentType = currentStep.getType();
             targetPos = new Vector3d(targetNode.x + 0.5, targetNode.y, targetNode.z + 0.5);
         }
 
         if (isPathDeviated(currentPos, targetNode)) return;
         if (isFallingUnexpectedly(currentPos, targetPos)) return;
 
-        boolean isGapJump = calculateIsGapJump(targetNode);
+        boolean isGapJump = currentType == BuiltinMovementType.GAP_JUMP;
+        boolean onGround = MovementSync.INSTANCE.onGround.get();
 
-        // Never dig or bridge while gap-jumping or airborne: mid-flight the target
-        // node hangs over the gap, and a misfired "no blocks" check would kill the
-        // whole path in the middle of the jump.
-        if (!isGapJump && MovementSync.INSTANCE.onGround.get()) {
-            if (checkAndDig(targetNode)) return;
-            if (checkAndPlace(currentPos, targetNode)) return;
+        if (currentType != null && (onGround || !currentType.requiresGroundToDispatch())) {
+            Node prevNode = currentIndex > 0 ? path.get(currentIndex - 1).getNode() : new Node((int)Math.floor(currentPos.x), (int)Math.floor(currentPos.y), (int)Math.floor(currentPos.z));
+            Movement customMovement = currentType.createMovement(prevNode, targetNode);
+            if (customMovement != null) {
+                MovementSync.INSTANCE.getMovementController().insertMovement(customMovement);
+                return;
+            }
+        }
+
+        // The edge promised the default walking logic can traverse it. If the
+        // world changed since planning (a block appeared, the ground vanished,
+        // or the blocks to place ran out), replan from here so the strategies
+        // can emit the right edges for the new terrain. Only built-in types
+        // carry that walking contract; plugin types falling through to the
+        // default logic validate their own terrain.
+        if (currentType instanceof BuiltinMovementType && !isGapJump && onGround && !isStillTraversable(targetNode)) {
+            repathInternally();
+            return;
         }
 
         applyPreciseMovement(currentPos, targetPos, isGapJump);
@@ -96,7 +113,8 @@ public class PathMovement extends Movement {
         Vector3d targetPos = entity.getPosition();
         if (isWithinFollowRange(targetPos)) return;
 
-        Node lastNode = path.get(path.size() - 1);
+        PathStep lastStep = path.get(path.size() - 1);
+        Node lastNode = lastStep.getNode();
         double distSq = Math.pow(targetPos.x - (lastNode.x + 0.5), 2) + Math.pow(targetPos.z - (lastNode.z + 0.5), 2);
         if (distSq > 4.0) {
             repathInternally();
@@ -107,14 +125,6 @@ public class PathMovement extends Movement {
         Vector3d currentPos = MovementSync.INSTANCE.position.get();
         double distSq = Math.pow(currentPos.x - targetPos.x, 2) + Math.pow(currentPos.z - targetPos.z, 2);
         return distSq <= followKeepDistanceSq;
-    }
-
-    private boolean calculateIsGapJump(Node targetNode) {
-        if (currentIndex <= 0) return false;
-        Node prevNode = path.get(currentIndex - 1);
-        int dx = Math.abs(targetNode.x - prevNode.x);
-        int dz = Math.abs(targetNode.z - prevNode.z);
-        return dx > 1 || dz > 1;
     }
 
     private void updateLookDirection(Vector3d currentPos, Vector3d targetPos) {
@@ -252,7 +262,7 @@ public class PathMovement extends Movement {
         }
 
         xin.bbtt.pathfinding.DStarLite pathfinder = new xin.bbtt.pathfinding.DStarLite(start, goalNode, MovementSync.INSTANCE.getWorld());
-        List<Node> newPath = pathfinder.findPath(2000);
+        List<PathStep> newPath = pathfinder.findPath(2000);
 
         if (newPath != null && newPath.size() > 1) {
             this.path = newPath;
@@ -260,7 +270,7 @@ public class PathMovement extends Movement {
         } else if (MovementSync.INSTANCE.getFollowTargetId() != -1) {
             stopHorizontal();
             MovementSync.INSTANCE.velocity.set(new Vector3d(0, 0, 0));
-            this.path = List.of(start);
+            this.path = List.of(new PathStep(start, BuiltinMovementType.WALK));
             this.currentIndex = 0;
         } else {
             markFinished();
@@ -296,57 +306,16 @@ public class PathMovement extends Movement {
     @Override
     public void onStop() { stopHorizontal(); }
 
-    private boolean checkAndDig(Node target) {
-        org.joml.Vector3i[] toCheck = { new org.joml.Vector3i(target.x, target.y, target.z), new org.joml.Vector3i(target.x, target.y + 1, target.z) };
-        for (org.joml.Vector3i p : toCheck) {
-            BlockState state = MovementSync.INSTANCE.getWorld().getBlockStateAt(new Vector3d(p.x, p.y, p.z));
-            if (state.isPassable() || !state.diggable()) continue;
-
-            MovementSync.getLogger().info(LangManager.get("movementsync.pathfinding.obstacle_detected", p.x, p.y, p.z, state.blockName()));
-            int toolSlot = MovementSync.INSTANCE.getInventoryManager().findBestTool(state.material());
-            if (toolSlot != -1) MovementSync.INSTANCE.getInventoryManager().switchToSlot(toolSlot);
-            MovementSync.INSTANCE.getMovementController().insertMovement(new DigBlockMovement(org.cloudburstmc.math.vector.Vector3i.from(p.x, p.y, p.z)));
-            return true;
-        }
-        return false;
-    }
-
-    private boolean checkAndPlace(Vector3d currentPos, Node target) {
-        Vector3d groundPos = new Vector3d(target.x, target.y - 1, target.z);
-        BlockState ground = MovementSync.INSTANCE.getWorld().getBlockStateAt(groundPos);
-        if (ground.isSolid()) return false;
-
-        int blockSlot = MovementSync.INSTANCE.getInventoryManager().findBlock();
-        if (blockSlot == -1) {
-            MovementSync.getLogger().warn(LangManager.get("movementsync.pathfinding.no_blocks"));
-            finishPath();
-            return true;
-        }
-
-        int[] dx = {0, 0, 0, 0, 1, -1}, dy = {1, -1, 0, 0, 0, 0}, dz = {0, 0, 1, -1, 0, 0};
-        org.geysermc.mcprotocollib.protocol.data.game.entity.object.Direction[] sides = {
-            org.geysermc.mcprotocollib.protocol.data.game.entity.object.Direction.DOWN, org.geysermc.mcprotocollib.protocol.data.game.entity.object.Direction.UP,
-            org.geysermc.mcprotocollib.protocol.data.game.entity.object.Direction.NORTH, org.geysermc.mcprotocollib.protocol.data.game.entity.object.Direction.SOUTH,
-            org.geysermc.mcprotocollib.protocol.data.game.entity.object.Direction.WEST, org.geysermc.mcprotocollib.protocol.data.game.entity.object.Direction.EAST
-        };
-
-        for (int i = 0; i < 6; i++) {
-            org.joml.Vector3i neighbor = new org.joml.Vector3i(target.x + dx[i], (target.y - 1) + dy[i], target.z + dz[i]);
-            if (!MovementSync.INSTANCE.getWorld().getBlockStateAt(new Vector3d(neighbor.x, neighbor.y, neighbor.z)).isSolid()) continue;
-
-            MovementSync.INSTANCE.getInventoryManager().switchToSlot(blockSlot);
-            boolean isPillar = (target.x == (int)Math.floor(currentPos.x) && target.z == (int)Math.floor(currentPos.z) && target.y > (int)Math.floor(currentPos.y));
-            
-            if (isPillar) {
-                MovementSync.getLogger().info(LangManager.get("movementsync.pathfinding.pillaring", target.x, target.y - 1, target.z));
-                MovementSync.INSTANCE.getMovementController().insertMovement(new PlaceBlockMovement(org.cloudburstmc.math.vector.Vector3i.from(target.x, target.y - 1, target.z), org.cloudburstmc.math.vector.Vector3i.from(neighbor.x, neighbor.y, neighbor.z), sides[i], false));
-                MovementSync.INSTANCE.getMovementController().insertMovement(new JumpMovement());
-            } else {
-                MovementSync.getLogger().info(LangManager.get("movementsync.pathfinding.bridging", target.x, target.y - 1, target.z));
-                MovementSync.INSTANCE.getMovementController().insertMovement(new PlaceBlockMovement(org.cloudburstmc.math.vector.Vector3i.from(target.x, target.y - 1, target.z), org.cloudburstmc.math.vector.Vector3i.from(neighbor.x, neighbor.y, neighbor.z), sides[i], true));
-            }
-            return true;
-        }
-        return false;
+    /**
+     * Checks that the target node can still be entered by plain walking:
+     * feet and head passable with solid ground beneath. Unloaded chunks are
+     * assumed valid — they can't be verified yet.
+     */
+    private boolean isStillTraversable(Node target) {
+        xin.bbtt.world.World world = MovementSync.INSTANCE.getWorld();
+        if (!world.chunkLoaded(target.x >> 4, target.z >> 4)) return true;
+        return world.isPassable(new Vector3d(target.x, target.y, target.z))
+                && world.isPassable(new Vector3d(target.x, target.y + 1, target.z))
+                && world.getBlockStateAt(new Vector3d(target.x, target.y - 1, target.z)).isSolid();
     }
 }
