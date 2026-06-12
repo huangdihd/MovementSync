@@ -10,13 +10,24 @@ import xin.bbtt.mcbot.LangManager;
 import java.util.List;
 
 public class PathMovement extends Movement {
+    /** Default follow keep radius in blocks. */
+    private static final double DEFAULT_FOLLOW_KEEP_DISTANCE = 1.0;
+
     private List<Node> path;
     private int currentIndex = 0;
     private volatile boolean repathRequested = false;
     private int repathThrottler = 0;
+    private int lastGapJumpLoggedIndex = -1;
+    /** While following, stay put as long as the target is within this horizontal distance (squared). */
+    private final double followKeepDistanceSq;
 
     public PathMovement(List<Node> path) {
+        this(path, DEFAULT_FOLLOW_KEEP_DISTANCE);
+    }
+
+    public PathMovement(List<Node> path, double followKeepDistance) {
         this.path = path;
+        this.followKeepDistanceSq = followKeepDistance * followKeepDistance;
     }
 
     public void requestRepath() {
@@ -65,7 +76,16 @@ public class PathMovement extends Movement {
         if (checkAndDig(targetNode)) return;
         if (checkAndPlace(currentPos, targetNode)) return;
 
-        applyPreciseMovement(currentPos, targetPos, calculateIsGapJump(targetNode));
+        boolean isGapJump = calculateIsGapJump(targetNode);
+        if (isGapJump && currentIndex != lastGapJumpLoggedIndex) {
+            lastGapJumpLoggedIndex = currentIndex;
+            Node prevNode = path.get(currentIndex - 1);
+            MovementSync.getLogger().info(LangManager.get("movementsync.pathfinding.gap_jump",
+                    prevNode.x, prevNode.y, prevNode.z,
+                    targetNode.x, targetNode.y, targetNode.z,
+                    String.valueOf(MovementSync.INSTANCE.onGround.get())));
+        }
+        applyPreciseMovement(currentPos, targetPos, isGapJump);
         updateLookDirection(currentPos, targetPos);
     }
 
@@ -77,11 +97,19 @@ public class PathMovement extends Movement {
         if (entity == null) return;
 
         Vector3d targetPos = entity.getPosition();
+        if (isWithinFollowRange(targetPos)) return;
+
         Node lastNode = path.get(path.size() - 1);
         double distSq = Math.pow(targetPos.x - (lastNode.x + 0.5), 2) + Math.pow(targetPos.z - (lastNode.z + 0.5), 2);
         if (distSq > 4.0) {
             repathInternally();
         }
+    }
+
+    private boolean isWithinFollowRange(Vector3d targetPos) {
+        Vector3d currentPos = MovementSync.INSTANCE.position.get();
+        double distSq = Math.pow(currentPos.x - targetPos.x, 2) + Math.pow(currentPos.z - targetPos.z, 2);
+        return distSq <= followKeepDistanceSq;
     }
 
     private boolean calculateIsGapJump(Node targetNode) {
@@ -139,6 +167,9 @@ public class PathMovement extends Movement {
         }
 
         double currentSpeed = MovementSync.movementSpeed;
+        // Sprint during gap jumps: a diagonal landing is ~2.83 blocks away and
+        // plain walking speed cannot carry the jump arc that far.
+        if (isGapJump) currentSpeed *= 1.3;
         if (dist < 0.25) {
             currentSpeed *= (dist / 0.25);
             if (dist < 0.05) {
@@ -177,15 +208,11 @@ public class PathMovement extends Movement {
         xin.bbtt.Entity.Entity entity = MovementSync.INSTANCE.getWorld().getEntity(followTargetId);
         if (entity == null) { markFinished(); return; }
 
-        Vector3d currentPos = MovementSync.INSTANCE.position.get();
         Vector3d targetPos = entity.getPosition();
-        double distSq = Math.pow(currentPos.x - targetPos.x, 2) + Math.pow(currentPos.z - targetPos.z, 2);
-        
-        if (distSq > 9.0) { repathInternally(); return; }
-        
+        if (!isWithinFollowRange(targetPos)) { repathInternally(); return; }
+
         stopHorizontal();
         MovementSync.INSTANCE.velocity.set(new Vector3d(0, 0, 0));
-        if (distSq < 4.0) repathInternally();
     }
 
     private void handleGoalFinish(org.joml.Vector3i goal) {
@@ -229,7 +256,7 @@ public class PathMovement extends Movement {
 
         xin.bbtt.pathfinding.DStarLite pathfinder = new xin.bbtt.pathfinding.DStarLite(start, goalNode, MovementSync.INSTANCE.getWorld());
         List<Node> newPath = pathfinder.findPath(2000);
-        
+
         if (newPath != null && newPath.size() > 1) {
             this.path = newPath;
             this.currentIndex = 0;

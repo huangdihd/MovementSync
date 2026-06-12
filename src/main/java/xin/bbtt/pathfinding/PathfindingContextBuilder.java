@@ -54,7 +54,23 @@ public class PathfindingContextBuilder {
             .addFall()
             .addGapJump()
             .addBridgePillar();
-        
+
+        for (MovementStrategy strategy : globalStrategies) {
+            this.addStrategy(strategy);
+        }
+        return this;
+    }
+
+    /**
+     * Adds the standard movement strategies except block placement
+     * (bridging/pillaring), including global ones.
+     */
+    public PathfindingContextBuilder addNoPlacementStrategies() {
+        this.addWalk()
+            .addJump()
+            .addFall()
+            .addGapJump();
+
         for (MovementStrategy strategy : globalStrategies) {
             this.addStrategy(strategy);
         }

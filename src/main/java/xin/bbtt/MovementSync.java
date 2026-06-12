@@ -142,6 +142,13 @@ public class MovementSync implements Plugin {
     }
 
     public void triggerAutoRepath() {
+        triggerAutoRepath(-1);
+    }
+
+    /**
+     * @param followKeepDistance follow keep radius in blocks; non-positive uses the PathMovement default.
+     */
+    public void triggerAutoRepath(double followKeepDistance) {
         org.joml.Vector3i targetNodePos = activeGoal;
         
         // If we are following an entity, override targetNodePos
@@ -170,7 +177,10 @@ public class MovementSync implements Plugin {
 
         if (path.size() > 1) {
             getMovementController().cancelAll();
-            getMovementController().addMovement(new xin.bbtt.movements.PathMovement(path));
+            xin.bbtt.movements.PathMovement movement = followKeepDistance > 0
+                    ? new xin.bbtt.movements.PathMovement(path, followKeepDistance)
+                    : new xin.bbtt.movements.PathMovement(path);
+            getMovementController().addMovement(movement);
         }
     }
 

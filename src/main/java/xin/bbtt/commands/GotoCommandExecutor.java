@@ -22,12 +22,14 @@ public class GotoCommandExecutor extends TabHighlightExecutor {
         }
 
         try {
-            int tx = Integer.parseInt(args[0]);
-            int ty = Integer.parseInt(args[1]);
-            int tz = Integer.parseInt(args[2]);
+            // Tolerate comma-separated input like "goto 58, 120, -284".
+            int tx = Integer.parseInt(args[0].replace(",", ""));
+            int ty = Integer.parseInt(args[1].replace(",", ""));
+            int tz = Integer.parseInt(args[2].replace(",", ""));
 
-            if (!World.isWithinWorldBounds(ty)) {
-                MovementSync.getLogger().info(LangManager.get("movementsync.command.common.out_of_bounds", ty, World.getMinWorldY(), World.getMaxWorldY()));
+            // Allow maxWorldY + 1: the player can stand on top of the highest block (e.g. y=320).
+            if (ty < World.getMinWorldY() || ty > World.getMaxWorldY() + 1) {
+                MovementSync.getLogger().info(LangManager.get("movementsync.command.common.out_of_bounds", ty, World.getMinWorldY(), World.getMaxWorldY() + 1));
                 return;
             }
 
@@ -48,8 +50,13 @@ public class GotoCommandExecutor extends TabHighlightExecutor {
             List<Node> path = pathfinder.findPath(5000);
 
             if (path.size() <= 1) {
-                // Warning logged in findPath
+                MovementSync.getLogger().info(LangManager.get("movementsync.command.goto.no_path", tx, ty, tz));
                 return;
+            }
+
+            Node end = path.get(path.size() - 1);
+            if (!end.equals(goal)) {
+                MovementSync.getLogger().info(LangManager.get("movementsync.command.goto.partial", end.x, end.y, end.z));
             }
 
             MovementSync.INSTANCE.setActiveGoal(new org.joml.Vector3i(tx, ty, tz));
