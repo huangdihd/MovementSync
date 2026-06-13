@@ -67,6 +67,11 @@ public enum BuiltinMovementType implements MovementType {
             }
             return null;
         }
+
+        @Override
+        public boolean canWalkWhenNoMovement() {
+            return false;
+        }
     },
     
     /** Place a block underfoot while jumping to gain one block of height. */
@@ -100,6 +105,11 @@ public enum BuiltinMovementType implements MovementType {
                 return new xin.bbtt.movements.JumpMovement();
             }
             return null;
+        }
+
+        @Override
+        public boolean canWalkWhenNoMovement() {
+            return false;
         }
     }
 }

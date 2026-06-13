@@ -36,4 +36,17 @@ public interface MovementType {
     default boolean requiresGroundToDispatch() {
         return true;
     }
+
+    /**
+     * Whether the path follower may fall back to plain walking toward the
+     * target when {@link #createMovement} returns {@code null}. Walk-like
+     * movements return {@code true}. Movements that must place blocks to make
+     * the target reachable (bridging, pillaring) return {@code false}: a null
+     * result there means the action couldn't run (e.g. the hotbar ran out of
+     * blocks), and walking forward would step straight into the gap it was
+     * meant to fill, so the follower replans instead.
+     */
+    default boolean canWalkWhenNoMovement() {
+        return true;
+    }
 }

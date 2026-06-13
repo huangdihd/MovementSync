@@ -94,6 +94,15 @@ public class PathMovement extends Movement {
                 MovementSync.INSTANCE.getMovementController().insertMovement(customMovement);
                 return;
             }
+            if (!currentType.canWalkWhenNoMovement()) {
+                // A placement move (bridge/pillar) couldn't run — typically the
+                // hotbar ran out of blocks mid-path. Walking on would step into
+                // the gap it was meant to fill, so replan: with an empty hotbar
+                // the planner switches to no-placement strategies and routes
+                // around it (or reports the goal unreachable) instead.
+                repathInternally();
+                return;
+            }
         }
 
         // Stuck recovery: if the bot is on the ground with somewhere to go but
