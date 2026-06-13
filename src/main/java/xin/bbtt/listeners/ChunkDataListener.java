@@ -24,8 +24,10 @@ public class ChunkDataListener extends SessionAdapter {
             MovementSync.INSTANCE.requestRepath();
         }
         if (packet instanceof ClientboundForgetLevelChunkPacket forgetLevelChunkPacket) {
+            // Unloading a distant chunk doesn't invalidate the path the bot is
+            // currently walking, so don't repath — doing so on every unload as
+            // the bot travels made the route jitter and back up a little.
             MovementSync.INSTANCE.getWorld().handleForgetLevelChunkPacket(forgetLevelChunkPacket);
-            MovementSync.INSTANCE.requestRepath();
         }
     }
 }

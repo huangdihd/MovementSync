@@ -17,6 +17,8 @@ public class PathMovement extends Movement {
     private int currentIndex = 0;
     private volatile boolean repathRequested = false;
     private int repathThrottler = 0;
+    /** Ticks since the last repath, to throttle update-driven repath bursts. */
+    private int ticksSinceRepath = 100;
     /** Last position where we made horizontal progress, for stuck detection. */
     private Vector3d lastProgressPos = null;
     private int stuckTicks = 0;
@@ -46,12 +48,15 @@ public class PathMovement extends Movement {
     @Override
     public void onTick() {
         repathThrottler++;
-        // Don't honour an external repath request (block updates fire one on
-        // every nearby change) while airborne. Rebuilding the path from a point
-        // in mid-air drops the sprint/jump momentum, so the bot drifts across a
-        // gap instead of clearing it. Defer the repath until we're back on the
-        // ground.
-        if (repathRequested && MovementSync.INSTANCE.onGround.get()) {
+        ticksSinceRepath++;
+        // External repath requests come in bursts as the bot moves (block
+        // updates, and chunks loading/unloading around it). Each repath rebuilds
+        // the path from the current block, so honouring every one makes the
+        // route jitter and step backwards a little. Throttle them, and defer
+        // while airborne — rebuilding mid-air would drop the jump momentum and
+        // drift the bot across a gap. Genuine path failures still replan
+        // promptly through stuck detection and goal/placement handling.
+        if (repathRequested && MovementSync.INSTANCE.onGround.get() && ticksSinceRepath >= 20) {
             repathRequested = false;
             repathInternally();
         }
@@ -291,6 +296,7 @@ public class PathMovement extends Movement {
     }
 
     private void repathInternally() {
+        ticksSinceRepath = 0;
         org.joml.Vector3i targetNodePos = MovementSync.INSTANCE.getActiveGoal();
         if (MovementSync.INSTANCE.getFollowTargetId() != -1) {
             xin.bbtt.Entity.Entity entity = MovementSync.INSTANCE.getWorld().getEntity(MovementSync.INSTANCE.getFollowTargetId());
