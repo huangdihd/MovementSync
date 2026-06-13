@@ -17,6 +17,9 @@ public class PathMovement extends Movement {
     private int currentIndex = 0;
     private volatile boolean repathRequested = false;
     private int repathThrottler = 0;
+    /** Last position where we made horizontal progress, for stuck detection. */
+    private Vector3d lastProgressPos = null;
+    private int stuckTicks = 0;
     /** While following, stay put as long as the target is within this horizontal distance (squared). */
     private final double followKeepDistanceSq;
 
@@ -88,19 +91,52 @@ public class PathMovement extends Movement {
             }
         }
 
-        // The edge promised the default walking logic can traverse it. If the
-        // world changed since planning (a block appeared, the ground vanished,
-        // or the blocks to place ran out), replan from here so the strategies
-        // can emit the right edges for the new terrain. Only built-in types
-        // carry that walking contract; plugin types falling through to the
-        // default logic validate their own terrain.
-        if (currentType instanceof BuiltinMovementType && !isGapJump && onGround && !isStillTraversable(targetNode)) {
+        // Stuck recovery: if the bot is on the ground with somewhere to go but
+        // hasn't advanced for a while, the world likely changed since planning
+        // (a block appeared, the ground vanished). Replan — but ONLY after a
+        // real stall. A per-tick "is the target still walkable?" replan would
+        // keep resetting the path to index 0, whose first target is the centre
+        // of the bot's current block; mid-step that pulls the bot backwards,
+        // producing a constant "backing up" stutter.
+        if (!isGapJump && onGround && !MovementSync.INSTANCE.isRiding() && updateStuck(currentPos, targetPos)) {
             repathInternally();
             return;
         }
 
         applyPreciseMovement(currentPos, targetPos, isGapJump);
         updateLookDirection(currentPos, targetPos);
+    }
+
+    /**
+     * Tracks horizontal progress toward the target and reports whether the bot
+     * has been stalled long enough to warrant a replan. Returns false (and
+     * keeps the counter reset) whenever the bot is essentially at the target or
+     * is still making progress, so normal movement is never interrupted.
+     */
+    private boolean updateStuck(Vector3d currentPos, Vector3d targetPos) {
+        double dx = targetPos.x - currentPos.x;
+        double dz = targetPos.z - currentPos.z;
+        boolean hasSomewhereToGo = (dx * dx + dz * dz) > 0.25;
+        if (!hasSomewhereToGo) {
+            stuckTicks = 0;
+            lastProgressPos = new Vector3d(currentPos);
+            return false;
+        }
+
+        double moved = lastProgressPos == null ? Double.MAX_VALUE
+                : Math.pow(currentPos.x - lastProgressPos.x, 2) + Math.pow(currentPos.z - lastProgressPos.z, 2);
+        if (moved > 0.0025) { // advanced more than 0.05 blocks since last checkpoint
+            lastProgressPos = new Vector3d(currentPos);
+            stuckTicks = 0;
+            return false;
+        }
+        // ~2s of no meaningful progress (40 ticks @ 50ms).
+        if (++stuckTicks > 40) {
+            stuckTicks = 0;
+            lastProgressPos = null;
+            return true;
+        }
+        return false;
     }
 
     private void handleFollowTargetRepath() {
@@ -267,6 +303,8 @@ public class PathMovement extends Movement {
         if (newPath != null && newPath.size() > 1) {
             this.path = newPath;
             this.currentIndex = 0;
+            this.stuckTicks = 0;
+            this.lastProgressPos = null;
         } else if (MovementSync.INSTANCE.getFollowTargetId() != -1) {
             stopHorizontal();
             MovementSync.INSTANCE.velocity.set(new Vector3d(0, 0, 0));
@@ -305,17 +343,4 @@ public class PathMovement extends Movement {
 
     @Override
     public void onStop() { stopHorizontal(); }
-
-    /**
-     * Checks that the target node can still be entered by plain walking:
-     * feet and head passable with solid ground beneath. Unloaded chunks are
-     * assumed valid — they can't be verified yet.
-     */
-    private boolean isStillTraversable(Node target) {
-        xin.bbtt.world.World world = MovementSync.INSTANCE.getWorld();
-        if (!world.chunkLoaded(target.x >> 4, target.z >> 4)) return true;
-        return world.isPassable(new Vector3d(target.x, target.y, target.z))
-                && world.isPassable(new Vector3d(target.x, target.y + 1, target.z))
-                && world.getBlockStateAt(new Vector3d(target.x, target.y - 1, target.z)).isSolid();
-    }
 }
