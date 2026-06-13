@@ -46,7 +46,12 @@ public class PathMovement extends Movement {
     @Override
     public void onTick() {
         repathThrottler++;
-        if (repathRequested) {
+        // Don't honour an external repath request (block updates fire one on
+        // every nearby change) while airborne. Rebuilding the path from a point
+        // in mid-air drops the sprint/jump momentum, so the bot drifts across a
+        // gap instead of clearing it. Defer the repath until we're back on the
+        // ground.
+        if (repathRequested && MovementSync.INSTANCE.onGround.get()) {
             repathRequested = false;
             repathInternally();
         }
@@ -302,7 +307,12 @@ public class PathMovement extends Movement {
 
         if (newPath != null && newPath.size() > 1) {
             this.path = newPath;
-            this.currentIndex = 0;
+            // newPath[0] is the block we're already standing in. Targeting its
+            // centre would pull the bot backwards whenever it has moved past
+            // the centre, so head straight for the next node instead. This also
+            // keeps a gap-jump edge at index 1 as the live target, so a repath
+            // at the take-off block still launches the jump.
+            this.currentIndex = 1;
             this.stuckTicks = 0;
             this.lastProgressPos = null;
         } else if (MovementSync.INSTANCE.getFollowTargetId() != -1) {
