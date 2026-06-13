@@ -49,6 +49,12 @@ public class DigBlockMovement extends Movement {
         } else {
             side = dz > 0 ? Direction.SOUTH : Direction.NORTH;
         }
+
+        // Face the block before digging. Servers that validate line of sight
+        // reject START_DIGGING when the player isn't looking at the target;
+        // directLookAt also sets pitch, so digging a block overhead or
+        // underfoot aims at it instead of staring straight ahead.
+        MovementSync.INSTANCE.directLookAt(new Vector3d(pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5));
     }
 
     @Override
