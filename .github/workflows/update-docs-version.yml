@@ -1,0 +1,41 @@
+name: Update Documentation Version
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  update-docs-version:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Extract version info
+        id: version
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          RELEASE_URL: ${{ github.event.release.html_url }}
+        run: |
+          # Extract version without 'v' prefix if present
+          VERSION="${TAG#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "release_url=$RELEASE_URL" >> "$GITHUB_OUTPUT"
+
+          # Construct download URL for the JAR
+          DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/MovementSync-${VERSION}.jar"
+          echo "download_url=$DOWNLOAD_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Trigger documentation update
+        env:
+          GH_TOKEN: ${{ secrets.DOCS_UPDATE_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+          DOWNLOAD_URL: ${{ steps.version.outputs.download_url }}
+          RELEASE_URL: ${{ steps.version.outputs.release_url }}
+        run: |
+          # Send repository_dispatch event to documentation repo
+          gh api repos/huangdihd/MovementSync_documention/dispatches \
+            --method POST \
+            --field event_type=update_version \
+            --field client_payload[version]="$VERSION" \
+            --field client_payload[download_url]="$DOWNLOAD_URL" \
+            --field client_payload[release_url]="$RELEASE_URL"
