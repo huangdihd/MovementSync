@@ -26,10 +26,19 @@ public class InventoryManager {
 
     public int findBlock() {
         ItemStack[] inventory = getInventory();
-        if (inventory == null) return -1;
-        // Search hotbar (36-44)
+        if (inventory == null || inventory.length < 45) return -1;
+        // Search hotbar (36-44). An item id and a block-state id belong to
+        // separate registries, so resolve the item to its name and look the
+        // block up by name. Feeding the item id straight into isSolidBlock()
+        // matches unrelated blocks and reports an empty hotbar (air, id 0) as
+        // holding placeable blocks — which makes the planner build bridge/
+        // pillar paths that can't actually be executed.
         for (int i = 36; i < 45; i++) {
-            if (inventory[i] != null && xin.bbtt.Block.BlockStateParser.Instance.isSolidBlock(inventory[i].getId())) {
+            ItemStack stack = inventory[i];
+            if (stack == null) continue;
+            ItemRegistry.ItemEntry item = ItemRegistry.Instance.getItem(stack.getId());
+            if (item == null) continue;
+            if (xin.bbtt.Block.BlockStateParser.Instance.isSolidBlockByName(item.getName())) {
                 return i - 36;
             }
         }

@@ -13,6 +13,7 @@ import java.util.stream.Collectors;
 
 public class BlockStateParser {
     private final TreeMap<Integer, BlockEntry> rangeMap = new TreeMap<>();
+    private final Map<String, BlockEntry> nameToBlock = new java.util.HashMap<>();
     @Getter
     private static int blockStateRegistrySize = 0;
     public static BlockStateParser Instance = new BlockStateParser();
@@ -35,6 +36,7 @@ public class BlockStateParser {
         List<BlockEntry> entries = gson.fromJson(jsonContent, new TypeToken<List<BlockEntry>>(){}.getType());
         for (BlockEntry entry : entries) {
             rangeMap.put(entry.getMinStateId(), entry);
+            nameToBlock.put(entry.getName(), entry);
             if (entry.getMaxStateId() > maxId) {
                 maxId = entry.getMaxStateId();
             }
@@ -50,6 +52,18 @@ public class BlockStateParser {
 
     public boolean isSolidBlock(int stateId) {
         BlockEntry entry = getBlockByStateId(stateId);
+        return entry != null && "block".equals(entry.getBoundingBox());
+    }
+
+    /**
+     * Whether the block with the given registry name (e.g. "stone") has a full
+     * "block" bounding box. Use this to decide whether an inventory item is a
+     * placeable solid block: item ids and block-state ids are separate
+     * registries, so callers must resolve an item id to its name first rather
+     * than feeding the item id into {@link #isSolidBlock(int)}.
+     */
+    public boolean isSolidBlockByName(String blockName) {
+        BlockEntry entry = nameToBlock.get(blockName);
         return entry != null && "block".equals(entry.getBoundingBox());
     }
 
