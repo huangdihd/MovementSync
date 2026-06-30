@@ -51,8 +51,10 @@ public class RegistryDataListener extends SessionAdapter {
             int index = 0;
             for (var entry : registryPacket.getEntries()) {
                 NbtMap data = entry.getData();
+                // Entries with null data (known packs) must still occupy their slot:
+                // the dimension id from login/respawn is an index into the full registry.
+                dimensionTypes.add(data);
                 if (data != null) {
-                    dimensionTypes.add(data);
                     log.debug("Dimension type [{}]: {} → min_y={}, height={}",
                             index, entry.getId(), data.getInt("min_y"), data.getInt("height"));
                 }
@@ -68,7 +70,7 @@ public class RegistryDataListener extends SessionAdapter {
     public static int getMinWorldY() {
         if (currentDimensionIndex >= 0 && currentDimensionIndex < dimensionTypes.size()) {
             NbtMap data = dimensionTypes.get(currentDimensionIndex);
-            if (data != null) return data.getInt("min_y");
+            if (data != null && data.containsKey("min_y")) return data.getInt("min_y");
         }
         return -64; // fallback for vanilla overworld
     }
@@ -76,7 +78,9 @@ public class RegistryDataListener extends SessionAdapter {
     public static int getMaxWorldY() {
         if (currentDimensionIndex >= 0 && currentDimensionIndex < dimensionTypes.size()) {
             NbtMap data = dimensionTypes.get(currentDimensionIndex);
-            if (data != null) return data.getInt("min_y") + data.getInt("height") - 1;
+            if (data != null && data.containsKey("min_y") && data.containsKey("height")) {
+                return data.getInt("min_y") + data.getInt("height") - 1;
+            }
         }
         return 319; // fallback for vanilla overworld
     }

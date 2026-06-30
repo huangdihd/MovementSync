@@ -110,7 +110,8 @@ public class updateMotionTask implements Runnable {
             return;
         }
 
-        Vector3d velocity = MovementSync.INSTANCE.velocity.get();
+        Vector3d velocity = new Vector3d(MovementSync.INSTANCE.velocity.get());
+        final double initialVelY = velocity.y;
         Vector3d displacement = new Vector3d();
 
         checkOnGround();
@@ -129,11 +130,15 @@ public class updateMotionTask implements Runnable {
             displacement.add(new Vector3d(velocity).add(velocity).div(2));
         }
 
+        boolean collidedX = false;
+        boolean collidedZ = false;
+
         if (displacement.x != 0) {
             Vector3d testPosX = new Vector3d(position.x + displacement.x, position.y, position.z);
             if (isPlayerBoxColliding(testPosX)) {
                 displacement.x = 0;
                 velocity.x = 0;
+                collidedX = true;
             } else {
                 position.x += displacement.x;
             }
@@ -144,6 +149,7 @@ public class updateMotionTask implements Runnable {
             if (isPlayerBoxColliding(testPosZ)) {
                 displacement.z = 0;
                 velocity.z = 0;
+                collidedZ = true;
             } else {
                 position.z += displacement.z;
             }
@@ -173,7 +179,19 @@ public class updateMotionTask implements Runnable {
             velocity.y = 0;
         }
 
-        MovementSync.INSTANCE.velocity.set(velocity);
+        // Merge instead of set(): movements may change velocity concurrently during this
+        // tick (e.g. WalkMovement.onStop subtracting its component); overwriting the whole
+        // vector with our stale snapshot would silently undo those updates.
+        final double newVelY = velocity.y;
+        final boolean stopX = collidedX;
+        final boolean stopZ = collidedZ;
+        MovementSync.INSTANCE.velocity.updateAndGet(v -> {
+            Vector3d merged = new Vector3d(v);
+            if (merged.y == initialVelY) merged.y = newVelY;
+            if (stopX) merged.x = 0;
+            if (stopZ) merged.z = 0;
+            return merged;
+        });
         MovementSync.INSTANCE.position.set(position);
 
         if (!(lastPos.equals(position) && lastPitch == MovementSync.INSTANCE.pitch.get() && lastYaw == MovementSync.INSTANCE.yaw.get())) {

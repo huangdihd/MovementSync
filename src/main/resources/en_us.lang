@@ -46,6 +46,8 @@ movementsync.command.goto.searching=Searching path to %d, %d, %d...
 movementsync.command.goto.not_found=Path NOT found to (%d, %d, %d). Best partial path found after %d iterations.
 movementsync.command.goto.invalid_goal=Target position is not standable.
 movementsync.command.goto.success=Path found: length=%d, iterations=%d, time=%dms
+movementsync.command.goto.no_path=No path found to (%d, %d, %d) at all.
+movementsync.command.goto.partial=Goal not reachable yet; heading to the nearest reachable point (%d, %d, %d).
 
 movementsync.pathfinding.obstacle_detected=Obstacle detected at (%d, %d, %d): %s. Starting digging...
 movementsync.pathfinding.no_blocks=Gap detected but NO BLOCKS found in hotbar! Stopping path.
@@ -85,7 +87,7 @@ movementsync.command.lookatentity.usage=lookatentity <entityId>
 movementsync.command.goto.description=Pathfind to a coordinate
 movementsync.command.goto.usage=goto <x> <y> <z>
 movementsync.command.follow.description=Follow an entity by ID
-movementsync.command.follow.usage=follow <entityId>
+movementsync.command.follow.usage=follow <entityId> [keepRadius]
 movementsync.command.ride.description=Ride an entity or dismount
 movementsync.command.ride.usage=ride <entityId> | ride dismount
 

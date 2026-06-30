@@ -37,10 +37,37 @@ public class GapJumpStrategy extends AbstractMovementStrategy {
 
                 if (gapPassable && isStandable(tx, u.y, tz, world) && world.isPassable(new Vector3d(tx, u.y + 2, tz))) {
                     Node target = new Node(tx, u.y, tz);
-                    edges.add(new Edge(target, getEuclideanDistance(u, target) + 1.0));
+                    edges.add(new Edge(target, getEuclideanDistance(u, target) + 1.0, BuiltinMovementType.GAP_JUMP));
                 }
             }
         }
+
+        // Diagonal gap jump: a 1-wide diagonal hole, landing 2 cells away diagonally.
+        // The flight path crosses the mid diagonal cell and clips the cells adjacent
+        // to the takeoff and landing corners, so all of them must be clear.
+        int[] cdx = {1, 1, -1, -1};
+        int[] cdz = {1, -1, 1, -1};
+        for (int i = 0; i < 4; i++) {
+            int tx = u.x + 2 * cdx[i];
+            int tz = u.z + 2 * cdz[i];
+
+            boolean clear = isColumnClear(u.x + cdx[i], u.y, u.z + cdz[i], world)
+                    && isColumnClear(u.x + cdx[i], u.y, u.z, world)
+                    && isColumnClear(u.x, u.y, u.z + cdz[i], world)
+                    && isColumnClear(u.x + 2 * cdx[i], u.y, u.z + cdz[i], world)
+                    && isColumnClear(u.x + cdx[i], u.y, u.z + 2 * cdz[i], world);
+
+            if (clear && isStandable(tx, u.y, tz, world) && world.isPassable(new Vector3d(tx, u.y + 2, tz))) {
+                Node target = new Node(tx, u.y, tz);
+                edges.add(new Edge(target, getEuclideanDistance(u, target) + 1.0, BuiltinMovementType.GAP_JUMP));
+            }
+        }
         return edges;
+    }
+
+    private boolean isColumnClear(int x, int y, int z, World world) {
+        return world.isPassable(new Vector3d(x, y, z))
+                && world.isPassable(new Vector3d(x, y + 1, z))
+                && world.isPassable(new Vector3d(x, y + 2, z));
     }
 }

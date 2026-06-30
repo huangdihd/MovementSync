@@ -20,9 +20,9 @@ public class WalkStrategy extends AbstractMovementStrategy {
             Node target = new Node(nx, u.y, nz);
             
             if (isStandable(nx, u.y, nz, world)) {
-                edges.add(new Edge(target, getEuclideanDistance(u, target)));
+                edges.add(new Edge(target, getEuclideanDistance(u, target), BuiltinMovementType.WALK));
             } else if (i < 4 && canDigThrough(nx, u.y, nz, world)) {
-                edges.add(new Edge(target, getEuclideanDistance(u, target) + 100.0));
+                edges.add(new Edge(target, getEuclideanDistance(u, target) + 100.0, BuiltinMovementType.DIG));
             }
         }
         return edges;

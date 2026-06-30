@@ -1,0 +1,79 @@
+name: Promote to Release
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - closed
+
+jobs:
+  promote:
+    # Only trigger when a PR within this repository is merged, ignore PRs from forks
+    if: github.event.pull_request.merged == true && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          lfs: true
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Change SNAPSHOT to RELEASE
+        id: version
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          CURRENT_VERSION=$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout)
+          echo "Current version: $CURRENT_VERSION"
+          if [[ "$CURRENT_VERSION" == *"-SNAPSHOT" ]]; then
+            NEW_VERSION="${CURRENT_VERSION%-SNAPSHOT}-RELEASE"
+            echo "Changing version to: $NEW_VERSION"
+            mvn versions:set -DnewVersion="$NEW_VERSION" -DgenerateBackupPoms=false
+
+            git config --global user.name "github-actions[bot]"
+            git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add pom.xml
+            git commit -m "chore: promote version to $NEW_VERSION [skip ci]"
+            git push origin HEAD:"$BASE_REF"
+
+            echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Version is not a SNAPSHOT version. Skipping."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build JARs
+        if: steps.version.outputs.changed == 'true'
+        run: mvn clean package -DskipTests
+
+      - name: Create Draft Release
+        if: steps.version.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.new_version }}"
+          gh release create "$VERSION" \
+            --title "$VERSION" \
+            --draft \
+            --generate-notes \
+            target/MovementSync-$VERSION.jar \
+            target/original-MovementSync-$VERSION.jar
+
+      - name: Delete PR Head Branch
+        if: steps.version.outputs.changed == 'true'
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          git push origin --delete "$HEAD_REF" || echo "Branch already deleted"

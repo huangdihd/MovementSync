@@ -39,11 +39,12 @@ public class DStarLite {
         }
     }
 
-    public List<Node> findPath(int maxIterations) {
+    public List<PathStep> findPath(int maxIterations) {
         long startTime = System.currentTimeMillis();
         PriorityQueue<NodeEntry> openSet = new PriorityQueue<>();
         Map<Node, Double> gScore = new HashMap<>();
-        Map<Node, Node> cameFrom = new HashMap<>();
+        Map<Node, Node> cameFromNode = new HashMap<>();
+        Map<Node, MovementType> cameFromType = new HashMap<>();
         
         Node bestNode = start;
         double minH = context.getHeuristic(start, goal);
@@ -57,7 +58,7 @@ public class DStarLite {
             Node curr = openSet.poll().node;
             
             if (curr.equals(goal)) {
-                List<Node> path = reconstructPath(cameFrom, curr);
+                List<PathStep> path = reconstructPath(cameFromNode, cameFromType, curr);
                 xin.bbtt.MovementSync.getLogger().info(LangManager.get("movementsync.command.goto.success", path.size(), iterations, System.currentTimeMillis() - startTime));
                 return path;
             }
@@ -72,7 +73,8 @@ public class DStarLite {
                 Node neighbor = edge.getTarget();
                 double tentativeG = gScore.getOrDefault(curr, Double.POSITIVE_INFINITY) + edge.getCost();
                 if (tentativeG < gScore.getOrDefault(neighbor, Double.POSITIVE_INFINITY)) {
-                    cameFrom.put(neighbor, curr);
+                    cameFromNode.put(neighbor, curr);
+                    cameFromType.put(neighbor, edge.getType());
                     gScore.put(neighbor, tentativeG);
                     openSet.removeIf(e -> e.node.equals(neighbor));
                     openSet.add(new NodeEntry(neighbor, tentativeG + context.getHeuristic(neighbor, goal), tentativeG));
@@ -80,18 +82,19 @@ public class DStarLite {
             }
         }
         
-        xin.bbtt.MovementSync.getLogger().warn(LangManager.get("movementsync.command.goto.not_found", goal.x, goal.y, goal.z, iterations));
-        if (!bestNode.equals(start)) return reconstructPath(cameFrom, bestNode);
+        xin.bbtt.MovementSync.getLogger().debug(LangManager.get("movementsync.command.goto.not_found", goal.x, goal.y, goal.z, iterations));
+        if (!bestNode.equals(start)) return reconstructPath(cameFromNode, cameFromType, bestNode);
         return new ArrayList<>();
     }
 
-    private List<Node> reconstructPath(Map<Node, Node> cameFrom, Node current) {
-        List<Node> path = new ArrayList<>();
-        path.add(current);
-        while (cameFrom.containsKey(current)) {
-            current = cameFrom.get(current);
-            path.add(current);
+    private List<PathStep> reconstructPath(Map<Node, Node> cameFromNode, Map<Node, MovementType> cameFromType, Node current) {
+        List<PathStep> path = new ArrayList<>();
+        while (cameFromNode.containsKey(current)) {
+            MovementType type = cameFromType.get(current);
+            path.add(new PathStep(current, type));
+            current = cameFromNode.get(current);
         }
+        path.add(new PathStep(current, BuiltinMovementType.WALK));
         Collections.reverse(path);
         return path;
     }

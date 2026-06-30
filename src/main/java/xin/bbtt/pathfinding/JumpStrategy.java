@@ -23,9 +23,9 @@ public class JumpStrategy extends AbstractMovementStrategy {
             // Can only jump if head space is clear
             if (world.isPassable(new Vector3d(u.x, u.y + 2, u.z))) {
                 if (isStandable(nx, u.y + 1, nz, world)) {
-                    edges.add(new Edge(target, getEuclideanDistance(u, target) + 0.5));
+                    edges.add(new Edge(target, getEuclideanDistance(u, target) + 0.5, BuiltinMovementType.JUMP));
                 } else if (canDigThrough(nx, u.y + 1, nz, world)) {
-                    edges.add(new Edge(target, getEuclideanDistance(u, target) + 100.5));
+                    edges.add(new Edge(target, getEuclideanDistance(u, target) + 100.5, BuiltinMovementType.DIG));
                 }
             }
         }

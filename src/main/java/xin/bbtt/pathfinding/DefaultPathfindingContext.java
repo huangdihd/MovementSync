@@ -10,8 +10,14 @@ public class DefaultPathfindingContext implements PathfindingContext {
     private final PathfindingContext internalContext;
 
     public DefaultPathfindingContext(World world) {
-        this.internalContext = new PathfindingContextBuilder(world)
-                .addDefaultStrategies()
+        // Decide once at planning time: without blocks in the inventory,
+        // placement (bridge/pillar) edges are unusable anyway.
+        boolean hasBlocks = xin.bbtt.MovementSync.INSTANCE != null
+                && xin.bbtt.MovementSync.INSTANCE.getInventoryManager().findBlock() != -1;
+        PathfindingContextBuilder builder = new PathfindingContextBuilder(world);
+        this.internalContext = (hasBlocks
+                ? builder.addDefaultStrategies()
+                : builder.addNoPlacementStrategies())
                 .build();
     }
 

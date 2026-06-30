@@ -18,8 +18,16 @@ public class FollowCommandExecutor extends TabHighlightExecutor {
 
         try {
             int entityId = Integer.parseInt(args[0]);
+            double keepDistance = -1;
+            if (args.length >= 2) {
+                keepDistance = Double.parseDouble(args[1]);
+                if (keepDistance <= 0) {
+                    MovementSync.getLogger().info(LangManager.get("movementsync.command.common.usage", command.getUsage()));
+                    return;
+                }
+            }
             MovementSync.INSTANCE.setFollowTargetId(entityId);
-            MovementSync.INSTANCE.triggerAutoRepath();
+            MovementSync.INSTANCE.triggerAutoRepath(keepDistance);
             MovementSync.getLogger().info(LangManager.get("movementsync.command.follow.success", entityId));
         } catch (NumberFormatException e) {
             MovementSync.getLogger().info(LangManager.get("movementsync.command.common.usage", command.getUsage()));

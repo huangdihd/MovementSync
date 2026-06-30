@@ -46,6 +46,8 @@ movementsync.command.goto.searching=正在搜索去往 %d, %d, %d 的路径...
 movementsync.command.goto.not_found=未找到通往 (%d, %d, %d) 的路径。在 %d 次迭代后找到最佳部分路径。
 movementsync.command.goto.invalid_goal=目标位置不可站立。
 movementsync.command.goto.success=已找到路径: 长度=%d, 迭代次数=%d, 耗时=%dms
+movementsync.command.goto.no_path=无法找到通往 (%d, %d, %d) 的任何路径。
+movementsync.command.goto.partial=目标暂时不可达，先前往最近可达点 (%d, %d, %d)。
 
 movementsync.pathfinding.obstacle_detected=在 (%d, %d, %d) 检测到障碍物: %s。开始挖掘...
 movementsync.pathfinding.no_blocks=检测到空隙但快捷栏中没有方块！停止寻路。
@@ -85,7 +87,7 @@ movementsync.command.lookatentity.usage=lookatentity <entityId>
 movementsync.command.goto.description=寻路至指定坐标
 movementsync.command.goto.usage=goto <x> <y> <z>
 movementsync.command.follow.description=通过 ID 跟随实体
-movementsync.command.follow.usage=follow <entityId>
+movementsync.command.follow.usage=follow <entityId> [保持半径]
 movementsync.command.ride.description=骑乘实体或下车
 movementsync.command.ride.usage=ride <entityId> | ride dismount
 

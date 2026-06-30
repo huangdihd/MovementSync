@@ -4,19 +4,34 @@ import org.joml.Vector3d;
 import xin.bbtt.MovementSync;
 import xin.bbtt.movement.Movement;
 import xin.bbtt.pathfinding.Node;
-import xin.bbtt.Block.BlockState;
-import xin.bbtt.mcbot.LangManager;
+import xin.bbtt.pathfinding.PathStep;
+import xin.bbtt.pathfinding.BuiltinMovementType;
 
 import java.util.List;
 
 public class PathMovement extends Movement {
-    private List<Node> path;
+    /** Default follow keep radius in blocks. */
+    private static final double DEFAULT_FOLLOW_KEEP_DISTANCE = 1.0;
+
+    private List<PathStep> path;
     private int currentIndex = 0;
     private volatile boolean repathRequested = false;
     private int repathThrottler = 0;
+    /** Ticks since the last repath, to throttle update-driven repath bursts. */
+    private int ticksSinceRepath = 100;
+    /** Last position where we made horizontal progress, for stuck detection. */
+    private Vector3d lastProgressPos = null;
+    private int stuckTicks = 0;
+    /** While following, stay put as long as the target is within this horizontal distance (squared). */
+    private final double followKeepDistanceSq;
 
-    public PathMovement(List<Node> path) {
+    public PathMovement(List<PathStep> path) {
+        this(path, DEFAULT_FOLLOW_KEEP_DISTANCE);
+    }
+
+    public PathMovement(List<PathStep> path, double followKeepDistance) {
         this.path = path;
+        this.followKeepDistanceSq = followKeepDistance * followKeepDistance;
     }
 
     public void requestRepath() {
@@ -33,7 +48,15 @@ public class PathMovement extends Movement {
     @Override
     public void onTick() {
         repathThrottler++;
-        if (repathRequested) {
+        ticksSinceRepath++;
+        // External repath requests come in bursts as the bot moves (block
+        // updates, and chunks loading/unloading around it). Each repath rebuilds
+        // the path from the current block, so honouring every one makes the
+        // route jitter and step backwards a little. Throttle them, and defer
+        // while airborne — rebuilding mid-air would drop the jump momentum and
+        // drift the bot across a gap. Genuine path failures still replan
+        // promptly through stuck detection and goal/placement handling.
+        if (repathRequested && MovementSync.INSTANCE.onGround.get() && ticksSinceRepath >= 20) {
             repathRequested = false;
             repathInternally();
         }
@@ -45,7 +68,9 @@ public class PathMovement extends Movement {
             return;
         }
 
-        Node targetNode = path.get(currentIndex);
+        PathStep currentStep = path.get(currentIndex);
+        Node targetNode = currentStep.getNode();
+        xin.bbtt.pathfinding.MovementType currentType = currentStep.getType();
         Vector3d targetPos = new Vector3d(targetNode.x + 0.5, targetNode.y, targetNode.z + 0.5);
         Vector3d currentPos = MovementSync.INSTANCE.position.get();
 
@@ -55,18 +80,82 @@ public class PathMovement extends Movement {
                 finishPath();
                 return;
             }
-            targetNode = path.get(currentIndex);
+            currentStep = path.get(currentIndex);
+            targetNode = currentStep.getNode();
+            currentType = currentStep.getType();
             targetPos = new Vector3d(targetNode.x + 0.5, targetNode.y, targetNode.z + 0.5);
         }
 
         if (isPathDeviated(currentPos, targetNode)) return;
         if (isFallingUnexpectedly(currentPos, targetPos)) return;
 
-        if (checkAndDig(targetNode)) return;
-        if (checkAndPlace(currentPos, targetNode)) return;
+        boolean isGapJump = currentType == BuiltinMovementType.GAP_JUMP;
+        boolean onGround = MovementSync.INSTANCE.onGround.get();
 
-        applyPreciseMovement(currentPos, targetPos, calculateIsGapJump(targetNode));
+        if (currentType != null && (onGround || !currentType.requiresGroundToDispatch())) {
+            Node prevNode = currentIndex > 0 ? path.get(currentIndex - 1).getNode() : new Node((int)Math.floor(currentPos.x), (int)Math.floor(currentPos.y), (int)Math.floor(currentPos.z));
+            Movement customMovement = currentType.createMovement(prevNode, targetNode);
+            if (customMovement != null) {
+                MovementSync.INSTANCE.getMovementController().insertMovement(customMovement);
+                return;
+            }
+            if (!currentType.canWalkWhenNoMovement()) {
+                // A placement move (bridge/pillar) couldn't run — typically the
+                // hotbar ran out of blocks mid-path. Walking on would step into
+                // the gap it was meant to fill, so replan: with an empty hotbar
+                // the planner switches to no-placement strategies and routes
+                // around it (or reports the goal unreachable) instead.
+                repathInternally();
+                return;
+            }
+        }
+
+        // Stuck recovery: if the bot is on the ground with somewhere to go but
+        // hasn't advanced for a while, the world likely changed since planning
+        // (a block appeared, the ground vanished). Replan — but ONLY after a
+        // real stall. A per-tick "is the target still walkable?" replan would
+        // keep resetting the path to index 0, whose first target is the centre
+        // of the bot's current block; mid-step that pulls the bot backwards,
+        // producing a constant "backing up" stutter.
+        if (!isGapJump && onGround && !MovementSync.INSTANCE.isRiding() && updateStuck(currentPos, targetPos)) {
+            repathInternally();
+            return;
+        }
+
+        applyPreciseMovement(currentPos, targetPos, isGapJump);
         updateLookDirection(currentPos, targetPos);
+    }
+
+    /**
+     * Tracks horizontal progress toward the target and reports whether the bot
+     * has been stalled long enough to warrant a replan. Returns false (and
+     * keeps the counter reset) whenever the bot is essentially at the target or
+     * is still making progress, so normal movement is never interrupted.
+     */
+    private boolean updateStuck(Vector3d currentPos, Vector3d targetPos) {
+        double dx = targetPos.x - currentPos.x;
+        double dz = targetPos.z - currentPos.z;
+        boolean hasSomewhereToGo = (dx * dx + dz * dz) > 0.25;
+        if (!hasSomewhereToGo) {
+            stuckTicks = 0;
+            lastProgressPos = new Vector3d(currentPos);
+            return false;
+        }
+
+        double moved = lastProgressPos == null ? Double.MAX_VALUE
+                : Math.pow(currentPos.x - lastProgressPos.x, 2) + Math.pow(currentPos.z - lastProgressPos.z, 2);
+        if (moved > 0.0025) { // advanced more than 0.05 blocks since last checkpoint
+            lastProgressPos = new Vector3d(currentPos);
+            stuckTicks = 0;
+            return false;
+        }
+        // ~2s of no meaningful progress (40 ticks @ 50ms).
+        if (++stuckTicks > 40) {
+            stuckTicks = 0;
+            lastProgressPos = null;
+            return true;
+        }
+        return false;
     }
 
     private void handleFollowTargetRepath() {
@@ -77,19 +166,20 @@ public class PathMovement extends Movement {
         if (entity == null) return;
 
         Vector3d targetPos = entity.getPosition();
-        Node lastNode = path.get(path.size() - 1);
+        if (isWithinFollowRange(targetPos)) return;
+
+        PathStep lastStep = path.get(path.size() - 1);
+        Node lastNode = lastStep.getNode();
         double distSq = Math.pow(targetPos.x - (lastNode.x + 0.5), 2) + Math.pow(targetPos.z - (lastNode.z + 0.5), 2);
         if (distSq > 4.0) {
             repathInternally();
         }
     }
 
-    private boolean calculateIsGapJump(Node targetNode) {
-        if (currentIndex <= 0) return false;
-        Node prevNode = path.get(currentIndex - 1);
-        int dx = Math.abs(targetNode.x - prevNode.x);
-        int dz = Math.abs(targetNode.z - prevNode.z);
-        return dx > 1 || dz > 1;
+    private boolean isWithinFollowRange(Vector3d targetPos) {
+        Vector3d currentPos = MovementSync.INSTANCE.position.get();
+        double distSq = Math.pow(currentPos.x - targetPos.x, 2) + Math.pow(currentPos.z - targetPos.z, 2);
+        return distSq <= followKeepDistanceSq;
     }
 
     private void updateLookDirection(Vector3d currentPos, Vector3d targetPos) {
@@ -139,6 +229,9 @@ public class PathMovement extends Movement {
         }
 
         double currentSpeed = MovementSync.movementSpeed;
+        // Sprint during gap jumps: a diagonal landing is ~2.83 blocks away and
+        // plain walking speed cannot carry the jump arc that far.
+        if (isGapJump) currentSpeed *= 1.3;
         if (dist < 0.25) {
             currentSpeed *= (dist / 0.25);
             if (dist < 0.05) {
@@ -177,15 +270,11 @@ public class PathMovement extends Movement {
         xin.bbtt.Entity.Entity entity = MovementSync.INSTANCE.getWorld().getEntity(followTargetId);
         if (entity == null) { markFinished(); return; }
 
-        Vector3d currentPos = MovementSync.INSTANCE.position.get();
         Vector3d targetPos = entity.getPosition();
-        double distSq = Math.pow(currentPos.x - targetPos.x, 2) + Math.pow(currentPos.z - targetPos.z, 2);
-        
-        if (distSq > 9.0) { repathInternally(); return; }
-        
+        if (!isWithinFollowRange(targetPos)) { repathInternally(); return; }
+
         stopHorizontal();
         MovementSync.INSTANCE.velocity.set(new Vector3d(0, 0, 0));
-        if (distSq < 4.0) repathInternally();
     }
 
     private void handleGoalFinish(org.joml.Vector3i goal) {
@@ -207,6 +296,7 @@ public class PathMovement extends Movement {
     }
 
     private void repathInternally() {
+        ticksSinceRepath = 0;
         org.joml.Vector3i targetNodePos = MovementSync.INSTANCE.getActiveGoal();
         if (MovementSync.INSTANCE.getFollowTargetId() != -1) {
             xin.bbtt.Entity.Entity entity = MovementSync.INSTANCE.getWorld().getEntity(MovementSync.INSTANCE.getFollowTargetId());
@@ -228,15 +318,22 @@ public class PathMovement extends Movement {
         }
 
         xin.bbtt.pathfinding.DStarLite pathfinder = new xin.bbtt.pathfinding.DStarLite(start, goalNode, MovementSync.INSTANCE.getWorld());
-        List<Node> newPath = pathfinder.findPath(2000);
-        
+        List<PathStep> newPath = pathfinder.findPath(2000);
+
         if (newPath != null && newPath.size() > 1) {
             this.path = newPath;
-            this.currentIndex = 0;
+            // newPath[0] is the block we're already standing in. Targeting its
+            // centre would pull the bot backwards whenever it has moved past
+            // the centre, so head straight for the next node instead. This also
+            // keeps a gap-jump edge at index 1 as the live target, so a repath
+            // at the take-off block still launches the jump.
+            this.currentIndex = 1;
+            this.stuckTicks = 0;
+            this.lastProgressPos = null;
         } else if (MovementSync.INSTANCE.getFollowTargetId() != -1) {
             stopHorizontal();
             MovementSync.INSTANCE.velocity.set(new Vector3d(0, 0, 0));
-            this.path = List.of(start);
+            this.path = List.of(new PathStep(start, BuiltinMovementType.WALK));
             this.currentIndex = 0;
         } else {
             markFinished();
@@ -271,58 +368,4 @@ public class PathMovement extends Movement {
 
     @Override
     public void onStop() { stopHorizontal(); }
-
-    private boolean checkAndDig(Node target) {
-        org.joml.Vector3i[] toCheck = { new org.joml.Vector3i(target.x, target.y, target.z), new org.joml.Vector3i(target.x, target.y + 1, target.z) };
-        for (org.joml.Vector3i p : toCheck) {
-            BlockState state = MovementSync.INSTANCE.getWorld().getBlockStateAt(new Vector3d(p.x, p.y, p.z));
-            if (state.isPassable() || !state.diggable()) continue;
-
-            MovementSync.getLogger().info(LangManager.get("movementsync.pathfinding.obstacle_detected", p.x, p.y, p.z, state.blockName()));
-            int toolSlot = MovementSync.INSTANCE.getInventoryManager().findBestTool(state.material());
-            if (toolSlot != -1) MovementSync.INSTANCE.getInventoryManager().switchToSlot(toolSlot);
-            MovementSync.INSTANCE.getMovementController().insertMovement(new DigBlockMovement(org.cloudburstmc.math.vector.Vector3i.from(p.x, p.y, p.z)));
-            return true;
-        }
-        return false;
-    }
-
-    private boolean checkAndPlace(Vector3d currentPos, Node target) {
-        Vector3d groundPos = new Vector3d(target.x, target.y - 1, target.z);
-        BlockState ground = MovementSync.INSTANCE.getWorld().getBlockStateAt(groundPos);
-        if (ground.isSolid()) return false;
-
-        int blockSlot = MovementSync.INSTANCE.getInventoryManager().findBlock();
-        if (blockSlot == -1) {
-            MovementSync.getLogger().warn(LangManager.get("movementsync.pathfinding.no_blocks"));
-            finishPath();
-            return true;
-        }
-
-        int[] dx = {0, 0, 0, 0, 1, -1}, dy = {1, -1, 0, 0, 0, 0}, dz = {0, 0, 1, -1, 0, 0};
-        org.geysermc.mcprotocollib.protocol.data.game.entity.object.Direction[] sides = {
-            org.geysermc.mcprotocollib.protocol.data.game.entity.object.Direction.DOWN, org.geysermc.mcprotocollib.protocol.data.game.entity.object.Direction.UP,
-            org.geysermc.mcprotocollib.protocol.data.game.entity.object.Direction.NORTH, org.geysermc.mcprotocollib.protocol.data.game.entity.object.Direction.SOUTH,
-            org.geysermc.mcprotocollib.protocol.data.game.entity.object.Direction.WEST, org.geysermc.mcprotocollib.protocol.data.game.entity.object.Direction.EAST
-        };
-
-        for (int i = 0; i < 6; i++) {
-            org.joml.Vector3i neighbor = new org.joml.Vector3i(target.x + dx[i], (target.y - 1) + dy[i], target.z + dz[i]);
-            if (!MovementSync.INSTANCE.getWorld().getBlockStateAt(new Vector3d(neighbor.x, neighbor.y, neighbor.z)).isSolid()) continue;
-
-            MovementSync.INSTANCE.getInventoryManager().switchToSlot(blockSlot);
-            boolean isPillar = (target.x == (int)Math.floor(currentPos.x) && target.z == (int)Math.floor(currentPos.z) && target.y > (int)Math.floor(currentPos.y));
-            
-            if (isPillar) {
-                MovementSync.getLogger().info(LangManager.get("movementsync.pathfinding.pillaring", target.x, target.y - 1, target.z));
-                MovementSync.INSTANCE.getMovementController().insertMovement(new PlaceBlockMovement(org.cloudburstmc.math.vector.Vector3i.from(target.x, target.y - 1, target.z), org.cloudburstmc.math.vector.Vector3i.from(neighbor.x, neighbor.y, neighbor.z), sides[i], false));
-                MovementSync.INSTANCE.getMovementController().insertMovement(new JumpMovement());
-            } else {
-                MovementSync.getLogger().info(LangManager.get("movementsync.pathfinding.bridging", target.x, target.y - 1, target.z));
-                MovementSync.INSTANCE.getMovementController().insertMovement(new PlaceBlockMovement(org.cloudburstmc.math.vector.Vector3i.from(target.x, target.y - 1, target.z), org.cloudburstmc.math.vector.Vector3i.from(neighbor.x, neighbor.y, neighbor.z), sides[i], true));
-            }
-            return true;
-        }
-        return false;
-    }
 }
