@@ -13,7 +13,7 @@
 
     <groupId>xin.bbtt</groupId>
     <artifactId>MovementSync</artifactId>
-    <version>1.8.0-SNAPSHOT</version>
+    <version>1.8.0-RELEASE</version>
 
     <dependencies>
         <dependency>
