@@ -40,10 +40,12 @@ jobs:
             NEW_VERSION="${CURRENT_VERSION%-SNAPSHOT}-RELEASE"
             echo "Changing version to: $NEW_VERSION"
             mvn versions:set -DnewVersion="$NEW_VERSION" -DgenerateBackupPoms=false
+            sed -i "s/^version: .*/version: $NEW_VERSION/" src/main/resources/plugin.yml
+            sed -i "s|<version>$CURRENT_VERSION</version>|<version>$NEW_VERSION</version>|" dependency-reduced-pom.xml
 
             git config --global user.name "github-actions[bot]"
             git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add pom.xml
+            git add pom.xml src/main/resources/plugin.yml dependency-reduced-pom.xml
             git commit -m "chore: promote version to $NEW_VERSION [skip ci]"
             git push origin HEAD:"$BASE_REF"
 
