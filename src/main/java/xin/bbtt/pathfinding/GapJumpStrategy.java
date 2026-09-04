@@ -35,8 +35,10 @@ public class GapJumpStrategy extends AbstractMovementStrategy {
                     }
                 }
 
-                if (gapPassable && isStandable(tx, u.y, tz, world) && world.isPassable(new Vector3d(tx, u.y + 2, tz))) {
-                    Node target = new Node(tx, u.y, tz);
+                Node target = new Node(tx, u.y, tz);
+                if (gapPassable && isStandable(tx, u.y, tz, world)
+                        && StandablePositionResolver.canJump(world, u, target)
+                        && world.isPassable(new Vector3d(tx, u.y + 2, tz))) {
                     edges.add(new Edge(target, getEuclideanDistance(u, target) + 1.0, BuiltinMovementType.GAP_JUMP));
                 }
             }
@@ -57,8 +59,10 @@ public class GapJumpStrategy extends AbstractMovementStrategy {
                     && isColumnClear(u.x + 2 * cdx[i], u.y, u.z + cdz[i], world)
                     && isColumnClear(u.x + cdx[i], u.y, u.z + 2 * cdz[i], world);
 
-            if (clear && isStandable(tx, u.y, tz, world) && world.isPassable(new Vector3d(tx, u.y + 2, tz))) {
-                Node target = new Node(tx, u.y, tz);
+            Node target = new Node(tx, u.y, tz);
+            if (clear && isStandable(tx, u.y, tz, world)
+                    && StandablePositionResolver.canJump(world, u, target)
+                    && world.isPassable(new Vector3d(tx, u.y + 2, tz))) {
                 edges.add(new Edge(target, getEuclideanDistance(u, target) + 1.0, BuiltinMovementType.GAP_JUMP));
             }
         }

@@ -5,13 +5,15 @@ import org.joml.Vector3d;
 import xin.bbtt.MovementSync;
 import xin.bbtt.mcbot.Bot;
 import xin.bbtt.mcbot.Server;
-import xin.bbtt.world.Direction;
-import xin.bbtt.world.World;
 
 import static xin.bbtt.MovementSync.gravitationalAcceleration;
 import static xin.bbtt.MovementSync.terminalVelocity;
 
 public class updateMotionTask implements Runnable {
+    private static final double PLAYER_HALF_WIDTH = 0.299;
+    private static final double MAX_STEP_HEIGHT =
+        xin.bbtt.pathfinding.StandablePositionResolver.MAX_STEP_RISE;
+    private static final double STEP_EPSILON = 1.0e-7;
 
     Vector3d lastPos = new Vector3d();
     float lastPitch = 0;
@@ -35,47 +37,56 @@ public class updateMotionTask implements Runnable {
         MovementSync.INSTANCE.onGround.set(MovementSync.INSTANCE.getWorld().isOnGround(position));
     }
 
-    private boolean isWallCollision(Vector3d pos) {
-        return MovementSync.INSTANCE.getWorld().isSolid(pos);
-    }
-
     private boolean isPlayerBoxColliding(Vector3d pos) {
-        double w = 0.299; // Half width for player (0.6 / 2)
-        double hMax = 1.8;
+        double halfWidth = PLAYER_HALF_WIDTH; // Player width is 0.6 blocks.
+        double height = 1.8;
 
         if (MovementSync.INSTANCE.isRiding()) {
             xin.bbtt.Entity.Entity vehicle = MovementSync.INSTANCE.getWorld().getEntity(MovementSync.INSTANCE.getVehicleId());
             if (vehicle != null) {
-                w = vehicle.getWidth() / 2.0;
-                hMax = vehicle.getHeight();
+                halfWidth = vehicle.getWidth() / 2.0;
+                height = vehicle.getHeight();
             }
         } else {
-            // Adjust player height based on pose
             Object pose = MovementSync.INSTANCE.getSelfMetadata().get("pose");
             if (pose != null) {
                 String poseName = pose.toString();
                 if (poseName.contains("SNEAKING")) {
-                    hMax = 1.5;
+                    height = 1.5;
                 } else if (poseName.contains("SWIMMING") || poseName.contains("FALL_FLYING")) {
-                    hMax = 0.6;
+                    height = 0.6;
                 }
             }
         }
 
-        double[] heights = {0.0, hMax / 2.0, hMax - 0.01};
+        return MovementSync.INSTANCE.getWorld().isBoxColliding(
+            pos.x - halfWidth, pos.y, pos.z - halfWidth,
+            pos.x + halfWidth, pos.y + height, pos.z + halfWidth);
+    }
 
-        for (double h : heights) {
-            Vector3d[] corners = {
-                    new Vector3d(pos.x - w, pos.y + h, pos.z - w),
-                    new Vector3d(pos.x + w, pos.y + h, pos.z - w),
-                    new Vector3d(pos.x - w, pos.y + h, pos.z + w),
-                    new Vector3d(pos.x + w, pos.y + h, pos.z + w)
-            };
-            for (Vector3d corner : corners) {
-                if (isWallCollision(corner)) return true;
-            }
-        }
-        return false;
+    /**
+     * Applies vanilla-style automatic stepping for grounded horizontal motion.
+     * The candidate support height comes from the exact block-state collision
+     * boxes, so path blocks, slabs, stairs, trapdoors, and directional shapes
+     * keep their real heights instead of being treated as whole cubes.
+     */
+    private boolean tryStepUp(
+            Vector3d position,
+            double candidateX,
+            double candidateZ,
+            double tickStartY) {
+        if (!MovementSync.INSTANCE.onGround.get() || MovementSync.INSTANCE.isRiding()) return false;
+
+        java.util.OptionalDouble support = MovementSync.INSTANCE.getWorld().findHighestCollisionTop(
+            candidateX - PLAYER_HALF_WIDTH, position.y + STEP_EPSILON, candidateZ - PLAYER_HALF_WIDTH,
+            candidateX + PLAYER_HALF_WIDTH, tickStartY + MAX_STEP_HEIGHT, candidateZ + PLAYER_HALF_WIDTH
+        );
+        if (support.isEmpty()) return false;
+
+        Vector3d stepped = new Vector3d(candidateX, support.getAsDouble(), candidateZ);
+        if (isPlayerBoxColliding(stepped)) return false;
+        position.set(stepped);
+        return true;
     }
 
     @Override
@@ -106,6 +117,7 @@ public class updateMotionTask implements Runnable {
             
             Bot.INSTANCE.getSession().send(new org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.level.ServerboundPlayerInputPacket(
                 sideways > 0, sideways < 0, forward > 0, forward < 0, jump, sneak, false));
+            MovementSync.INSTANCE.applyPersistentGazeIfIdle();
             syncPositionToServer();
             return;
         }
@@ -120,6 +132,7 @@ public class updateMotionTask implements Runnable {
         }
 
         Vector3d position = new Vector3d(MovementSync.INSTANCE.position.get());
+        final double tickStartY = position.y;
 
         if (velocity.y > terminalVelocity) {
             if (!MovementSync.INSTANCE.onGround.get()) velocity.add(gravitationalAcceleration);
@@ -136,9 +149,11 @@ public class updateMotionTask implements Runnable {
         if (displacement.x != 0) {
             Vector3d testPosX = new Vector3d(position.x + displacement.x, position.y, position.z);
             if (isPlayerBoxColliding(testPosX)) {
-                displacement.x = 0;
-                velocity.x = 0;
-                collidedX = true;
+                if (!tryStepUp(position, testPosX.x, testPosX.z, tickStartY)) {
+                    displacement.x = 0;
+                    velocity.x = 0;
+                    collidedX = true;
+                }
             } else {
                 position.x += displacement.x;
             }
@@ -147,9 +162,11 @@ public class updateMotionTask implements Runnable {
         if (displacement.z != 0) {
             Vector3d testPosZ = new Vector3d(position.x, position.y, position.z + displacement.z);
             if (isPlayerBoxColliding(testPosZ)) {
-                displacement.z = 0;
-                velocity.z = 0;
-                collidedZ = true;
+                if (!tryStepUp(position, testPosZ.x, testPosZ.z, tickStartY)) {
+                    displacement.z = 0;
+                    velocity.z = 0;
+                    collidedZ = true;
+                }
             } else {
                 position.z += displacement.z;
             }
@@ -163,20 +180,14 @@ public class updateMotionTask implements Runnable {
             }
         }
 
-        Vector3d lowest = new Vector3d(position);
-        lowest.y = Math.ceil(position.y);
-
-        if (!MovementSync.INSTANCE.onGround.get()) {
-            while (!MovementSync.INSTANCE.getWorld().isOnGround(lowest) && lowest.y > World.getMinWorldY()) {
-                lowest.add(Direction.DOWN.getUnitVector());
-            }
-        }
-
-        position.y += displacement.y;
-
-        if (position.y < lowest.y){
-            position.y = lowest.y;
-            velocity.y = 0;
+        if (displacement.y < 0) {
+            double desiredY = position.y + displacement.y;
+            double resolvedY = VerticalCollisionResolver.resolveDownwardY(
+                MovementSync.INSTANCE.getWorld(), position, 0.299, displacement.y);
+            position.y = resolvedY;
+            if (resolvedY > desiredY + 1.0e-9) velocity.y = 0;
+        } else {
+            position.y += displacement.y;
         }
 
         // Merge instead of set(): movements may change velocity concurrently during this
@@ -193,6 +204,7 @@ public class updateMotionTask implements Runnable {
             return merged;
         });
         MovementSync.INSTANCE.position.set(position);
+        MovementSync.INSTANCE.applyPersistentGazeIfIdle();
 
         if (!(lastPos.equals(position) && lastPitch == MovementSync.INSTANCE.pitch.get() && lastYaw == MovementSync.INSTANCE.yaw.get())) {
             checkOnGround();

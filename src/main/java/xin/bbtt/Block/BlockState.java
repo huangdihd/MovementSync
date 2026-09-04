@@ -29,7 +29,18 @@ public record BlockState(String blockName, int stateId, Map<String, String> prop
         // If it's null, it's likely a non-solid block or air that didn't have the field.
         if (boundingBox == null) return true;
 
+        // Doors, trapdoors and fence gates are registered with a full "block"
+        // bounding box regardless of state; their open property decides
+        // walkability. An open door cell must be routable after a caller opens it.
+        if ("true".equals(getProperty("open")) && isOpenablePassage()) return true;
+
         return false;
+    }
+
+    private boolean isOpenablePassage() {
+        return blockName.endsWith("_door")
+                || blockName.endsWith("_trapdoor")
+                || blockName.endsWith("_fence_gate");
     }
 
     /**

@@ -12,19 +12,36 @@ import xin.bbtt.inventory.ToolUtils;
 import xin.bbtt.mcbot.Bot;
 import xin.bbtt.movement.Movement;
 
-public class DigBlockMovement extends Movement {
+public class DigBlockMovement extends Movement implements NavigationBoundMovement {
     private final Vector3i pos;
+    private final int toolSlot;
     private long breakTime = -1;
     private long startTime = -1;
     private boolean started = false;
     private Direction side;
+    private Long navigationGeneration;
 
     public DigBlockMovement(Vector3i pos) {
+        this(pos, -1);
+    }
+
+    public DigBlockMovement(Vector3i pos, int toolSlot) {
         this.pos = pos;
+        this.toolSlot = toolSlot;
+    }
+
+    @Override
+    public void bindNavigationRequest(long generation) {
+        this.navigationGeneration = generation;
     }
 
     @Override
     public void init() {
+        if (!isAuthorized()) {
+            setFinished(true);
+            return;
+        }
+        if (toolSlot >= 0) MovementSync.INSTANCE.getInventoryManager().switchToSlot(toolSlot);
         BlockState state = MovementSync.INSTANCE.getWorld().getBlockStateAt(new Vector3d(pos.getX(), pos.getY(), pos.getZ()));
         ItemStack held = MovementSync.INSTANCE.getInventoryManager().getHeldItem();
         
@@ -59,11 +76,21 @@ public class DigBlockMovement extends Movement {
 
     @Override
     public void onTick() {
+        if (!isAuthorized()) {
+            setFinished(true);
+            return;
+        }
         if (!started) {
             MovementSync.getLogger().info(xin.bbtt.mcbot.LangManager.get("movementsync.movement.digging.start", pos.getX(), pos.getY(), pos.getZ(), breakTime));
-            Bot.INSTANCE.getSession().send(new ServerboundPlayerActionPacket(PlayerAction.START_DIGGING, pos, side, Bot.INSTANCE.getAndIncreaseSequence()));
-            startTime = System.currentTimeMillis();
-            started = true;
+            if (!runAuthorized(() -> {
+                Bot.INSTANCE.getSession().send(new ServerboundPlayerActionPacket(
+                    PlayerAction.START_DIGGING, pos, side, Bot.INSTANCE.getAndIncreaseSequence()));
+                startTime = System.currentTimeMillis();
+                started = true;
+            })) {
+                setFinished(true);
+                return;
+            }
             
             if (breakTime == 0) {
                 finishDigging();
@@ -77,8 +104,14 @@ public class DigBlockMovement extends Movement {
     }
 
     private void finishDigging() {
-        Bot.INSTANCE.getSession().send(new ServerboundPlayerActionPacket(PlayerAction.FINISH_DIGGING, pos, side, Bot.INSTANCE.getAndIncreaseSequence()));
-        setFinished(true);
+        if (!runAuthorized(() -> {
+            Bot.INSTANCE.getSession().send(new ServerboundPlayerActionPacket(
+                PlayerAction.FINISH_DIGGING, pos, side, Bot.INSTANCE.getAndIncreaseSequence()));
+            setFinished(true);
+        })) {
+            setFinished(true);
+            return;
+        }
         MovementSync.getLogger().info(xin.bbtt.mcbot.LangManager.get("movementsync.movement.digging.finished"));
     }
 
@@ -92,5 +125,21 @@ public class DigBlockMovement extends Movement {
         if (started && !isFinished()) {
             Bot.INSTANCE.getSession().send(new ServerboundPlayerActionPacket(PlayerAction.CANCEL_DIGGING, pos, side, Bot.INSTANCE.getAndIncreaseSequence()));
         }
+    }
+
+    private boolean isAuthorized() {
+        return navigationGeneration == null
+                || MovementSync.INSTANCE.isNavigationRequestCurrent(navigationGeneration);
+    }
+
+    private boolean runAuthorized(Runnable action) {
+        return navigationGeneration == null
+                ? runDirect(action)
+                : MovementSync.INSTANCE.runIfNavigationRequestCurrent(navigationGeneration, action);
+    }
+
+    private static boolean runDirect(Runnable action) {
+        action.run();
+        return true;
     }
 }

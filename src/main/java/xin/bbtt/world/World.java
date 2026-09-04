@@ -14,6 +14,8 @@ import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.level.Clien
 import org.joml.Vector3d;
 import org.joml.Vector3i;
 import xin.bbtt.Block.BlockStateParser;
+import xin.bbtt.collision.CollisionBox;
+import xin.bbtt.collision.CollisionShapeRegistry;
 import xin.bbtt.Entity.Entity;
 import xin.bbtt.MovementSync;
 import xin.bbtt.events.BlockChangeEvent;
@@ -27,6 +29,9 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 public class World {
+    /** Immutable horizontal Minecraft chunk coordinate. */
+    public record ChunkPosition(int x, int z) {}
+
     /**
      * Returns true when {@code y} is within the current world height range,
      * dynamically read from the dimension type registry.  Falls back to the
@@ -80,42 +85,25 @@ public class World {
         Vector3i chunk = getChunk(position);
         if (!chunkLoaded(chunk.x, chunk.z)) return true;
 
-        Vector3d bottomBlockPos = new Vector3d(position).floor().add(Direction.DOWN.getUnitVector());
-
-        if (position.y > (int)position.y + 0.0001) {
-            bottomBlockPos = position;
-            bottomBlockPos.y = (int)position.y;
-        }
-
-        boolean result = isSolid(bottomBlockPos);
-        // North
-        if (1 + Math.floor(position.z) - position.z > 0.7) {
-            result |= isSolid(new Vector3d(bottomBlockPos).add(Direction.NORTH.getUnitVector()));
-        }
-        // East
-        if (position.x - Math.floor(position.x) > 0.7) {
-            result |= isSolid(new Vector3d(bottomBlockPos).add(Direction.EAST.getUnitVector()));
-        }
-        // South
-        if (position.z - Math.floor(position.z) > 0.7) {
-            result |=  isSolid(new Vector3d(bottomBlockPos).add(Direction.SOUTH.getUnitVector()));
-        }
-        // West
-        if (1 + Math.floor(position.x) - position.x > 0.7) {
-            result |=  isSolid(new Vector3d(bottomBlockPos).add(Direction.WEST.getUnitVector()));
-        }
-        return result;
+        double halfWidth = 0.299;
+        double tolerance = 1.0e-4;
+        return findHighestCollisionTop(
+            position.x - halfWidth, position.y - tolerance, position.z - halfWidth,
+            position.x + halfWidth, position.y + tolerance, position.z + halfWidth
+        ).isPresent();
     }
 
     public void clear(){
-        chunks.clear();
-        entities.clear();
+        lock.writeLock().lock();
+        try {
+            chunks.clear();
+            entities.clear();
+        } finally {
+            lock.writeLock().unlock();
+        }
     }
 
     public void handleLevelChunkAndLightUpdate(ClientboundLevelChunkWithLightPacket levelChunkWithLightPacket) {
-        if (!chunks.containsKey(levelChunkWithLightPacket.getX())) {
-            chunks.put(levelChunkWithLightPacket.getX(), new ConcurrentHashMap<>());
-        }
         ByteBuf chunkBuf = Unpooled.wrappedBuffer(levelChunkWithLightPacket.getChunkData());
         try {
             List<ChunkSection> readSections = new ArrayList<>();
@@ -132,10 +120,22 @@ public class World {
             for (int y = 0;y < readSections.size();y++) {
                 sections.put(lowest + y, readSections.get(y));
             }
-            chunks.get(levelChunkWithLightPacket.getX()).put(levelChunkWithLightPacket.getZ(), sections);
-            LoadChunkEvent loadChunkEvent = new LoadChunkEvent(levelChunkWithLightPacket.getX(), levelChunkWithLightPacket.getZ());
+            lock.writeLock().lock();
+            try {
+                chunks.computeIfAbsent(
+                    levelChunkWithLightPacket.getX(), ignored -> new ConcurrentHashMap<>()
+                ).put(levelChunkWithLightPacket.getZ(), sections);
+            } finally {
+                lock.writeLock().unlock();
+            }
+            LoadChunkEvent loadChunkEvent = new LoadChunkEvent(
+                levelChunkWithLightPacket.getX(), levelChunkWithLightPacket.getZ()
+            );
             Bot.INSTANCE.getPluginManager().events().callEvent(loadChunkEvent);
-            MovementSync.getLogger().debug("Loaded chunk: ({}, {})", levelChunkWithLightPacket.getX(), levelChunkWithLightPacket.getZ());
+            MovementSync.getLogger().debug(
+                "Loaded chunk: ({}, {})",
+                levelChunkWithLightPacket.getX(), levelChunkWithLightPacket.getZ()
+            );
 
         } finally {
             chunkBuf.release();
@@ -152,12 +152,30 @@ public class World {
     }
 
     public void handleForgetLevelChunkPacket(ClientboundForgetLevelChunkPacket forgetLevelChunkPacket) {
-        if (!chunks.containsKey(forgetLevelChunkPacket.getX())) return;
-        if (!chunks.get(forgetLevelChunkPacket.getX()).containsKey(forgetLevelChunkPacket.getZ())) return;
-        UnloadChunkEvent unloadChunkEvent = new UnloadChunkEvent(forgetLevelChunkPacket.getX(), forgetLevelChunkPacket.getZ());
+        lock.readLock().lock();
+        try {
+            Map<Integer, Map<Integer, ChunkSection>> xChunks = chunks.get(forgetLevelChunkPacket.getX());
+            if (xChunks == null || !xChunks.containsKey(forgetLevelChunkPacket.getZ())) return;
+        } finally {
+            lock.readLock().unlock();
+        }
+        UnloadChunkEvent unloadChunkEvent = new UnloadChunkEvent(
+            forgetLevelChunkPacket.getX(), forgetLevelChunkPacket.getZ()
+        );
         Bot.INSTANCE.getPluginManager().events().callEvent(unloadChunkEvent);
-        chunks.get(forgetLevelChunkPacket.getX()).remove(forgetLevelChunkPacket.getZ());
-        MovementSync.getLogger().debug("Unloaded chunk: ({}, {})", forgetLevelChunkPacket.getX(), forgetLevelChunkPacket.getZ());
+        lock.writeLock().lock();
+        try {
+            Map<Integer, Map<Integer, ChunkSection>> xChunks = chunks.get(forgetLevelChunkPacket.getX());
+            if (xChunks == null) return;
+            xChunks.remove(forgetLevelChunkPacket.getZ());
+            if (xChunks.isEmpty()) chunks.remove(forgetLevelChunkPacket.getX(), xChunks);
+        } finally {
+            lock.writeLock().unlock();
+        }
+        MovementSync.getLogger().debug(
+            "Unloaded chunk: ({}, {})",
+            forgetLevelChunkPacket.getX(), forgetLevelChunkPacket.getZ()
+        );
     }
 
     public Entity getEntity(int entityId) {
@@ -240,7 +258,29 @@ public class World {
     }
 
     public boolean chunkLoaded(int chunkX, int chunkZ) {
-        return chunks.containsKey(chunkX) && chunks.get(chunkX).containsKey(chunkZ);
+        lock.readLock().lock();
+        try {
+            Map<Integer, Map<Integer, ChunkSection>> xChunks = chunks.get(chunkX);
+            return xChunks != null && xChunks.containsKey(chunkZ);
+        } finally {
+            lock.readLock().unlock();
+        }
+    }
+
+    /** Returns an immutable point-in-time snapshot of every loaded horizontal chunk. */
+    public Set<ChunkPosition> loadedChunks() {
+        lock.readLock().lock();
+        try {
+            Set<ChunkPosition> snapshot = new HashSet<>();
+            for (Map.Entry<Integer, Map<Integer, Map<Integer, ChunkSection>>> xEntry : chunks.entrySet()) {
+                for (Integer chunkZ : xEntry.getValue().keySet()) {
+                    snapshot.add(new ChunkPosition(xEntry.getKey(), chunkZ));
+                }
+            }
+            return Set.copyOf(snapshot);
+        } finally {
+            lock.readLock().unlock();
+        }
     }
 
     public int getBlockAt(Vector3d position) {
@@ -283,6 +323,72 @@ public class World {
 
     public boolean isSolid(Vector3d position) {
         return getBlockStateAt(position).isSolid();
+    }
+
+    /** Returns whether a world-space AABB overlaps any exact block-state collision box. */
+    public boolean isBoxColliding(
+            double minX, double minY, double minZ,
+            double maxX, double maxY, double maxZ) {
+        if (maxX <= minX || maxY <= minY || maxZ <= minZ) return false;
+        CollisionShapeRegistry registry = CollisionShapeRegistry.getInstance();
+        int firstX = (int) Math.floor(minX - registry.maxX()) + 1;
+        int firstY = Math.max(getMinWorldY(), (int) Math.floor(minY - registry.maxY()) + 1);
+        int firstZ = (int) Math.floor(minZ - registry.maxZ()) + 1;
+        int lastX = (int) Math.ceil(maxX - registry.minX()) - 1;
+        int lastY = Math.min(getMaxWorldY(), (int) Math.ceil(maxY - registry.minY()) - 1);
+        int lastZ = (int) Math.ceil(maxZ - registry.minZ()) - 1;
+
+        for (int x = firstX; x <= lastX; x++) {
+            for (int y = firstY; y <= lastY; y++) {
+                if (!isWithinWorldBounds(y)) continue;
+                for (int z = firstZ; z <= lastZ; z++) {
+                    int stateId = getBlockStateAt(new Vector3d(x, y, z)).stateId();
+                    if (registry.intersects(stateId, x, y, z,
+                            minX, minY, minZ, maxX, maxY, maxZ)) return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Finds the highest collision-box top within the supplied world-space search
+     * prism. The X/Z bounds describe the actor footprint; Y bounds constrain
+     * candidate support surfaces.
+     */
+    public OptionalDouble findHighestCollisionTop(
+            double minX, double minY, double minZ,
+            double maxX, double maxY, double maxZ) {
+        if (maxX <= minX || maxY < minY || maxZ <= minZ) return OptionalDouble.empty();
+        CollisionShapeRegistry registry = CollisionShapeRegistry.getInstance();
+        int firstX = (int) Math.floor(minX - registry.maxX()) + 1;
+        int firstY = Math.max(getMinWorldY(), (int) Math.floor(minY - registry.maxY()) + 1);
+        int firstZ = (int) Math.floor(minZ - registry.maxZ()) + 1;
+        int lastX = (int) Math.ceil(maxX - registry.minX()) - 1;
+        int lastY = Math.min(getMaxWorldY(), (int) Math.ceil(maxY - registry.minY()) - 1);
+        int lastZ = (int) Math.ceil(maxZ - registry.minZ()) - 1;
+        double highest = Double.NEGATIVE_INFINITY;
+
+        for (int x = firstX; x <= lastX; x++) {
+            for (int y = firstY; y <= lastY; y++) {
+                for (int z = firstZ; z <= lastZ; z++) {
+                    int stateId = getBlockStateAt(new Vector3d(x, y, z)).stateId();
+                    for (CollisionBox box : registry.boxesFor(stateId)) {
+                        double boxMinX = x + box.minX();
+                        double boxMaxX = x + box.maxX();
+                        double boxMinZ = z + box.minZ();
+                        double boxMaxZ = z + box.maxZ();
+                        if (boxMinX >= maxX || boxMaxX <= minX
+                                || boxMinZ >= maxZ || boxMaxZ <= minZ) continue;
+                        double top = y + box.maxY();
+                        if (top >= minY && top <= maxY && top > highest) highest = top;
+                    }
+                }
+            }
+        }
+        return highest == Double.NEGATIVE_INFINITY
+            ? OptionalDouble.empty()
+            : OptionalDouble.of(highest);
     }
 
     /**

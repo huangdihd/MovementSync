@@ -6,9 +6,19 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Strategy for jumping up by one block.
+ * Strategy for jumping up by one block, optionally digging the target cell.
  */
 public class JumpStrategy extends AbstractMovementStrategy {
+    private final boolean allowDigging;
+
+    public JumpStrategy() {
+        this(false);
+    }
+
+    public JumpStrategy(boolean allowDigging) {
+        this.allowDigging = allowDigging;
+    }
+
     @Override
     public List<Edge> findEdges(Node u, World world) {
         List<Edge> edges = new ArrayList<>();
@@ -19,12 +29,15 @@ public class JumpStrategy extends AbstractMovementStrategy {
             int nx = u.x + dx[i];
             int nz = u.z + dz[i];
             Node target = new Node(nx, u.y + 1, nz);
-            
+
             // Can only jump if head space is clear
             if (world.isPassable(new Vector3d(u.x, u.y + 2, u.z))) {
-                if (isStandable(nx, u.y + 1, nz, world)) {
+                if (isStandable(nx, u.y + 1, nz, world)
+                        && StandablePositionResolver.canJump(world, u, target)) {
                     edges.add(new Edge(target, getEuclideanDistance(u, target) + 0.5, BuiltinMovementType.JUMP));
-                } else if (canDigThrough(nx, u.y + 1, nz, world)) {
+                } else if (allowDigging
+                        && canDigThrough(nx, u.y + 1, nz, world)
+                        && StandablePositionResolver.canJumpToSupport(world, u, target)) {
                     edges.add(new Edge(target, getEuclideanDistance(u, target) + 100.5, BuiltinMovementType.DIG));
                 }
             }

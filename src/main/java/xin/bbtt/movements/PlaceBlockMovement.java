@@ -11,24 +11,38 @@ import xin.bbtt.MovementSync;
 import xin.bbtt.mcbot.Bot;
 import xin.bbtt.movement.Movement;
 
-public class PlaceBlockMovement extends Movement {
+public class PlaceBlockMovement extends Movement implements NavigationBoundMovement {
     private final Vector3i pos; // Position to place block AT
     private final Vector3i targetPos; // Position to click ON
     private final Direction side;
     private final boolean bridge;
+    private final int blockSlot;
+    private Long navigationGeneration;
     
     private long startTime;
     private int step = 0;
 
     public PlaceBlockMovement(Vector3i pos, Vector3i targetPos, Direction side, boolean bridge) {
+        this(pos, targetPos, side, bridge, -1);
+    }
+
+    public PlaceBlockMovement(
+            Vector3i pos, Vector3i targetPos, Direction side, boolean bridge, int blockSlot) {
         this.pos = pos;
         this.targetPos = targetPos;
         this.side = side;
         this.bridge = bridge;
+        this.blockSlot = blockSlot;
+    }
+
+    @Override
+    public void bindNavigationRequest(long generation) {
+        this.navigationGeneration = generation;
     }
 
     @Override
     public void init() {
+        if (blockSlot >= 0) MovementSync.INSTANCE.getInventoryManager().switchToSlot(blockSlot);
         startTime = System.currentTimeMillis();
         // Calculate the center of the targeted face
         double dx = 0, dy = 0, dz = 0;
@@ -41,7 +55,7 @@ public class PlaceBlockMovement extends Movement {
             case EAST -> dx = 0.5;
         }
         
-        MovementSync.INSTANCE.lookAt(new Vector3d(
+        MovementSync.INSTANCE.directLookAt(new Vector3d(
             targetPos.getX() + 0.5 + dx, 
             targetPos.getY() + 0.5 + dy, 
             targetPos.getZ() + 0.5 + dz
@@ -50,6 +64,17 @@ public class PlaceBlockMovement extends Movement {
 
     @Override
     public void onTick() {
+        if (navigationGeneration == null) {
+            onAuthorizedTick();
+            return;
+        }
+        if (!MovementSync.INSTANCE.runIfNavigationRequestCurrent(
+                navigationGeneration, this::onAuthorizedTick)) {
+            setFinished(true);
+        }
+    }
+
+    private void onAuthorizedTick() {
         long elapsed = System.currentTimeMillis() - startTime;
         
         if (bridge) {

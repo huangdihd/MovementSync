@@ -27,7 +27,7 @@ public class MovementCommandExecutor extends SubCommandExecutor {
         registerSubCommand("cancel", new CommandExecutor() {
             @Override
             public void onCommand(Command command, String label, String[] args) {
-                MovementSync.INSTANCE.getMovementController().cancelAll();
+                MovementSync.INSTANCE.cancelNavigation();
                 MovementSync.getLogger().info(LangManager.get("movementsync.command.movement.cancelled"));
             }
         });
