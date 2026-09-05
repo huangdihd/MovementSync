@@ -24,7 +24,7 @@ public class TeleportPacketListener extends SessionAdapter {
         MovementSync.INSTANCE.pitch.set(playerPositionPacket.getXRot());
         MovementSync.INSTANCE.yaw.set(playerPositionPacket.getYRot());
         session.send(new ServerboundAcceptTeleportationPacket(playerPositionPacket.getId()));
-        MovementSync.INSTANCE.movementController.cancelAll();
+        MovementSync.INSTANCE.cancelNavigation();
         MovementSync.INSTANCE.velocity.set(new Vector3d());
         checkOnGround();
     }

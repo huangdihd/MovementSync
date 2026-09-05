@@ -29,8 +29,18 @@ public class PathfindingContextBuilder {
         return addStrategy(new WalkStrategy());
     }
 
+    /** Walk strategy with explicit control over dig-through-obstacle edges. */
+    public PathfindingContextBuilder addWalk(boolean allowDigging) {
+        return addStrategy(new WalkStrategy(allowDigging));
+    }
+
     public PathfindingContextBuilder addJump() {
         return addStrategy(new JumpStrategy());
+    }
+
+    /** Jump strategy with explicit control over dig-the-target-cell edges. */
+    public PathfindingContextBuilder addJump(boolean allowDigging) {
+        return addStrategy(new JumpStrategy(allowDigging));
     }
 
     public PathfindingContextBuilder addFall() {
@@ -49,8 +59,12 @@ public class PathfindingContextBuilder {
      * Adds all standard movement strategies at once, including global ones.
      */
     public PathfindingContextBuilder addDefaultStrategies() {
-        this.addWalk()
-            .addJump()
+        return addDefaultStrategies(false);
+    }
+
+    public PathfindingContextBuilder addDefaultStrategies(boolean allowDigging) {
+        this.addWalk(allowDigging)
+            .addJump(allowDigging)
             .addFall()
             .addGapJump()
             .addBridgePillar();
@@ -66,8 +80,12 @@ public class PathfindingContextBuilder {
      * (bridging/pillaring), including global ones.
      */
     public PathfindingContextBuilder addNoPlacementStrategies() {
-        this.addWalk()
-            .addJump()
+        return addNoPlacementStrategies(false);
+    }
+
+    public PathfindingContextBuilder addNoPlacementStrategies(boolean allowDigging) {
+        this.addWalk(allowDigging)
+            .addJump(allowDigging)
             .addFall()
             .addGapJump();
 

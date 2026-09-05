@@ -28,7 +28,9 @@ public class FallStrategy extends AbstractMovementStrategy {
             for (int dy = -1; dy >= -this.fallDownHeight; dy--) {
                 if (isStandable(nx, u.y + dy, nz, world)) {
                     Node target = new Node(nx, u.y + dy, nz);
-                    edges.add(new Edge(target, getEuclideanDistance(u, target) + (u.y - target.y) * 2.0, BuiltinMovementType.FALL));
+                    if (StandablePositionResolver.canFall(world, u, target, fallDownHeight)) {
+                        edges.add(new Edge(target, getEuclideanDistance(u, target) + (u.y - target.y) * 2.0, BuiltinMovementType.FALL));
+                    }
                     break;
                 }
                 // Stop if blocked by non-passable block

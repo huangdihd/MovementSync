@@ -35,6 +35,9 @@ public class MovementSync implements Plugin {
     public static final Vector3d gravitationalAcceleration = new Vector3d(0, -0.08, 0);
     public static final double terminalVelocity = -3.92;
     public static final double movementSpeed = 0.2159;
+    public static final double gapJumpSpeedMultiplier = 1.3;
+    public static final double jumpVelocity = 0.42;
+    public static final double verticalDrag = 0.9800000190734863D;
     public AtomicBoolean onGround = new AtomicBoolean(true);
     private ScheduledExecutorService physicalSimulationService;
     public ScheduledExecutorService movementService;
@@ -57,6 +60,8 @@ public class MovementSync implements Plugin {
     private float ridingForward = 0;
     @Getter @Setter
     private boolean ridingJump = false;
+
+
     @Getter @Setter
     private boolean ridingSneak = false;
 
@@ -64,6 +69,11 @@ public class MovementSync implements Plugin {
     public final World world = new World();
     @Getter
     public final MovementController movementController = new MovementController();
+    private final java.util.concurrent.atomic.AtomicLong navigationGeneration =
+            new java.util.concurrent.atomic.AtomicLong();
+    private final Object navigationLock = new Object();
+    private final java.util.concurrent.atomic.AtomicReference<GazeTarget> gazeTarget =
+            new java.util.concurrent.atomic.AtomicReference<>();
     @Getter
     public final InventoryManager inventoryManager = new InventoryManager();
 
@@ -123,7 +133,7 @@ public class MovementSync implements Plugin {
 
     public void jump() {
         if (!onGround.get()) return;
-        velocity.updateAndGet(v -> new Vector3d(v).add(0, 0.42, 0));
+        velocity.updateAndGet(v -> new Vector3d(v).add(0, jumpVelocity, 0));
         onGround.set(false);
     }
 
@@ -141,48 +151,219 @@ public class MovementSync implements Plugin {
         this.pitch.set(targetPitch);
     }
 
+    public void setBlockGazeTarget(org.joml.Vector3i block) {
+        if (block == null) throw new IllegalArgumentException("block gaze target must not be null");
+        gazeTarget.set(new GazeTarget(new org.joml.Vector3i(block), null));
+    }
+
+    public void setEntityGazeTarget(int entityId) {
+        gazeTarget.set(new GazeTarget(null, entityId));
+    }
+
+    public void clearGazeTarget() {
+        gazeTarget.set(null);
+    }
+
+    public String describeGazeTarget() {
+        GazeTarget target = gazeTarget.get();
+        if (target == null) return "none";
+        if (target.block() != null) {
+            org.joml.Vector3i block = target.block();
+            return String.format("block=(%d,%d,%d)", block.x, block.y, block.z);
+        }
+        xin.bbtt.Entity.Entity entity = world.getEntity(target.entityId());
+        if (entity == null || entity.getPosition() == null) {
+            return "entity_id=" + target.entityId() + " status=unavailable";
+        }
+        Vector3d position = entity.getPosition();
+        return String.format(
+                "entity_id=%d position=(%.2f,%.2f,%.2f)",
+                target.entityId(), position.x, position.y, position.z);
+    }
+
+    public void applyPersistentGazeIfIdle() {
+        applyPersistentGaze(movementController.getCurrentMovement() != null);
+    }
+
+    void applyPersistentGaze(boolean orientationBusy) {
+        if (orientationBusy) return;
+        GazeTarget target = gazeTarget.get();
+        if (target == null) return;
+        Vector3d point;
+        if (target.block() != null) {
+            org.joml.Vector3i block = target.block();
+            point = new Vector3d(block.x + 0.5, block.y + 0.5, block.z + 0.5);
+        } else {
+            xin.bbtt.Entity.Entity entity = world.getEntity(target.entityId());
+            if (entity == null || entity.getPosition() == null) return;
+            point = new Vector3d(entity.getPosition()).add(
+                    0, Math.max(0.1, entity.getHeight() * 0.9), 0);
+        }
+        directLookAt(point);
+    }
+
+    private record GazeTarget(org.joml.Vector3i block, Integer entityId) {}
+
     public void triggerAutoRepath() {
-        triggerAutoRepath(-1);
+        triggerAutoRepath(-1, false);
     }
 
     /**
      * @param followKeepDistance follow keep radius in blocks; non-positive uses the PathMovement default.
      */
     public void triggerAutoRepath(double followKeepDistance) {
-        org.joml.Vector3i targetNodePos = activeGoal;
-        
-        // If we are following an entity, override targetNodePos
-        if (followTargetId != -1) {
-            xin.bbtt.Entity.Entity entity = world.getEntity(followTargetId);
+        triggerAutoRepath(followKeepDistance, false);
+    }
+
+    public void triggerAutoRepath(boolean allowDigging) {
+        triggerAutoRepath(-1, allowDigging);
+    }
+
+    /** Starts a new request from the currently selected static/follow target. */
+    public void triggerAutoRepath(double followKeepDistance, boolean allowDigging) {
+        NavigationRequest request;
+        synchronized (navigationLock) {
+            request = claimNavigationRequest(
+                    activeGoal, followTargetId, followKeepDistance, allowDigging);
+        }
+        planAndPublish(request);
+    }
+
+    public void startStaticNavigation(org.joml.Vector3i goal, boolean allowDigging) {
+        planAndPublish(claimNavigationRequest(goal, -1, -1, allowDigging));
+    }
+
+    public long beginStaticNavigationRequest(org.joml.Vector3i goal) {
+        return claimNavigationRequest(goal, -1, -1, false).generation();
+    }
+
+    public void startFollowingNavigation(int entityId, double keepDistance, boolean allowDigging) {
+        planAndPublish(claimNavigationRequest(null, entityId, keepDistance, allowDigging));
+    }
+
+    private NavigationRequest claimNavigationRequest(
+            org.joml.Vector3i goal,
+            int requestedFollowTargetId,
+            double followKeepDistance,
+            boolean allowDigging) {
+        synchronized (navigationLock) {
+            long generation = navigationGeneration.incrementAndGet();
+            movementController.cancelAll();
+            activeGoal = goal == null ? null : new org.joml.Vector3i(goal);
+            followTargetId = requestedFollowTargetId;
+            return new NavigationRequest(
+                    generation, activeGoal, requestedFollowTargetId, followKeepDistance, allowDigging);
+        }
+    }
+
+    private void planAndPublish(NavigationRequest request) {
+        org.joml.Vector3i targetNodePos = request.goal();
+        if (request.followTargetId() != -1) {
+            xin.bbtt.Entity.Entity entity = world.getEntity(request.followTargetId());
             if (entity != null) {
                 Vector3d p = entity.getPosition();
-                targetNodePos = new org.joml.Vector3i((int)Math.floor(p.x), (int)Math.floor(p.y), (int)Math.floor(p.z));
+                targetNodePos = new org.joml.Vector3i(
+                        (int)Math.floor(p.x),
+                        xin.bbtt.pathfinding.StandablePositionResolver.nodeY(p.y),
+                        (int)Math.floor(p.z));
             }
         }
-
         if (targetNodePos == null) return;
 
         Vector3d currentPos = position.get();
-        xin.bbtt.pathfinding.Node start = new xin.bbtt.pathfinding.Node((int)Math.floor(currentPos.x), (int)Math.floor(currentPos.y), (int)Math.floor(currentPos.z));
-        xin.bbtt.pathfinding.Node goalNode = new xin.bbtt.pathfinding.Node(targetNodePos.x, targetNodePos.y, targetNodePos.z);
-
-        if (start.equals(goalNode) && followTargetId == -1) {
-            activeGoal = null;
+        xin.bbtt.pathfinding.Node start = new xin.bbtt.pathfinding.Node(
+                (int)Math.floor(currentPos.x),
+                xin.bbtt.pathfinding.StandablePositionResolver.nodeY(currentPos.y),
+                (int)Math.floor(currentPos.z));
+        xin.bbtt.pathfinding.Node goalNode = new xin.bbtt.pathfinding.Node(
+                targetNodePos.x, targetNodePos.y, targetNodePos.z);
+        if (start.equals(goalNode) && request.followTargetId() == -1) {
+            synchronized (navigationLock) {
+                if (isNavigationRequestCurrent(request.generation())) activeGoal = null;
+            }
             return;
         }
 
-        // Repath limit to avoid too much calculation
-        xin.bbtt.pathfinding.DStarLite pathfinder = new xin.bbtt.pathfinding.DStarLite(start, goalNode, getWorld());
+        xin.bbtt.pathfinding.DStarLite pathfinder = new xin.bbtt.pathfinding.DStarLite(
+                start,
+                goalNode,
+                new xin.bbtt.pathfinding.DefaultPathfindingContext(getWorld(), request.allowDigging())
+        );
         java.util.List<xin.bbtt.pathfinding.PathStep> path = pathfinder.findPath(2000);
+        if (path.size() <= 1) return;
 
-        if (path.size() > 1) {
-            getMovementController().cancelAll();
-            xin.bbtt.movements.PathMovement movement = followKeepDistance > 0
-                    ? new xin.bbtt.movements.PathMovement(path, followKeepDistance)
-                    : new xin.bbtt.movements.PathMovement(path);
-            getMovementController().addMovement(movement);
+        xin.bbtt.movements.PathMovement movement = new xin.bbtt.movements.PathMovement(
+                path,
+                request.followKeepDistance(),
+                request.allowDigging(),
+                request.goal(),
+                request.followTargetId(),
+                request.generation()
+        );
+        synchronized (navigationLock) {
+            if (!isNavigationRequestCurrent(request.generation())) return;
+            movementController.addMovement(movement);
         }
     }
+
+    /** Invalidates and stops every older navigation request before a new one starts. */
+    public long beginNavigationRequest() {
+        synchronized (navigationLock) {
+            long generation = navigationGeneration.incrementAndGet();
+            movementController.cancelAll();
+            return generation;
+        }
+    }
+
+    public void cancelNavigation() {
+        synchronized (navigationLock) {
+            navigationGeneration.incrementAndGet();
+            movementController.cancelAll();
+            activeGoal = null;
+            followTargetId = -1;
+        }
+    }
+
+    public long getNavigationGeneration() {
+        return navigationGeneration.get();
+    }
+
+    public boolean isNavigationRequestCurrent(long generation) {
+        return navigationGeneration.get() == generation;
+    }
+
+    public boolean insertMovementIfNavigationRequestCurrent(
+            long generation, xin.bbtt.movement.Movement movement) {
+        synchronized (navigationLock) {
+            if (!isNavigationRequestCurrent(generation)) return false;
+            movementController.insertMovement(movement);
+            return true;
+        }
+    }
+
+    public boolean addMovementIfNavigationRequestCurrent(
+            long generation, xin.bbtt.movement.Movement movement) {
+        synchronized (navigationLock) {
+            if (!isNavigationRequestCurrent(generation)) return false;
+            movementController.addMovement(movement);
+            return true;
+        }
+    }
+
+    public boolean runIfNavigationRequestCurrent(long generation, Runnable action) {
+        synchronized (navigationLock) {
+            if (!isNavigationRequestCurrent(generation)) return false;
+            action.run();
+            return true;
+        }
+    }
+
+    private record NavigationRequest(
+            long generation,
+            org.joml.Vector3i goal,
+            int followTargetId,
+            double followKeepDistance,
+            boolean allowDigging) {}
 
     public void requestRepath() {
         xin.bbtt.movement.Movement current = movementController.getCurrentMovement();

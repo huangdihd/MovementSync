@@ -10,15 +10,23 @@ public class DefaultPathfindingContext implements PathfindingContext {
     private final PathfindingContext internalContext;
 
     public DefaultPathfindingContext(World world) {
+        this(world, false);
+    }
+
+    /**
+     * @param allowDigging when false, the planner only routes across standable
+     *     terrain and never mines obstacles; doors, walls and terrain stay intact.
+     */
+    public DefaultPathfindingContext(World world, boolean allowDigging) {
         // Decide once at planning time: without blocks in the inventory,
         // placement (bridge/pillar) edges are unusable anyway.
         boolean hasBlocks = xin.bbtt.MovementSync.INSTANCE != null
                 && xin.bbtt.MovementSync.INSTANCE.getInventoryManager().findBlock() != -1;
         PathfindingContextBuilder builder = new PathfindingContextBuilder(world);
         this.internalContext = (hasBlocks
-                ? builder.addDefaultStrategies()
-                : builder.addNoPlacementStrategies())
-                .build();
+                ? builder.addDefaultStrategies(allowDigging)
+                : builder.addNoPlacementStrategies(allowDigging))
+            .build();
     }
 
     @Override

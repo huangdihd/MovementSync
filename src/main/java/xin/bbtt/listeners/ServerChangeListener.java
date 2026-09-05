@@ -9,6 +9,7 @@ import xin.bbtt.mcbot.events.ServerChangeEvent;
 public class ServerChangeListener implements Listener {
     @EventHandler
     public void onServerChange(ServerChangeEvent event) {
+        MovementSync.INSTANCE.cancelNavigation();
         MovementSync.INSTANCE.onGround.set(true);
         MovementSync.INSTANCE.velocity.set(new Vector3d());
         MovementSync.INSTANCE.getWorld().clear();

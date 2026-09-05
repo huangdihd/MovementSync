@@ -8,6 +8,7 @@ import xin.bbtt.mcbot.command.TabHighlightExecutor;
 import xin.bbtt.mcbot.LangManager;
 import xin.bbtt.pathfinding.DStarLite;
 import xin.bbtt.pathfinding.Node;
+import xin.bbtt.pathfinding.StandablePositionResolver;
 import xin.bbtt.movements.PathMovement;
 import xin.bbtt.world.World;
 
@@ -34,17 +35,20 @@ public class GotoCommandExecutor extends TabHighlightExecutor {
             }
 
             Vector3d currentPos = MovementSync.INSTANCE.position.get();
-            Node start = new Node((int)Math.floor(currentPos.x), (int)Math.floor(currentPos.y), (int)Math.floor(currentPos.z));
+            Node start = new Node((int)Math.floor(currentPos.x), StandablePositionResolver.nodeY(currentPos.y), (int)Math.floor(currentPos.z));
             Node goal = new Node(tx, ty, tz);
 
             if (MovementSync.INSTANCE.getWorld().chunkLoaded(tx >> 4, tz >> 4)) {
-                if (!MovementSync.INSTANCE.getWorld().getBlockStateAt(new Vector3d(tx, ty - 1, tz)).isSolid()) {
+                if (!isLoadedGoalStandable(MovementSync.INSTANCE.getWorld(), goal)) {
                     MovementSync.getLogger().info(LangManager.get("movementsync.command.goto.invalid_goal"));
                     return;
                 }
             }
 
             MovementSync.getLogger().info(LangManager.get("movementsync.command.goto.searching", tx, ty, tz));
+
+            org.joml.Vector3i requestedGoal = new org.joml.Vector3i(tx, ty, tz);
+            long requestGeneration = MovementSync.INSTANCE.beginStaticNavigationRequest(requestedGoal);
 
             DStarLite pathfinder = new DStarLite(start, goal, MovementSync.INSTANCE.getWorld());
             List<xin.bbtt.pathfinding.PathStep> path = pathfinder.findPath(5000);
@@ -59,14 +63,20 @@ public class GotoCommandExecutor extends TabHighlightExecutor {
                 MovementSync.getLogger().info(LangManager.get("movementsync.command.goto.partial", end.x, end.y, end.z));
             }
 
-            MovementSync.INSTANCE.setActiveGoal(new org.joml.Vector3i(tx, ty, tz));
-            MovementSync.INSTANCE.getMovementController().addMovement(new PathMovement(path));
+            MovementSync.INSTANCE.addMovementIfNavigationRequestCurrent(
+                requestGeneration,
+                new PathMovement(path, -1, false, requestedGoal, -1, requestGeneration)
+            );
 
         } catch (NumberFormatException e) {
             MovementSync.getLogger().info(LangManager.get("movementsync.command.common.usage", command.getUsage()));
         } catch (Exception e) {
             MovementSync.getLogger().error("Error during pathfinding", e);
         }
+    }
+
+    static boolean isLoadedGoalStandable(World world, Node goal) {
+        return StandablePositionResolver.feetY(world, goal.x, goal.y, goal.z).isPresent();
     }
 
     @Override

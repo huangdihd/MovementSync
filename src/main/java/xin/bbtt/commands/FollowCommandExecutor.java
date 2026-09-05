@@ -26,8 +26,7 @@ public class FollowCommandExecutor extends TabHighlightExecutor {
                     return;
                 }
             }
-            MovementSync.INSTANCE.setFollowTargetId(entityId);
-            MovementSync.INSTANCE.triggerAutoRepath(keepDistance);
+            MovementSync.INSTANCE.startFollowingNavigation(entityId, keepDistance, false);
             MovementSync.getLogger().info(LangManager.get("movementsync.command.follow.success", entityId));
         } catch (NumberFormatException e) {
             MovementSync.getLogger().info(LangManager.get("movementsync.command.common.usage", command.getUsage()));

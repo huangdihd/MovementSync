@@ -1,0 +1,24 @@
+{
+  "blocks_json_sha256": "894b926701b73047f1e24ad9650356d8d6f4c1a6d79f65143facbc9c58598a47",
+  "collision_box_count": 52511,
+  "collision_context": "CollisionContext.empty()",
+  "extraction_source": "Paper Block.stateById(id).getCollisionShape()",
+  "extractor_sha256": "e7140ef3ded702825e8c198c864bfbc3af42a54cf46232c0e7af39f0a4587333",
+  "format": "MovementSync collision shapes",
+  "format_version": 1,
+  "generator_sha256": "fdd7bcf66dac1e10142b2ac9e5bcd53baf766d0624e087cf25c32cfb100676e9",
+  "known_context_dependent_limitations": [
+    "powder_snow: entity equipment and approach context",
+    "scaffolding: entity descent/holding context",
+    "moving_piston: block-entity movement state"
+  ],
+  "mapping_mismatches": 0,
+  "minecraft_version": "1.21.11",
+  "output_file": "collision_shapes.bin",
+  "output_sha256": "9b918c98dadd77a1ddbaa846c771822f66ae1e3693847f4aaa178dc29558e3a6",
+  "paper_jar": "paper-1.21.11.jar",
+  "paper_jar_sha256": "3a73f0cc4020a5eb45629a67629b14263331c68de45552f8505df8060fa8ed43",
+  "scope": "all state-derived static collision shapes",
+  "shape_errors": 0,
+  "state_count": 29671
+}

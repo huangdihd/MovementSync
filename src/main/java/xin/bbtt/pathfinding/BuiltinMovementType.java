@@ -20,8 +20,8 @@ public enum BuiltinMovementType implements MovementType {
 
                 xin.bbtt.MovementSync.getLogger().info(xin.bbtt.mcbot.LangManager.get("movementsync.pathfinding.obstacle_detected", p.x, p.y, p.z, state.blockName()));
                 int toolSlot = xin.bbtt.MovementSync.INSTANCE.getInventoryManager().findBestTool(state.material());
-                if (toolSlot != -1) xin.bbtt.MovementSync.INSTANCE.getInventoryManager().switchToSlot(toolSlot);
-                return new xin.bbtt.movements.DigBlockMovement(org.cloudburstmc.math.vector.Vector3i.from(p.x, p.y, p.z));
+                return new xin.bbtt.movements.DigBlockMovement(
+                    org.cloudburstmc.math.vector.Vector3i.from(p.x, p.y, p.z), toolSlot);
             }
             return null;
         }
@@ -61,9 +61,11 @@ public enum BuiltinMovementType implements MovementType {
                 org.joml.Vector3i neighbor = new org.joml.Vector3i(to.x + dx[i], (to.y - 1) + dy[i], to.z + dz[i]);
                 if (!xin.bbtt.MovementSync.INSTANCE.getWorld().getBlockStateAt(new org.joml.Vector3d(neighbor.x, neighbor.y, neighbor.z)).isSolid()) continue;
 
-                xin.bbtt.MovementSync.INSTANCE.getInventoryManager().switchToSlot(blockSlot);
                 xin.bbtt.MovementSync.getLogger().info(xin.bbtt.mcbot.LangManager.get("movementsync.pathfinding.bridging", to.x, to.y - 1, to.z));
-                return new xin.bbtt.movements.PlaceBlockMovement(org.cloudburstmc.math.vector.Vector3i.from(to.x, to.y - 1, to.z), org.cloudburstmc.math.vector.Vector3i.from(neighbor.x, neighbor.y, neighbor.z), sides[i], true);
+                return new xin.bbtt.movements.PlaceBlockMovement(
+                    org.cloudburstmc.math.vector.Vector3i.from(to.x, to.y - 1, to.z),
+                    org.cloudburstmc.math.vector.Vector3i.from(neighbor.x, neighbor.y, neighbor.z),
+                    sides[i], true, blockSlot);
             }
             return null;
         }
@@ -99,10 +101,11 @@ public enum BuiltinMovementType implements MovementType {
                 org.joml.Vector3i neighbor = new org.joml.Vector3i(to.x + dx[i], (to.y - 1) + dy[i], to.z + dz[i]);
                 if (!xin.bbtt.MovementSync.INSTANCE.getWorld().getBlockStateAt(new org.joml.Vector3d(neighbor.x, neighbor.y, neighbor.z)).isSolid()) continue;
 
-                xin.bbtt.MovementSync.INSTANCE.getInventoryManager().switchToSlot(blockSlot);
                 xin.bbtt.MovementSync.getLogger().info(xin.bbtt.mcbot.LangManager.get("movementsync.pathfinding.pillaring", to.x, to.y - 1, to.z));
-                xin.bbtt.MovementSync.INSTANCE.getMovementController().insertMovement(new xin.bbtt.movements.PlaceBlockMovement(org.cloudburstmc.math.vector.Vector3i.from(to.x, to.y - 1, to.z), org.cloudburstmc.math.vector.Vector3i.from(neighbor.x, neighbor.y, neighbor.z), sides[i], false));
-                return new xin.bbtt.movements.JumpMovement();
+                return new xin.bbtt.movements.PillarMovement(
+                    org.cloudburstmc.math.vector.Vector3i.from(to.x, to.y - 1, to.z),
+                    org.cloudburstmc.math.vector.Vector3i.from(neighbor.x, neighbor.y, neighbor.z),
+                    sides[i], blockSlot);
             }
             return null;
         }
