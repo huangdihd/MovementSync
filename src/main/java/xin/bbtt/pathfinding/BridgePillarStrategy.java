@@ -33,6 +33,7 @@ public class BridgePillarStrategy extends AbstractMovementStrategy {
         for (int i = 0; i < 4; i++) {
             int bx = u.x + dx[i];
             int bz = u.z + dz[i];
+            if (!world.chunkLoaded(bx >> 4, bz >> 4)) continue;
             if (world.isPassable(new Vector3d(bx, u.y, bz)) && world.isPassable(new Vector3d(bx, u.y + 1, bz))) {
                 if (!world.getBlockStateAt(new Vector3d(bx, u.y - 1, bz)).isSolid()
                         && StandablePositionResolver.canStepToFeetY(world, u, u.y)) {

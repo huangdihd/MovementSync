@@ -34,7 +34,8 @@ public class WalkStrategy extends AbstractMovementStrategy {
                 edges.add(new Edge(target, getEuclideanDistance(u, target), BuiltinMovementType.WALK));
             } else if (allowDigging && i < 4
                     && canDigThrough(nx, u.y, nz, world)
-                    && StandablePositionResolver.canJumpToSupport(world, u, target)) {
+                    && (StandablePositionResolver.canWalkToSupport(world, u, target)
+                        || StandablePositionResolver.canJumpToSupport(world, u, target))) {
                 edges.add(new Edge(target, getEuclideanDistance(u, target) + 100.0, BuiltinMovementType.DIG));
             }
         }

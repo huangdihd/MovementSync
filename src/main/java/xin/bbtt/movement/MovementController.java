@@ -20,6 +20,8 @@ public class MovementController {
 
     private ScheduledFuture<?> currentTaskFuture = null;
     private Movement currentMovement = null;
+    private long currentActivationId = 0L;
+    private long nextActivationId = 0L;
 
     public void addMovement(Movement movement) {
         movements.addLast(movement);
@@ -122,6 +124,21 @@ public class MovementController {
         tryExecuteNext();
     }
 
+    /**
+     * Finishes {@code expectedMovement} only if it is still the controller's
+     * active movement. Scheduled tasks may continue briefly after cancellation,
+     * so they must not be allowed to stop a replacement movement.
+     */
+    public boolean finishCurrentMovement(Movement expectedMovement, long expectedActivationId) {
+        synchronized (stateLock) {
+            if (currentMovement != expectedMovement
+                    || currentActivationId != expectedActivationId) return false;
+            stopCurrent();
+        }
+        tryExecuteNext();
+        return true;
+    }
+
     private void stopCurrent() {
         if (currentTaskFuture != null) {
             currentTaskFuture.cancel(true);
@@ -131,6 +148,7 @@ public class MovementController {
             try { currentMovement.onStop(); } catch (Exception e) { MovementSync.getLogger().warn(LangManager.get("movementsync.movement.error.stop"), e); }
             currentMovement = null;
         }
+        currentActivationId = 0L;
         isExecuting.set(false);
     }
 
@@ -151,6 +169,7 @@ public class MovementController {
                 isExecuting.set(false);
                 return;
             }
+            currentActivationId = ++nextActivationId;
 
             if (MovementSync.INSTANCE.movementService == null || MovementSync.INSTANCE.movementService.isShutdown()) {
                 MovementSync.INSTANCE.movementService = Executors.newScheduledThreadPool(1);
@@ -158,7 +177,7 @@ public class MovementController {
 
             try {
                 currentMovement.init();
-                MovementTask task = new MovementTask(currentMovement, this);
+                MovementTask task = new MovementTask(currentMovement, this, currentActivationId);
                 currentTaskFuture = MovementSync.INSTANCE.movementService.scheduleAtFixedRate(task, 0L, 50L, TimeUnit.MILLISECONDS);
             } catch (Exception e) {
                 MovementSync.getLogger().error(LangManager.get("movementsync.movement.error.run"), e);

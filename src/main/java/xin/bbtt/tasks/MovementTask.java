@@ -7,11 +7,13 @@ import xin.bbtt.movement.MovementController;
 public class MovementTask implements Runnable {
     private final Movement movement;
     private final MovementController controller;
+    private final long activationId;
     private int elapsedTicks = 0;
 
-    public MovementTask(Movement movement, MovementController controller) {
+    public MovementTask(Movement movement, MovementController controller, long activationId) {
         this.movement = movement;
         this.controller = controller;
+        this.activationId = activationId;
     }
 
     @Override
@@ -26,11 +28,11 @@ public class MovementTask implements Runnable {
 
             long timeLimit = this.movement.getTime();
             if (this.movement.isFinished() || (timeLimit >= 0 && elapsedTicks * 50L >= timeLimit)) {
-                controller.finishCurrentMovement();
+                controller.finishCurrentMovement(movement, activationId);
             }
         } catch (Exception e) {
             MovementSync.getLogger().error("Failed to run onTick", e);
-            controller.finishCurrentMovement();
+            controller.finishCurrentMovement(movement, activationId);
         }
     }
 }

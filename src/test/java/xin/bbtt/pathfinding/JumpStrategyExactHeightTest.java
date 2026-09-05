@@ -44,6 +44,49 @@ final class JumpStrategyExactHeightTest {
     }
 
     @Test
+    void jumpFindsSameNodeYRiseAboveStepHeight() {
+        World world = worldWithSupportsAtLevels(WHITE_CARPET, 0, STONE, 0);
+
+        List<Edge> edges = new JumpStrategy(false).findEdges(new Node(0, 1, 0), world);
+
+        assertTrue(edges.stream().anyMatch(edge ->
+            edge.getType() == BuiltinMovementType.JUMP
+                && edge.getTarget().equals(new Node(1, 1, 0))),
+            "carpet top 0.0625 to full-block top 1.0 requires a jump within the same nodeY");
+    }
+
+    @Test
+    void sameNodeYJumpRejectsDestinationCeilingThatBlocksTheArc() {
+        World world = new World() {
+            @Override
+            public boolean chunkLoaded(int chunkX, int chunkZ) {
+                return true;
+            }
+
+            @Override
+            public int getBlockAt(Vector3d position) {
+                int x = (int) Math.floor(position.x);
+                int y = (int) Math.floor(position.y);
+                int z = (int) Math.floor(position.z);
+                if (z != 0) return AIR;
+                if (x == 0 && y == 0) return WHITE_CARPET;
+                if (x == 1 && y == 0) return STONE;
+                if (x == 1 && y == 3) return STONE;
+                return AIR;
+            }
+        };
+        assertTrue(StandablePositionResolver.feetY(world, 1, 1, 0).isPresent(),
+            "the destination ceiling must still leave enough room to stand");
+
+        List<Edge> edges = new JumpStrategy(false).findEdges(new Node(0, 1, 0), world);
+
+        assertFalse(edges.stream().anyMatch(edge ->
+            edge.getType() == BuiltinMovementType.JUMP
+                && edge.getTarget().equals(new Node(1, 1, 0))),
+            "a destination-only ceiling must block the ascending jump arc");
+    }
+
+    @Test
     void fallUsesExactDropRatherThanIntegerNodeDifference() {
         World world = worldWithSupportsAtLevels(STONE, 0, WHITE_CARPET, -1);
 
@@ -62,6 +105,38 @@ final class JumpStrategyExactHeightTest {
         assertTrue(edges.stream().anyMatch(edge ->
             edge.getType() == BuiltinMovementType.DIG
                 && edge.getTarget().equals(new Node(1, 1, 0))));
+    }
+
+    @Test
+    void flatDigDoesNotRequireJumpClearanceInATwoBlockHighTunnel() {
+        World world = new World() {
+            @Override
+            public boolean chunkLoaded(int chunkX, int chunkZ) {
+                return true;
+            }
+
+            @Override
+            public int getBlockAt(Vector3d position) {
+                int x = (int) Math.floor(position.x);
+                int y = (int) Math.floor(position.y);
+                int z = (int) Math.floor(position.z);
+                if (z != 0) return AIR;
+                if (y == 0) return STONE;
+                if (x == 0 && y == 3) return STONE; // ceiling above two air blocks
+                if (x == 1 && y == 1) return STONE; // wall to dig at foot level
+                return AIR;
+            }
+        };
+        Node source = new Node(0, 1, 0);
+        assertTrue(StandablePositionResolver.feetY(world, source.x, source.y, source.z).isPresent(),
+            "the regression fixture must begin at a physically standable position");
+
+        List<Edge> edges = new WalkStrategy(true).findEdges(source, world);
+
+        assertTrue(edges.stream().anyMatch(edge ->
+            edge.getType() == BuiltinMovementType.DIG
+                && edge.getTarget().equals(new Node(1, 1, 0))),
+            "level digging should require walking clearance, not jump clearance");
     }
 
     @Test
