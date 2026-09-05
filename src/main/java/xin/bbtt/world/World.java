@@ -369,6 +369,15 @@ public class World {
     public OptionalDouble findHighestCollisionTop(
             double minX, double minY, double minZ,
             double maxX, double maxY, double maxZ) {
+        return findHighestCollisionTopExcluding(
+            minX, minY, minZ, maxX, maxY, maxZ, Set.of());
+    }
+
+    /** Finds the highest support top while ignoring explicitly changed blocks. */
+    public OptionalDouble findHighestCollisionTopExcluding(
+            double minX, double minY, double minZ,
+            double maxX, double maxY, double maxZ,
+            Set<Vector3i> excludedBlocks) {
         if (maxX <= minX || maxY < minY || maxZ <= minZ) return OptionalDouble.empty();
         CollisionShapeRegistry registry = CollisionShapeRegistry.getInstance();
         int firstX = (int) Math.floor(minX - registry.maxX()) + 1;
@@ -382,6 +391,7 @@ public class World {
         for (int x = firstX; x <= lastX; x++) {
             for (int y = firstY; y <= lastY; y++) {
                 for (int z = firstZ; z <= lastZ; z++) {
+                    if (excludedBlocks.contains(new Vector3i(x, y, z))) continue;
                     int stateId = getBlockStateAt(new Vector3d(x, y, z)).stateId();
                     for (CollisionBox box : registry.boxesFor(stateId)) {
                         double boxMinX = x + box.minX();

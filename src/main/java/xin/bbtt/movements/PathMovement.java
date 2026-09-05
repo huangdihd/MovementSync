@@ -321,7 +321,7 @@ public class PathMovement extends Movement {
         double currentSpeed = MovementSync.movementSpeed;
         // Sprint during gap jumps: a diagonal landing is ~2.83 blocks away and
         // plain walking speed cannot carry the jump arc that far.
-        if (isGapJump) currentSpeed *= 1.3;
+        if (isGapJump) currentSpeed *= MovementSync.gapJumpSpeedMultiplier;
         if (dist < 0.25) {
             currentSpeed *= (dist / 0.25);
             if (dist < 0.05) {

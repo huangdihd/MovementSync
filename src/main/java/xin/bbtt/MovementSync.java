@@ -35,6 +35,9 @@ public class MovementSync implements Plugin {
     public static final Vector3d gravitationalAcceleration = new Vector3d(0, -0.08, 0);
     public static final double terminalVelocity = -3.92;
     public static final double movementSpeed = 0.2159;
+    public static final double gapJumpSpeedMultiplier = 1.3;
+    public static final double jumpVelocity = 0.42;
+    public static final double verticalDrag = 0.9800000190734863D;
     public AtomicBoolean onGround = new AtomicBoolean(true);
     private ScheduledExecutorService physicalSimulationService;
     public ScheduledExecutorService movementService;
@@ -130,7 +133,7 @@ public class MovementSync implements Plugin {
 
     public void jump() {
         if (!onGround.get()) return;
-        velocity.updateAndGet(v -> new Vector3d(v).add(0, 0.42, 0));
+        velocity.updateAndGet(v -> new Vector3d(v).add(0, jumpVelocity, 0));
         onGround.set(false);
     }
 

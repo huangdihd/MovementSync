@@ -22,6 +22,7 @@ final class UpdateMotionCollisionShapeTest {
     private static final int STONE = 1;
     private static final int SPRUCE_PLANKS = 16;
     private static final int DIRT_PATH = 14613;
+    private static final int WHITE_CARPET = 12694;
     private static final int BOTTOM_STONE_SLAB = 13197;
     private static final int OPEN_NORTH_LEFT_JUNGLE_DOOR = 13995;
     private static final int OPEN_SOUTH_LEFT_SPRUCE_DOOR_LOWER = 13883;
@@ -168,6 +169,141 @@ final class UpdateMotionCollisionShapeTest {
 
         assertTrue(maximumY >= xin.bbtt.pathfinding.StandablePositionResolver.MAX_JUMP_RISE,
             "planner jump-rise cap must not exceed the real local jump arc: " + maximumY);
+    }
+
+    @Test
+    void carpetToBlockJumpLandsAfterHittingDestinationCeiling() throws Exception {
+        setWorld(new World() {
+            @Override
+            public boolean chunkLoaded(int chunkX, int chunkZ) {
+                return true;
+            }
+
+            @Override
+            public int getBlockAt(Vector3d position) {
+                int x = (int) Math.floor(position.x);
+                int y = (int) Math.floor(position.y);
+                int z = (int) Math.floor(position.z);
+                if (z != 0) return AIR;
+                if (x == 0 && y == 0) return WHITE_CARPET;
+                if (x == 1 && y == 0) return STONE;
+                if (x == 1 && y == 3) return STONE;
+                return AIR;
+            }
+        });
+        movementSync.position.set(new Vector3d(0.5, 1.0 / 16.0, 0.5));
+        movementSync.velocity.set(new Vector3d());
+        movementSync.onGround.set(true);
+        movementSync.jump();
+        boolean hitCeiling = false;
+        boolean landed = false;
+
+        for (int tick = 0; tick < 20; tick++) {
+            movementSync.velocity.updateAndGet(velocity ->
+                new Vector3d(MovementSync.movementSpeed, velocity.y, 0));
+            task.run();
+            Vector3d position = movementSync.position.get();
+            if (!movementSync.onGround.get()
+                    && Math.abs(movementSync.velocity.get().y) < 1.0e-9
+                    && position.y > 1.0) {
+                hitCeiling = true;
+            }
+            if (movementSync.onGround.get()
+                    && Math.abs(position.y - 1.0) < 1.0e-9
+                    && position.x > 1.0) {
+                landed = true;
+                break;
+            }
+        }
+
+        assertTrue(hitCeiling, "the trajectory must exercise upward collision with the ceiling");
+        assertTrue(landed, "head contact must still allow landing on the adjacent full block");
+    }
+
+    @Test
+    void raisedCarpetCatchesThePlayerFootprintBeforeCentering() throws Exception {
+        setWorld(new World() {
+            @Override
+            public boolean chunkLoaded(int chunkX, int chunkZ) {
+                return true;
+            }
+
+            @Override
+            public int getBlockAt(Vector3d position) {
+                int x = (int) Math.floor(position.x);
+                int y = (int) Math.floor(position.y);
+                int z = (int) Math.floor(position.z);
+                if (z != 0) return AIR;
+                if (x == 0 && y == 0) return WHITE_CARPET;
+                if (x == 1 && y == 1) return WHITE_CARPET;
+                if (x == 1 && y == 3) return STONE;
+                return AIR;
+            }
+        });
+        movementSync.position.set(new Vector3d(0.5, 1.0 / 16.0, 0.5));
+        movementSync.velocity.set(new Vector3d());
+        movementSync.onGround.set(true);
+        movementSync.jump();
+        Vector3d landing = null;
+
+        for (int tick = 0; tick < 20; tick++) {
+            movementSync.velocity.updateAndGet(velocity ->
+                new Vector3d(MovementSync.movementSpeed, velocity.y, 0));
+            task.run();
+            Vector3d position = movementSync.position.get();
+            if (movementSync.onGround.get()
+                    && Math.abs(position.y - 1.0625) < 1.0e-9) {
+                landing = new Vector3d(position);
+                break;
+            }
+        }
+
+        assertTrue(landing != null, "the exact downward sweep must land on the raised carpet");
+        assertTrue(landing.x + 0.299 > 1.0,
+            "the player's footprint must overlap the target support at landing: " + landing);
+        assertTrue(landing.x < 1.2,
+            "the landing should occur before the center enters the old 0.3 tolerance: " + landing);
+    }
+
+    @Test
+    void raisedCarpetAlsoCatchesJumpFromBottomSlab() throws Exception {
+        setWorld(new World() {
+            @Override
+            public boolean chunkLoaded(int chunkX, int chunkZ) {
+                return true;
+            }
+
+            @Override
+            public int getBlockAt(Vector3d position) {
+                int x = (int) Math.floor(position.x);
+                int y = (int) Math.floor(position.y);
+                int z = (int) Math.floor(position.z);
+                if (z != 0) return AIR;
+                if (x == 0 && y == 0) return BOTTOM_STONE_SLAB;
+                if (x == 1 && y == 1) return WHITE_CARPET;
+                if (x == 1 && y == 3) return STONE;
+                return AIR;
+            }
+        });
+        movementSync.position.set(new Vector3d(0.5, 0.5, 0.5));
+        movementSync.velocity.set(new Vector3d());
+        movementSync.onGround.set(true);
+        movementSync.jump();
+        boolean landed = false;
+
+        for (int tick = 0; tick < 20; tick++) {
+            movementSync.velocity.updateAndGet(velocity ->
+                new Vector3d(MovementSync.movementSpeed, velocity.y, 0));
+            task.run();
+            Vector3d position = movementSync.position.get();
+            if (movementSync.onGround.get()
+                    && Math.abs(position.y - 1.0625) < 1.0e-9) {
+                landed = true;
+                break;
+            }
+        }
+
+        assertTrue(landed, "the real downward resolver must catch the raised carpet");
     }
 
     @Test

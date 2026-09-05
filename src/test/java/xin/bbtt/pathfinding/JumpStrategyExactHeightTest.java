@@ -1,6 +1,7 @@
 package xin.bbtt.pathfinding;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
@@ -12,6 +13,7 @@ final class JumpStrategyExactHeightTest {
     private static final int AIR = 0;
     private static final int STONE = 1;
     private static final int WHITE_CARPET = 12694;
+    private static final int BOTTOM_STONE_SLAB = 13197;
     private static final int TOP_OAK_SLAB = 13129;
 
     @Test
@@ -56,7 +58,7 @@ final class JumpStrategyExactHeightTest {
     }
 
     @Test
-    void sameNodeYJumpRejectsDestinationCeilingThatBlocksTheArc() {
+    void sameNodeYJumpAllowsDestinationCeilingWhenHeadBumpStillLands() {
         World world = new World() {
             @Override
             public boolean chunkLoaded(int chunkX, int chunkZ) {
@@ -80,10 +82,124 @@ final class JumpStrategyExactHeightTest {
 
         List<Edge> edges = new JumpStrategy(false).findEdges(new Node(0, 1, 0), world);
 
+        assertTrue(edges.stream().anyMatch(edge ->
+            edge.getType() == BuiltinMovementType.JUMP
+                && edge.getTarget().equals(new Node(1, 1, 0))),
+            "head contact may truncate upward velocity while still leaving enough height to land");
+    }
+
+    @Test
+    void sameNodeYJumpRejectsHeadBumpBeforeReachingLandingHeight() {
+        World world = new World() {
+            @Override
+            public boolean chunkLoaded(int chunkX, int chunkZ) {
+                return true;
+            }
+
+            @Override
+            public int getBlockAt(Vector3d position) {
+                int x = (int) Math.floor(position.x);
+                int y = (int) Math.floor(position.y);
+                int z = (int) Math.floor(position.z);
+                if (z != 0) return AIR;
+                if (x == 0 && y == 0) return WHITE_CARPET;
+                if (x == 0 && y == 2) return STONE;
+                if (x == 1 && y == 0) return STONE;
+                return AIR;
+            }
+        };
+
+        List<Edge> edges = new JumpStrategy(false).findEdges(new Node(0, 1, 0), world);
+
         assertFalse(edges.stream().anyMatch(edge ->
             edge.getType() == BuiltinMovementType.JUMP
                 && edge.getTarget().equals(new Node(1, 1, 0))),
-            "a destination-only ceiling must block the ascending jump arc");
+            "a head bump below the required landing height must remain unreachable");
+    }
+
+    @Test
+    void raisedCarpetJumpCanLandByFootprintBeforeCentering() {
+        World world = new World() {
+            @Override
+            public boolean chunkLoaded(int chunkX, int chunkZ) {
+                return true;
+            }
+
+            @Override
+            public int getBlockAt(Vector3d position) {
+                int x = (int) Math.floor(position.x);
+                int y = (int) Math.floor(position.y);
+                int z = (int) Math.floor(position.z);
+                if (z != 0) return AIR;
+                if (x == 0 && y == 0) return WHITE_CARPET;
+                if (x == 1 && y == 1) return WHITE_CARPET;
+                if (x == 1 && y == 3) return STONE;
+                return AIR;
+            }
+        };
+
+        List<Edge> edges = new JumpStrategy(false).findEdges(new Node(0, 1, 0), world);
+
+        assertTrue(edges.stream().anyMatch(edge ->
+            edge.getType() == BuiltinMovementType.JUMP
+                && edge.getTarget().equals(new Node(1, 2, 0))),
+            "the player footprint may catch the target support before its center arrives");
+    }
+
+    @Test
+    void bottomSlabJumpCanLandOnRaisedCarpetByFootprint() {
+        World world = new World() {
+            @Override
+            public boolean chunkLoaded(int chunkX, int chunkZ) {
+                return true;
+            }
+
+            @Override
+            public int getBlockAt(Vector3d position) {
+                int x = (int) Math.floor(position.x);
+                int y = (int) Math.floor(position.y);
+                int z = (int) Math.floor(position.z);
+                if (z != 0) return AIR;
+                if (x == 0 && y == 0) return BOTTOM_STONE_SLAB;
+                if (x == 1 && y == 1) return WHITE_CARPET;
+                if (x == 1 && y == 3) return STONE;
+                return AIR;
+            }
+        };
+        assertEquals(0.5, StandablePositionResolver.feetY(world, 0, 1, 0).orElseThrow(), 1.0e-9);
+        assertEquals(1.0625, StandablePositionResolver.feetY(world, 1, 2, 0).orElseThrow(), 1.0e-9);
+
+        List<Edge> edges = new JumpStrategy(false).findEdges(new Node(0, 1, 0), world);
+
+        assertTrue(edges.stream().anyMatch(edge ->
+            edge.getType() == BuiltinMovementType.JUMP
+                && edge.getTarget().equals(new Node(1, 2, 0))));
+    }
+
+    @Test
+    void twoBlockGapUsesSprintJumpTrajectory() {
+        World world = new World() {
+            @Override
+            public boolean chunkLoaded(int chunkX, int chunkZ) {
+                return true;
+            }
+
+            @Override
+            public int getBlockAt(Vector3d position) {
+                int x = (int) Math.floor(position.x);
+                int y = (int) Math.floor(position.y);
+                int z = (int) Math.floor(position.z);
+                if (z != 0 || y != 0) return AIR;
+                return x == 0 || x == 3 ? STONE : AIR;
+            }
+        };
+
+        List<Edge> edges = new GapJumpStrategy().findEdges(new Node(0, 1, 0), world);
+
+        assertTrue(edges.stream().anyMatch(edge ->
+            edge.getType() == BuiltinMovementType.GAP_JUMP
+                && edge.getTarget().equals(new Node(3, 1, 0))),
+            "two-block gaps require the same 1.3x sprint speed used during execution");
     }
 
     @Test
