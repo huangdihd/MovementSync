@@ -33,6 +33,13 @@ final class WorldCollisionShapeTest {
     }
 
     @Test
+    void unloadedChunkIsNotReportedAsGroundSupport() {
+        World world = new World();
+
+        assertFalse(world.isOnGround(new Vector3d(0.5, 0.0, 0.5)));
+    }
+
+    @Test
     void openDoorCentreIsClearButRotatedPanelStillCollides() {
         World world = singleBlock(OPEN_NORTH_LEFT_JUNGLE_DOOR);
 

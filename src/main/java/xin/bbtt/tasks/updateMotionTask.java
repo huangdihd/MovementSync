@@ -1,7 +1,10 @@
 package xin.bbtt.tasks;
 
+import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundMovePlayerPosPacket;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundMovePlayerPosRotPacket;
+import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundMovePlayerRotPacket;
 import org.joml.Vector3d;
+import org.joml.Vector3i;
 import xin.bbtt.MovementSync;
 import xin.bbtt.mcbot.Bot;
 import xin.bbtt.mcbot.Server;
@@ -14,22 +17,35 @@ public class updateMotionTask implements Runnable {
     private static final double MAX_STEP_HEIGHT =
         xin.bbtt.pathfinding.StandablePositionResolver.MAX_STEP_RISE;
     private static final double STEP_EPSILON = 1.0e-7;
-
     Vector3d lastPos = new Vector3d();
     float lastPitch = 0;
     float lastYaw = 0;
+    boolean lastHorizontalCollision = false;
 
-    public void syncPositionToServer() {
+    public void syncPositionToServer(
+            boolean horizontalCollision, boolean positionChanged, boolean rotationChanged) {
         boolean onGround = MovementSync.INSTANCE.onGround.get();
-        Bot.INSTANCE.getSession().send(new ServerboundMovePlayerPosRotPacket(
-                onGround,
-                false,
-                MovementSync.INSTANCE.position.get().x,
-                MovementSync.INSTANCE.position.get().y,
-                MovementSync.INSTANCE.position.get().z,
-                MovementSync.INSTANCE.yaw.get(),
-                MovementSync.INSTANCE.pitch.get()
-        ));
+        Vector3d position = MovementSync.INSTANCE.position.get();
+        float yaw = MovementSync.INSTANCE.yaw.get();
+        float pitch = MovementSync.INSTANCE.pitch.get();
+
+        if (positionChanged && rotationChanged) {
+            Bot.INSTANCE.getSession().send(new ServerboundMovePlayerPosRotPacket(
+                    onGround, horizontalCollision,
+                    position.x, position.y, position.z, yaw, pitch));
+        } else if (positionChanged) {
+            Bot.INSTANCE.getSession().send(new ServerboundMovePlayerPosPacket(
+                    onGround, horizontalCollision,
+                    position.x, position.y, position.z));
+        } else if (rotationChanged) {
+            Bot.INSTANCE.getSession().send(new ServerboundMovePlayerRotPacket(
+                    onGround, horizontalCollision, yaw, pitch));
+        } else {
+            // A collision-state transition still needs a movement packet.
+            Bot.INSTANCE.getSession().send(new ServerboundMovePlayerPosPacket(
+                    onGround, horizontalCollision,
+                    position.x, position.y, position.z));
+        }
     }
 
     public static void checkOnGround() {
@@ -118,9 +134,13 @@ public class updateMotionTask implements Runnable {
             Bot.INSTANCE.getSession().send(new org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.level.ServerboundPlayerInputPacket(
                 sideways > 0, sideways < 0, forward > 0, forward < 0, jump, sneak, false));
             MovementSync.INSTANCE.applyPersistentGazeIfIdle();
-            syncPositionToServer();
+            syncPositionToServer(false, true, false);
             return;
         }
+
+        Vector3d position = new Vector3d(MovementSync.INSTANCE.position.get());
+        Vector3i currentChunk = MovementSync.INSTANCE.getWorld().getChunk(position);
+        if (!MovementSync.INSTANCE.getWorld().chunkLoaded(currentChunk.x, currentChunk.z)) return;
 
         Vector3d velocity = new Vector3d(MovementSync.INSTANCE.velocity.get());
         final double initialVelY = velocity.y;
@@ -131,16 +151,27 @@ public class updateMotionTask implements Runnable {
             velocity.y = 0;
         }
 
-        Vector3d position = new Vector3d(MovementSync.INSTANCE.position.get());
         final double tickStartY = position.y;
 
-        if (velocity.y > terminalVelocity) {
-            if (!MovementSync.INSTANCE.onGround.get()) velocity.add(gravitationalAcceleration);
-            velocity.y *= MovementSync.verticalDrag;
-            displacement.add(velocity);
-        } else if (velocity.y < 0) {
-            velocity.y = terminalVelocity;
-            displacement.add(new Vector3d(velocity).add(velocity).div(2));
+        /*
+         * Match the client tick order: move with the velocity that was already
+         * accumulated for this tick, then apply gravity and vertical drag for
+         * the next tick.  Applying gravity before the move shortens the first
+         * jump tick by about 0.087 blocks and makes every jump trajectory
+         * diverge from the server's movement prediction.
+         */
+        displacement.x = velocity.x;
+        displacement.z = velocity.z;
+        boolean groundedAtTickStart = MovementSync.INSTANCE.onGround.get();
+        boolean hasUpwardImpulse = velocity.y > 0;
+        if (!groundedAtTickStart || hasUpwardImpulse) {
+            displacement.y = velocity.y;
+            velocity.y = Math.max(
+                    (velocity.y + gravitationalAcceleration.y) * MovementSync.verticalDrag,
+                    terminalVelocity);
+        } else {
+            displacement.y = 0;
+            if (velocity.y < 0) velocity.y = 0;
         }
 
         boolean collidedX = false;
@@ -206,12 +237,17 @@ public class updateMotionTask implements Runnable {
         MovementSync.INSTANCE.position.set(position);
         MovementSync.INSTANCE.applyPersistentGazeIfIdle();
 
-        if (!(lastPos.equals(position) && lastPitch == MovementSync.INSTANCE.pitch.get() && lastYaw == MovementSync.INSTANCE.yaw.get())) {
+        boolean horizontalCollision = collidedX || collidedZ;
+        boolean positionChanged = !lastPos.equals(position);
+        boolean rotationChanged = lastPitch != MovementSync.INSTANCE.pitch.get()
+                || lastYaw != MovementSync.INSTANCE.yaw.get();
+        if (positionChanged || rotationChanged || lastHorizontalCollision != horizontalCollision) {
             checkOnGround();
-            syncPositionToServer();
+            syncPositionToServer(horizontalCollision, positionChanged, rotationChanged);
             lastPos.set(position);
             lastPitch = MovementSync.INSTANCE.pitch.get();
             lastYaw = MovementSync.INSTANCE.yaw.get();
+            lastHorizontalCollision = horizontalCollision;
         }
     }
 }
