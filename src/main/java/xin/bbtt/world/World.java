@@ -83,7 +83,7 @@ public class World {
 
     public boolean isOnGround(Vector3d position) {
         Vector3i chunk = getChunk(position);
-        if (!chunkLoaded(chunk.x, chunk.z)) return true;
+        if (!chunkLoaded(chunk.x, chunk.z)) return false;
 
         double halfWidth = 0.299;
         double tolerance = 1.0e-4;

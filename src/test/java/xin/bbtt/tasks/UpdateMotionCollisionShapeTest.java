@@ -144,6 +144,33 @@ final class UpdateMotionCollisionShapeTest {
     }
 
     @Test
+    void jumpUsesImpulseForFirstDisplacementBeforeApplyingGravity() throws Exception {
+        setWorld(new World() {
+            @Override
+            public boolean chunkLoaded(int chunkX, int chunkZ) {
+                return true;
+            }
+
+            @Override
+            public int getBlockAt(Vector3d position) {
+                return Math.floor(position.y) == -1 ? STONE : AIR;
+            }
+        });
+        movementSync.position.set(new Vector3d(0.5, 0.0, 0.5));
+        movementSync.velocity.set(new Vector3d());
+        movementSync.onGround.set(true);
+        movementSync.jump();
+
+        task.run();
+
+        assertEquals(0.42, movementSync.position.get().y, 1.0e-9,
+            "the jump impulse must be used for the first client tick");
+        assertEquals((0.42 - 0.08) * MovementSync.verticalDrag,
+            movementSync.velocity.get().y, 1.0e-9,
+            "gravity and drag must be retained for the following tick");
+    }
+
+    @Test
     void jumpArcClearsAFullBlockBeforePillarPlacementThreshold() throws Exception {
         setWorld(new World() {
             @Override
