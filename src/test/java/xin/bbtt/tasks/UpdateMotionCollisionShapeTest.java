@@ -116,6 +116,140 @@ final class UpdateMotionCollisionShapeTest {
         return (boolean) isPlayerBoxColliding.invoke(task, feetPosition);
     }
 
+    private void useTerrain(java.util.function.ToIntFunction<Vector3d> blocks) throws Exception {
+        setWorld(new World() {
+            @Override
+            public boolean chunkLoaded(int chunkX, int chunkZ) { return true; }
+
+            @Override
+            public int getBlockAt(Vector3d position) { return blocks.applyAsInt(position); }
+        });
+        movementSync.position.set(new Vector3d(0.5, 1, 0.5));
+        movementSync.velocity.set(new Vector3d());
+        movementSync.onGround.set(true);
+    }
+
+    private void assertTick(double x, double y, double z, double velocityX,
+            double velocityY, double velocityZ, boolean onGround,
+            boolean collision, boolean sendsPacket) {
+        sentPackets.clear();
+        task.run();
+        Vector3d position = movementSync.position.get();
+        Vector3d velocity = movementSync.velocity.get();
+        assertEquals(x, position.x, 1.0e-9);
+        assertEquals(y, position.y, 1.0e-9);
+        assertEquals(z, position.z, 1.0e-9);
+        assertEquals(velocityX, velocity.x, 1.0e-9);
+        assertEquals(velocityY, velocity.y, 1.0e-9);
+        assertEquals(velocityZ, velocity.z, 1.0e-9);
+        assertEquals(onGround, movementSync.onGround.get());
+        assertEquals(sendsPacket ? 1 : 0, sentPackets.size());
+        if (!sendsPacket) return;
+        var packet = org.junit.jupiter.api.Assertions.assertInstanceOf(
+            org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundMovePlayerPosPacket.class,
+            sentPackets.get(0));
+        assertEquals(x, packet.getX(), 1.0e-9);
+        assertEquals(y, packet.getY(), 1.0e-9);
+        assertEquals(z, packet.getZ(), 1.0e-9);
+        assertEquals(onGround, packet.isOnGround());
+        assertEquals(collision, packet.isHorizontalCollision());
+    }
+
+    @Test
+    void stationaryAndHorizontalTicksPreservePacketSuppression() throws Exception {
+        useTerrain(position -> Math.floor(position.y) == 0 ? STONE : AIR);
+        assertTick(0.5, 1, 0.5, 0, 0, 0, true, false, true);
+        assertTick(0.5, 1, 0.5, 0, 0, 0, true, false, false);
+        movementSync.velocity.set(new Vector3d(0.2, 0, 0.1));
+        for (int tick = 1; tick <= 4; tick++) {
+            assertTick(0.5 + 0.2 * tick, 1, 0.5 + 0.1 * tick,
+                0.2, 0, 0.1, true, false, true);
+        }
+    }
+
+    @Test
+    void fullJumpTraceIncludesVelocityGroundAndPackets() throws Exception {
+        useTerrain(position -> Math.floor(position.y) == 0 ? STONE : AIR);
+        movementSync.jump();
+        double height = 1;
+        double speed = 0.42;
+        for (int tick = 0; tick < 12; tick++) {
+            height += speed;
+            speed = (speed - 0.08) * 0.9800000190734863D;
+            if (tick == 11) {
+                height = 1;
+                speed = 0;
+            }
+            assertTick(0.5, height, 0.5, 0, speed, 0, tick == 11, false, true);
+        }
+        assertTick(0.5, 1, 0.5, 0, 0, 0, true, false, false);
+    }
+
+    @Test
+    void walkingOffPlatformDelaysGravityUntilFollowingTick() throws Exception {
+        useTerrain(position -> Math.floor(position.y) == 0
+            || (Math.floor(position.y) == 1 && Math.floor(position.x) == 0) ? STONE : AIR);
+        movementSync.position.set(new Vector3d(0.5, 2, 0.5));
+        movementSync.velocity.set(new Vector3d(1, 0, 0));
+        assertTick(1.5, 2, 0.5, 1, 0, 0, false, false, true);
+        double height = 2;
+        double speed = 0;
+        for (int tick = 1; tick <= 6; tick++) {
+            height += speed;
+            speed = (speed - 0.08) * 0.9800000190734863D;
+            if (tick == 6) {
+                height = 1;
+                speed = 0;
+            }
+            assertTick(1.5 + tick, height, 0.5, 1, speed, 0, tick == 6, false, true);
+        }
+    }
+
+    @Test
+    void wallsStopEachAxisAndReportCollisionTransitions() throws Exception {
+        for (boolean xAxis : new boolean[]{true, false}) {
+            useTerrain(position -> Math.floor(position.y) == 0
+                || Math.floor(xAxis ? position.x : position.z) == 1 ? STONE : AIR);
+            task = new updateMotionTask();
+            movementSync.velocity.set(xAxis ? new Vector3d(0.3, 0, 0) : new Vector3d(0, 0, 0.3));
+            assertTick(0.5, 1, 0.5, 0, 0, 0, true, true, true);
+            assertTick(0.5, 1, 0.5, 0, 0, 0, true, false, true);
+            assertTick(0.5, 1, 0.5, 0, 0, 0, true, false, false);
+        }
+    }
+
+    @Test
+    void slabStepTracePreservesHorizontalSpeed() throws Exception {
+        useTerrain(position -> Math.floor(position.y) == 0 ? STONE
+            : Math.floor(position.y) == 1 && Math.floor(position.x) == 1 ? BOTTOM_STONE_SLAB : AIR);
+        movementSync.velocity.set(new Vector3d(0.3, 0, 0));
+        for (int tick = 1; tick <= 3; tick++) {
+            assertTick(0.5 + tick * 0.3, 1.5, 0.5, 0.3, 0, 0, true, false, true);
+        }
+    }
+
+    @Test
+    void ceilingCancelsJumpWithoutHorizontalCollision() throws Exception {
+        useTerrain(position -> Math.floor(position.y) == 0 || Math.floor(position.y) == 3 ? STONE : AIR);
+        movementSync.jump();
+        assertTick(0.5, 1, 0.5, 0, 0, 0, true, false, true);
+        assertTick(0.5, 1, 0.5, 0, 0, 0, true, false, false);
+    }
+
+    @Test
+    void unloadedChunkLeavesStateAndPacketsUntouched() throws Exception {
+        setWorld(new World() {
+            @Override
+            public boolean chunkLoaded(int chunkX, int chunkZ) { return false; }
+        });
+        movementSync.position.set(new Vector3d(0.5, 4, 0.5));
+        movementSync.velocity.set(new Vector3d(0.2, -0.3, 0.4));
+        movementSync.onGround.set(true);
+        for (int tick = 0; tick < 3; tick++) {
+            assertTick(0.5, 4, 0.5, 0.2, -0.3, 0.4, true, false, false);
+        }
+    }
+
     @Test
     void openDoorAllowsCentreApproachButBlocksItsRotatedPanel() throws Exception {
         assertFalse(collides(new Vector3d(0.5, 0.0, 0.5)),

@@ -9,14 +9,16 @@ import xin.bbtt.MovementSync;
 import xin.bbtt.mcbot.Bot;
 import xin.bbtt.mcbot.Server;
 
-import static xin.bbtt.MovementSync.gravitationalAcceleration;
-import static xin.bbtt.MovementSync.terminalVelocity;
+import xin.bbtt.physics.PhysicsResult;
+import xin.bbtt.physics.PhysicsState;
+import xin.bbtt.physics.PhysicsStepper;
+import xin.bbtt.physics.WalkingPhysics;
 
 public class updateMotionTask implements Runnable {
     private static final double PLAYER_HALF_WIDTH = 0.299;
-    private static final double MAX_STEP_HEIGHT =
-        xin.bbtt.pathfinding.StandablePositionResolver.MAX_STEP_RISE;
-    private static final double STEP_EPSILON = 1.0e-7;
+    private static final PhysicsStepper WALKING_PHYSICS = new WalkingPhysics();
+
+    private record BodyDimensions(double halfWidth, double height) {}
     Vector3d lastPos = new Vector3d();
     float lastPitch = 0;
     float lastYaw = 0;
@@ -53,7 +55,7 @@ public class updateMotionTask implements Runnable {
         MovementSync.INSTANCE.onGround.set(MovementSync.INSTANCE.getWorld().isOnGround(position));
     }
 
-    private boolean isPlayerBoxColliding(Vector3d pos) {
+    private BodyDimensions getBodyDimensions() {
         double halfWidth = PLAYER_HALF_WIDTH; // Player width is 0.6 blocks.
         double height = 1.8;
 
@@ -75,34 +77,14 @@ public class updateMotionTask implements Runnable {
             }
         }
 
-        return MovementSync.INSTANCE.getWorld().isBoxColliding(
-            pos.x - halfWidth, pos.y, pos.z - halfWidth,
-            pos.x + halfWidth, pos.y + height, pos.z + halfWidth);
+        return new BodyDimensions(halfWidth, height);
     }
 
-    /**
-     * Applies vanilla-style automatic stepping for grounded horizontal motion.
-     * The candidate support height comes from the exact block-state collision
-     * boxes, so path blocks, slabs, stairs, trapdoors, and directional shapes
-     * keep their real heights instead of being treated as whole cubes.
-     */
-    private boolean tryStepUp(
-            Vector3d position,
-            double candidateX,
-            double candidateZ,
-            double tickStartY) {
-        if (!MovementSync.INSTANCE.onGround.get() || MovementSync.INSTANCE.isRiding()) return false;
-
-        java.util.OptionalDouble support = MovementSync.INSTANCE.getWorld().findHighestCollisionTop(
-            candidateX - PLAYER_HALF_WIDTH, position.y + STEP_EPSILON, candidateZ - PLAYER_HALF_WIDTH,
-            candidateX + PLAYER_HALF_WIDTH, tickStartY + MAX_STEP_HEIGHT, candidateZ + PLAYER_HALF_WIDTH
-        );
-        if (support.isEmpty()) return false;
-
-        Vector3d stepped = new Vector3d(candidateX, support.getAsDouble(), candidateZ);
-        if (isPlayerBoxColliding(stepped)) return false;
-        position.set(stepped);
-        return true;
+    private boolean isPlayerBoxColliding(Vector3d pos) {
+        BodyDimensions dimensions = getBodyDimensions();
+        return MovementSync.INSTANCE.getWorld().isBoxColliding(
+            pos.x - dimensions.halfWidth(), pos.y, pos.z - dimensions.halfWidth(),
+            pos.x + dimensions.halfWidth(), pos.y + dimensions.height(), pos.z + dimensions.halfWidth());
     }
 
     @Override
@@ -144,82 +126,16 @@ public class updateMotionTask implements Runnable {
 
         Vector3d velocity = new Vector3d(MovementSync.INSTANCE.velocity.get());
         final double initialVelY = velocity.y;
-        Vector3d displacement = new Vector3d();
-
         checkOnGround();
-        if (MovementSync.INSTANCE.onGround.get() && velocity.y < 0) {
-            velocity.y = 0;
-        }
-
-        final double tickStartY = position.y;
-
-        /*
-         * Match the client tick order: move with the velocity that was already
-         * accumulated for this tick, then apply gravity and vertical drag for
-         * the next tick.  Applying gravity before the move shortens the first
-         * jump tick by about 0.087 blocks and makes every jump trajectory
-         * diverge from the server's movement prediction.
-         */
-        displacement.x = velocity.x;
-        displacement.z = velocity.z;
-        boolean groundedAtTickStart = MovementSync.INSTANCE.onGround.get();
-        boolean hasUpwardImpulse = velocity.y > 0;
-        if (!groundedAtTickStart || hasUpwardImpulse) {
-            displacement.y = velocity.y;
-            velocity.y = Math.max(
-                    (velocity.y + gravitationalAcceleration.y) * MovementSync.verticalDrag,
-                    terminalVelocity);
-        } else {
-            displacement.y = 0;
-            if (velocity.y < 0) velocity.y = 0;
-        }
-
-        boolean collidedX = false;
-        boolean collidedZ = false;
-
-        if (displacement.x != 0) {
-            Vector3d testPosX = new Vector3d(position.x + displacement.x, position.y, position.z);
-            if (isPlayerBoxColliding(testPosX)) {
-                if (!tryStepUp(position, testPosX.x, testPosX.z, tickStartY)) {
-                    displacement.x = 0;
-                    velocity.x = 0;
-                    collidedX = true;
-                }
-            } else {
-                position.x += displacement.x;
-            }
-        }
-
-        if (displacement.z != 0) {
-            Vector3d testPosZ = new Vector3d(position.x, position.y, position.z + displacement.z);
-            if (isPlayerBoxColliding(testPosZ)) {
-                if (!tryStepUp(position, testPosZ.x, testPosZ.z, tickStartY)) {
-                    displacement.z = 0;
-                    velocity.z = 0;
-                    collidedZ = true;
-                }
-            } else {
-                position.z += displacement.z;
-            }
-        }
-
-        if (displacement.y > 0) {
-            Vector3d testPosY = new Vector3d(position.x, position.y + displacement.y, position.z);
-            if (isPlayerBoxColliding(testPosY)) {
-                displacement.y = 0;
-                velocity.y = 0;
-            }
-        }
-
-        if (displacement.y < 0) {
-            double desiredY = position.y + displacement.y;
-            double resolvedY = VerticalCollisionResolver.resolveDownwardY(
-                MovementSync.INSTANCE.getWorld(), position, 0.299, displacement.y);
-            position.y = resolvedY;
-            if (resolvedY > desiredY + 1.0e-9) velocity.y = 0;
-        } else {
-            position.y += displacement.y;
-        }
+        BodyDimensions dimensions = getBodyDimensions();
+        PhysicsResult result = WALKING_PHYSICS.step(
+            MovementSync.INSTANCE.getWorld(),
+            new PhysicsState(position, velocity, MovementSync.INSTANCE.onGround.get()),
+            dimensions.halfWidth(), dimensions.height());
+        position = result.position();
+        velocity = result.velocity();
+        boolean collidedX = result.collidedX();
+        boolean collidedZ = result.collidedZ();
 
         // Merge instead of set(): movements may change velocity concurrently during this
         // tick (e.g. WalkMovement.onStop subtracting its component); overwriting the whole
