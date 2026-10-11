@@ -18,6 +18,11 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import xin.bbtt.MovementSync;
 import xin.bbtt.mcbot.Bot;
+import xin.bbtt.physics.PhysicsResult;
+import xin.bbtt.physics.PhysicsState;
+import xin.bbtt.physics.PlayerInput;
+import xin.bbtt.physics.WalkingPhysics;
+import xin.bbtt.world.World;
 
 final class PillarMovementTest {
     @AfterEach
@@ -61,12 +66,43 @@ final class PillarMovementTest {
         movement.init();
         movement.onTick();
 
-        assertEquals(0.42, movementSync.velocity.get().y, 1.0e-9);
+        assertTrue(movementSync.onGround.get());
+        assertEquals(new Vector3d(), movementSync.velocity.get());
+        PlayerInput input = movementSync.snapshotInput();
+        assertTrue(input.jump());
+        assertFalse(movementSync.snapshotInput().jump(), "jump must be a one-shot request");
         assertTrue(packets.isEmpty(), "placement must wait until the feet leave the target cell");
         assertFalse(movement.isFinished());
 
-        movementSync.position.set(new Vector3d(0.5, 65.05, 0.5));
-        movement.onTick();
+        World world = new World() {
+            @Override
+            public boolean isBoxColliding(double minX, double minY, double minZ,
+                    double maxX, double maxY, double maxZ) {
+                return minY < 64.0;
+            }
+        };
+        for (int tick = 0; tick < 3; tick++) {
+            PhysicsResult result = new WalkingPhysics(input, movementSync.yaw.get()).step(
+                    world, new PhysicsState(movementSync.position.get(), movementSync.velocity.get(),
+                            movementSync.onGround.get()), 0.299, 1.8);
+            movementSync.position.set(result.position());
+            movementSync.velocity.set(result.velocity());
+            movementSync.onGround.set(result.onGround());
+            assertFalse(movementSync.onGround.get());
+            if (tick == 0) {
+                assertEquals(64.42, result.position().y, 1.0e-9);
+                assertEquals((0.42 - 0.08) * 0.9800000190734863D, result.velocity().y, 1.0e-9);
+            }
+            movement.onTick();
+            if (tick < 2) {
+                assertTrue(result.position().y < 65.0);
+                assertTrue(packets.isEmpty(), "placement must wait until the feet leave the target cell");
+                assertFalse(movement.isFinished());
+            }
+            input = movementSync.snapshotInput();
+            assertFalse(input.jump(), "waiting for clearance must not request another jump");
+        }
+        assertTrue(movementSync.position.get().y >= 65.0);
 
         assertEquals(2, packets.size());
         assertTrue(packets.get(0) instanceof ServerboundUseItemOnPacket);

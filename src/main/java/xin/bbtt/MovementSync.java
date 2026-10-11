@@ -1,5 +1,11 @@
 package xin.bbtt;
 
+import xin.bbtt.physics.PlayerInput;
+import org.geysermc.mcprotocollib.network.packet.Packet;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.Queue;
+import java.util.Objects;
+
 import org.geysermc.mcprotocollib.protocol.data.game.item.ItemStack;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundPlayerCommandPacket;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundUseItemPacket;
@@ -37,6 +43,39 @@ public class MovementSync implements Plugin {
     public int entityId = -1;
     public AtomicReference<Vector3d> position = new AtomicReference<>(new Vector3d(0, 0, 0));
     public AtomicReference<Vector3d> velocity = new AtomicReference<>(new Vector3d(0, 0, 0));
+    private final AtomicReference<PlayerInput> input =
+            new AtomicReference<>(PlayerInput.NONE);
+    private final AtomicBoolean jumpRequested = new AtomicBoolean();
+    private final Queue<Packet> beforeMovementPackets =
+            new ConcurrentLinkedQueue<>();
+
+    public PlayerInput getInput() {
+        return input.get();
+    }
+
+    public void setInput(PlayerInput keys) {
+        input.set(Objects.requireNonNull(keys, "keys"));
+    }
+
+    public void clearInput() {
+        input.set(PlayerInput.NONE);
+        jumpRequested.set(false);
+    }
+
+    /** Consumes only the one-shot request; held jump remains held. */
+    public PlayerInput snapshotInput() {
+        PlayerInput keys = input.get();
+        return jumpRequested.getAndSet(false) ? keys.withJump(true) : keys;
+    }
+
+    public void queueBeforeMovement(Packet packet) {
+        beforeMovementPackets.add(Objects.requireNonNull(packet, "packet"));
+    }
+
+    public Packet pollBeforeMovementPacket() {
+        return beforeMovementPackets.poll();
+    }
+
     public AtomicReference<Float> pitch = new AtomicReference<>(0f);
     public AtomicReference<Float> yaw = new AtomicReference<>(0f);
     public static final Vector3d gravitationalAcceleration = new Vector3d(0, -0.08, 0);
@@ -156,7 +195,7 @@ public class MovementSync implements Plugin {
         if (inventory == null || inventory.length <= 6 || !isItem(inventory[6], "elytra")) return false;
         if (Bot.INSTANCE == null || Bot.INSTANCE.getSession() == null || !Bot.INSTANCE.getSession().isConnected()) return false;
         setGliding(true);
-        Bot.INSTANCE.getSession().send(new ServerboundPlayerCommandPacket(
+        queueBeforeMovement(new ServerboundPlayerCommandPacket(
                 entityId, PlayerState.START_ELYTRA_FLYING));
         return true;
     }
@@ -212,9 +251,7 @@ public class MovementSync implements Plugin {
     }
 
     public void jump() {
-        if (!onGround.get()) return;
-        velocity.updateAndGet(v -> new Vector3d(v).add(0, jumpVelocity, 0));
-        onGround.set(false);
+        jumpRequested.set(true);
     }
 
     public void lookAt(Vector3d target) {

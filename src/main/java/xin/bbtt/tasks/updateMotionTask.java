@@ -1,5 +1,11 @@
 package xin.bbtt.tasks;
 
+import xin.bbtt.physics.PlayerInput;
+import org.geysermc.mcprotocollib.network.packet.Packet;
+import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.level.ServerboundPlayerInputPacket;
+import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundPlayerCommandPacket;
+import org.geysermc.mcprotocollib.protocol.data.game.entity.player.PlayerState;
+
 import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundMovePlayerPosPacket;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundMovePlayerPosRotPacket;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundMovePlayerRotPacket;
@@ -17,13 +23,16 @@ import xin.bbtt.physics.WalkingPhysics;
 
 public class updateMotionTask implements Runnable {
     private static final double PLAYER_HALF_WIDTH = 0.299;
-    private static final PhysicsStepper WALKING_PHYSICS = new WalkingPhysics();
+    private PlayerInput lastInput = PlayerInput.NONE;
+    private boolean lastSprinting;
+    private int jumpCooldown;
 
     private record BodyDimensions(double halfWidth, double height) {}
     Vector3d lastPos = new Vector3d();
     float lastPitch = 0;
     float lastYaw = 0;
     boolean lastHorizontalCollision = false;
+    boolean lastOnGround;
 
     public void syncPositionToServer(
             boolean horizontalCollision, boolean positionChanged, boolean rotationChanged) {
@@ -138,15 +147,38 @@ public class updateMotionTask implements Runnable {
         Vector3i currentChunk = MovementSync.INSTANCE.getWorld().getChunk(position);
         if (!MovementSync.INSTANCE.getWorld().chunkLoaded(currentChunk.x, currentChunk.z)) return;
 
-        Vector3d velocity = new Vector3d(MovementSync.INSTANCE.velocity.get());
-        final double initialVelY = velocity.y;
-        checkOnGround();
+        PlayerInput input = MovementSync.INSTANCE.snapshotInput();
+        float tickYaw = MovementSync.INSTANCE.yaw.get();
+        if (!input.equals(lastInput)) {
+            Bot.INSTANCE.getSession().send(new ServerboundPlayerInputPacket(
+                    input.forward(), input.backward(), input.left(), input.right(), input.jump(), input.sneak(), input.sprint()));
+            lastInput = input;
+        }
+        if (input.sprint() != lastSprinting) {
+            Bot.INSTANCE.getSession().send(new ServerboundPlayerCommandPacket(
+                    MovementSync.INSTANCE.entityId, input.sprint()
+                    ? PlayerState.START_SPRINTING
+                    : PlayerState.STOP_SPRINTING));
+            lastSprinting = input.sprint();
+        }
+        Packet action;
+        while ((action = MovementSync.INSTANCE.pollBeforeMovementPacket()) != null) {
+            Bot.INSTANCE.getSession().send(action);
+        }
+        Vector3d initialVelocity = MovementSync.INSTANCE.velocity.get();
+        Vector3d velocity = new Vector3d(initialVelocity);
         BodyDimensions dimensions = getBodyDimensions();
         boolean gliding = MovementSync.INSTANCE.isGliding();
+        if (jumpCooldown > 0) jumpCooldown--;
+        if (!input.jump()) jumpCooldown = 0;
+        boolean jumpAllowed = jumpCooldown == 0;
+        if (!gliding && input.jump() && jumpAllowed && MovementSync.INSTANCE.onGround.get()) {
+            jumpCooldown = 10;
+        }
         PhysicsStepper physics = gliding
                 ? new GlidingPhysics(MovementSync.INSTANCE.yaw.get(), MovementSync.INSTANCE.pitch.get(),
                         MovementSync.INSTANCE.hasAttachedFirework())
-                : WALKING_PHYSICS;
+                : new WalkingPhysics(input, tickYaw, jumpAllowed);
         PhysicsResult result = physics.step(
             MovementSync.INSTANCE.getWorld(),
             new PhysicsState(position, velocity, MovementSync.INSTANCE.onGround.get()),
@@ -161,20 +193,11 @@ public class updateMotionTask implements Runnable {
             MovementSync.INSTANCE.onGround.set(result.onGround());
             if (result.onGround()) MovementSync.INSTANCE.setGliding(false);
         } else {
-            // Merge instead of set(): movements may change velocity concurrently during this
-            // tick (e.g. WalkMovement.onStop subtracting its component); overwriting the whole
-            // vector with our stale snapshot would silently undo those updates.
-            final double newVelY = velocity.y;
-            final boolean stopX = collidedX;
-            final boolean stopZ = collidedZ;
-            MovementSync.INSTANCE.velocity.updateAndGet(v -> {
-                Vector3d merged = new Vector3d(v);
-                if (merged.y == initialVelY) merged.y = newVelY;
-                if (stopX) merged.x = 0;
-                if (stopZ) merged.z = 0;
-                return merged;
-            });
+            // Identity CAS preserves even a concurrent same-valued write by a legacy action.
+            // If another writer wins, its complete velocity takes priority over this tick's drag.
+            MovementSync.INSTANCE.velocity.compareAndSet(initialVelocity, velocity);
         }
+        if (!gliding) MovementSync.INSTANCE.onGround.set(result.onGround());
         MovementSync.INSTANCE.position.set(position);
         MovementSync.INSTANCE.applyPersistentGazeIfIdle();
 
@@ -182,13 +205,14 @@ public class updateMotionTask implements Runnable {
         boolean positionChanged = !lastPos.equals(position);
         boolean rotationChanged = lastPitch != MovementSync.INSTANCE.pitch.get()
                 || lastYaw != MovementSync.INSTANCE.yaw.get();
-        if (positionChanged || rotationChanged || lastHorizontalCollision != horizontalCollision) {
-            if (!gliding) checkOnGround();
+        if (positionChanged || rotationChanged || lastHorizontalCollision != horizontalCollision
+                || lastOnGround != MovementSync.INSTANCE.onGround.get()) {
             syncPositionToServer(horizontalCollision, positionChanged, rotationChanged);
             lastPos.set(position);
             lastPitch = MovementSync.INSTANCE.pitch.get();
             lastYaw = MovementSync.INSTANCE.yaw.get();
             lastHorizontalCollision = horizontalCollision;
+            lastOnGround = MovementSync.INSTANCE.onGround.get();
         }
     }
 }

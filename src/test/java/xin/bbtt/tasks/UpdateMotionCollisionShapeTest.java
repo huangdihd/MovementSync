@@ -27,6 +27,7 @@ import xin.bbtt.mcbot.Server;
 import xin.bbtt.world.World;
 
 final class UpdateMotionCollisionShapeTest {
+    private static final double POST_COLLISION_VERTICAL_VELOCITY = -0.08 * 0.9800000190734863D;
     private static final int AIR = 0;
     private static final int STONE = 1;
     private static final int SPRUCE_PLANKS = 16;
@@ -76,7 +77,7 @@ final class UpdateMotionCollisionShapeTest {
                     // The per-tick end marker is counted on its own so movement-packet
                     // assertions keep describing movement packets only.
                     if (args[0] instanceof org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.ServerboundClientTickEndPacket) tickEndPackets++;
-                    else sentPackets.add(args[0]);
+                    else if (!(args[0] instanceof org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.level.ServerboundPlayerInputPacket)) sentPackets.add(args[0]);
                 }
                 Class<?> returnType = method.getReturnType();
                 if (!returnType.isPrimitive()) return null;
@@ -164,21 +165,28 @@ final class UpdateMotionCollisionShapeTest {
     @Test
     void everyTickEndsWithATickEndPacketEvenWithoutMovement() throws Exception {
         useTerrain(position -> Math.floor(position.y) == 0 ? STONE : AIR);
-        assertTick(0.5, 1, 0.5, 0, 0, 0, true, false, true);
+        assertTick(0.5, 1, 0.5, 0, POST_COLLISION_VERTICAL_VELOCITY, 0, true, false, true);
         int afterFirst = tickEndPackets;
-        assertTick(0.5, 1, 0.5, 0, 0, 0, true, false, false);
+        assertTick(0.5, 1, 0.5, 0, POST_COLLISION_VERTICAL_VELOCITY, 0, true, false, false);
         assertEquals(afterFirst + 1, tickEndPackets);
     }
 
     @Test
     void stationaryAndHorizontalTicksPreservePacketSuppression() throws Exception {
         useTerrain(position -> Math.floor(position.y) == 0 ? STONE : AIR);
-        assertTick(0.5, 1, 0.5, 0, 0, 0, true, false, true);
-        assertTick(0.5, 1, 0.5, 0, 0, 0, true, false, false);
+        assertTick(0.5, 1, 0.5, 0, POST_COLLISION_VERTICAL_VELOCITY, 0, true, false, true);
+        assertTick(0.5, 1, 0.5, 0, POST_COLLISION_VERTICAL_VELOCITY, 0, true, false, false);
         movementSync.velocity.set(new Vector3d(0.2, 0, 0.1));
+        double x = 0.5;
+        double z = 0.5;
+        double velocityX = 0.2;
+        double velocityZ = 0.1;
         for (int tick = 1; tick <= 4; tick++) {
-            assertTick(0.5 + 0.2 * tick, 1, 0.5 + 0.1 * tick,
-                0.2, 0, 0.1, true, false, true);
+            x += velocityX;
+            z += velocityZ;
+            velocityX *= 0.6 * 0.91;
+            velocityZ *= 0.6 * 0.91;
+            assertTick(x, 1, z, velocityX, POST_COLLISION_VERTICAL_VELOCITY, velocityZ, true, false, true);
         }
     }
 
@@ -193,31 +201,51 @@ final class UpdateMotionCollisionShapeTest {
             speed = (speed - 0.08) * 0.9800000190734863D;
             if (tick == 11) {
                 height = 1;
-                speed = 0;
+                speed = POST_COLLISION_VERTICAL_VELOCITY;
             }
             assertTick(0.5, height, 0.5, 0, speed, 0, tick == 11, false, true);
         }
-        assertTick(0.5, 1, 0.5, 0, 0, 0, true, false, false);
+        assertTick(0.5, 1, 0.5, 0, POST_COLLISION_VERTICAL_VELOCITY, 0, true, false, false);
     }
 
     @Test
-    void walkingOffPlatformDelaysGravityUntilFollowingTick() throws Exception {
+    void walkingOffPlatformAppliesGravityForTheFollowingTick() throws Exception {
         useTerrain(position -> Math.floor(position.y) == 0
             || (Math.floor(position.y) == 1 && Math.floor(position.x) == 0) ? STONE : AIR);
         movementSync.position.set(new Vector3d(0.5, 2, 0.5));
         movementSync.velocity.set(new Vector3d(1, 0, 0));
-        assertTick(1.5, 2, 0.5, 1, 0, 0, false, false, true);
+        assertTick(1.5, 2, 0.5, 0.6 * 0.91, POST_COLLISION_VERTICAL_VELOCITY, 0, false, false, true);
+        double x = 1.5;
+        double velocityX = 0.6 * 0.91;
         double height = 2;
-        double speed = 0;
-        for (int tick = 1; tick <= 6; tick++) {
+        double speed = POST_COLLISION_VERTICAL_VELOCITY;
+        for (int tick = 1; tick <= 5; tick++) {
             height += speed;
             speed = (speed - 0.08) * 0.9800000190734863D;
-            if (tick == 6) {
+            if (tick == 5) {
                 height = 1;
-                speed = 0;
+                speed = POST_COLLISION_VERTICAL_VELOCITY;
             }
-            assertTick(1.5 + tick, height, 0.5, 1, speed, 0, tick == 6, false, true);
+            x += velocityX;
+            velocityX *= 0.91;
+            assertTick(x, height, 0.5, velocityX, speed, 0, tick == 5, false, true);
         }
+    }
+
+    @Test
+    void supportedEdgeTickReportsGroundContactBeforeFallingOnNextTick() throws Exception {
+        useTerrain(position -> Math.floor(position.y) == 0
+            && Math.floor(position.x) == 0 ? STONE : AIR);
+        movementSync.velocity.set(new Vector3d(1, POST_COLLISION_VERTICAL_VELOCITY, 0));
+        double groundDrag = 0.6 * 0.91;
+        assertTick(1.5, 1, 0.5, groundDrag, POST_COLLISION_VERTICAL_VELOCITY,
+            0, true, false, true);
+        assertFalse(movementSync.getWorld().isOnGround(movementSync.position.get()),
+            "end-position support must not override this tick's downward collision");
+        assertTick(1.5 + groundDrag, 1 + POST_COLLISION_VERTICAL_VELOCITY, 0.5,
+            groundDrag * groundDrag,
+            (POST_COLLISION_VERTICAL_VELOCITY - 0.08) * 0.9800000190734863D,
+            0, false, false, true);
     }
 
     @Test
@@ -227,19 +255,23 @@ final class UpdateMotionCollisionShapeTest {
                 || Math.floor(xAxis ? position.x : position.z) == 1 ? STONE : AIR);
             task = new updateMotionTask();
             movementSync.velocity.set(xAxis ? new Vector3d(0.3, 0, 0) : new Vector3d(0, 0, 0.3));
-            assertTick(0.5, 1, 0.5, 0, 0, 0, true, true, true);
-            assertTick(0.5, 1, 0.5, 0, 0, 0, true, false, true);
-            assertTick(0.5, 1, 0.5, 0, 0, 0, true, false, false);
+            assertTick(0.5, 1, 0.5, 0, POST_COLLISION_VERTICAL_VELOCITY, 0, true, true, true);
+            assertTick(0.5, 1, 0.5, 0, POST_COLLISION_VERTICAL_VELOCITY, 0, true, false, true);
+            assertTick(0.5, 1, 0.5, 0, POST_COLLISION_VERTICAL_VELOCITY, 0, true, false, false);
         }
     }
 
     @Test
-    void slabStepTracePreservesHorizontalSpeed() throws Exception {
+    void slabStepTraceAppliesGroundDrag() throws Exception {
         useTerrain(position -> Math.floor(position.y) == 0 ? STONE
             : Math.floor(position.y) == 1 && Math.floor(position.x) == 1 ? BOTTOM_STONE_SLAB : AIR);
         movementSync.velocity.set(new Vector3d(0.3, 0, 0));
+        double x = 0.5;
+        double velocityX = 0.3;
         for (int tick = 1; tick <= 3; tick++) {
-            assertTick(0.5 + tick * 0.3, 1.5, 0.5, 0.3, 0, 0, true, false, true);
+            x += velocityX;
+            velocityX *= 0.6 * 0.91;
+            assertTick(x, 1.5, 0.5, velocityX, POST_COLLISION_VERTICAL_VELOCITY, 0, true, false, true);
         }
     }
 
@@ -247,8 +279,9 @@ final class UpdateMotionCollisionShapeTest {
     void ceilingCancelsJumpWithoutHorizontalCollision() throws Exception {
         useTerrain(position -> Math.floor(position.y) == 0 || Math.floor(position.y) == 3 ? STONE : AIR);
         movementSync.jump();
-        assertTick(0.5, 1, 0.5, 0, 0, 0, true, false, true);
-        assertTick(0.5, 1, 0.5, 0, 0, 0, true, false, false);
+        assertTick(0.5, 1, 0.5, 0, POST_COLLISION_VERTICAL_VELOCITY, 0, false, false, true);
+        assertTick(0.5, 1, 0.5, 0, POST_COLLISION_VERTICAL_VELOCITY, 0, true, false, true);
+        assertTick(0.5, 1, 0.5, 0, POST_COLLISION_VERTICAL_VELOCITY, 0, true, false, false);
     }
 
     @Test
@@ -472,7 +505,7 @@ final class UpdateMotionCollisionShapeTest {
             task.run();
             Vector3d position = movementSync.position.get();
             if (!movementSync.onGround.get()
-                    && Math.abs(movementSync.velocity.get().y) < 1.0e-9
+                    && Math.abs(movementSync.velocity.get().y - POST_COLLISION_VERTICAL_VELOCITY) < 1.0e-9
                     && position.y > 1.0) {
                 hitCeiling = true;
             }
@@ -630,13 +663,17 @@ final class UpdateMotionCollisionShapeTest {
         movementSync.position.set(new Vector3d(2.5, 15.0 / 16.0, 0.5));
         movementSync.onGround.set(true);
 
-        movementSync.velocity.set(new Vector3d(-MovementSync.movementSpeed, 0, 0));
-        for (int tick = 0; tick < 5; tick++) task.run();
+        for (int tick = 0; tick < 5; tick++) {
+            movementSync.velocity.set(new Vector3d(-MovementSync.movementSpeed, 0, 0));
+            task.run();
+        }
         assertEquals(1.0, movementSync.position.get().y, 1.0e-9);
 
         movementSync.position.updateAndGet(position -> new Vector3d(1.5, position.y, 0.5));
-        movementSync.velocity.set(new Vector3d(0, 0, MovementSync.movementSpeed));
-        for (int tick = 0; tick < 15; tick++) task.run();
+        for (int tick = 0; tick < 15; tick++) {
+            movementSync.velocity.set(new Vector3d(0, 0, MovementSync.movementSpeed));
+            task.run();
+        }
 
         Vector3d inside = movementSync.position.get();
         assertEquals(1.5, inside.x, 1.0e-9, "the controller must remain centred in the one-block opening");
