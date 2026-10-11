@@ -57,7 +57,7 @@ public class PathMovement extends Movement {
             path,
             followKeepDistance,
             allowDigging,
-            goalFromPath(path),
+            currentActiveGoal(),
             currentFollowTargetId(),
             currentNavigationGeneration()
         );
@@ -473,10 +473,9 @@ public class PathMovement extends Movement {
                 || !java.util.Objects.equals(requestedGoal, MovementSync.INSTANCE.getActiveGoal());
     }
 
-    private static org.joml.Vector3i goalFromPath(List<PathStep> path) {
-        if (path == null || path.isEmpty()) return null;
-        Node goal = path.get(path.size() - 1).getNode();
-        return new org.joml.Vector3i(goal.x, goal.y, goal.z);
+    private static org.joml.Vector3i currentActiveGoal() {
+        // A partial path's endpoint is not the navigation request's goal.
+        return MovementSync.INSTANCE == null ? null : MovementSync.INSTANCE.getActiveGoal();
     }
 
     private static int currentFollowTargetId() {

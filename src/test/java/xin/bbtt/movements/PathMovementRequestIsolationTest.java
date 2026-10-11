@@ -1,6 +1,7 @@
 package xin.bbtt.movements;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.reflect.Field;
@@ -10,6 +11,8 @@ import java.util.Map;
 import org.joml.Vector3d;
 import org.joml.Vector3i;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import xin.bbtt.Block.BlockState;
 import xin.bbtt.MovementSync;
 import xin.bbtt.pathfinding.BuiltinMovementType;
@@ -105,6 +108,97 @@ final class PathMovementRequestIsolationTest {
         assertTrue(older.isFinished());
         assertEquals(sameGoal, movementSync.getActiveGoal(),
             "an older generation must not clear a newer same-coordinate request");
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 2, 3})
+    void legacyPartialPathProgressesTowardActiveGoalOnFirstTick(int constructor) throws Exception {
+        MovementSync movementSync = readyToWalk();
+        Vector3i goalBeyondPath = new Vector3i(10, 64, 0);
+        movementSync.setActiveGoal(goalBeyondPath);
+        PathMovement movement = legacyPath(constructor);
+
+        movement.init();
+        movement.onTick();
+
+        assertFalse(movement.isFinished(), "a partial path is not a superseded request");
+        assertTrue(movementSync.velocity.get().x > 0, "the first tick must advance along the path");
+        assertEquals(goalBeyondPath, movementSync.getActiveGoal());
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 2, 3})
+    void legacyPathWithoutActiveGoalProgressesOnFirstTick(int constructor) throws Exception {
+        MovementSync movementSync = readyToWalk();
+        movementSync.setActiveGoal(null);
+        PathMovement movement = legacyPath(constructor);
+
+        movement.init();
+        movement.onTick();
+
+        assertFalse(movement.isFinished(), "a standalone path must preserve its null request goal");
+        assertTrue(movementSync.velocity.get().x > 0, "the first tick must advance along the path");
+        assertEquals(null, movementSync.getActiveGoal());
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 2, 3})
+    void legacyPartialPathIsSupersededByLaterGoal(int constructor) throws Exception {
+        MovementSync movementSync = readyToWalk();
+        movementSync.setActiveGoal(new Vector3i(10, 64, 0));
+        PathMovement movement = legacyPath(constructor);
+        // Even a replacement matching the partial path endpoint is a different request.
+        Vector3i replacementGoal = new Vector3i(2, 64, 0);
+        movementSync.setActiveGoal(replacementGoal);
+
+        movement.onTick();
+
+        assertTrue(movement.isFinished());
+        assertEquals(replacementGoal, movementSync.getActiveGoal());
+        assertEquals(0.0, movementSync.velocity.get().x, "superseded paths must not move");
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 2, 3})
+    void legacyPathCopiesMutableActiveGoal(int constructor) throws Exception {
+        MovementSync movementSync = readyToWalk();
+        Vector3i goal = new Vector3i(10, 64, 0);
+        movementSync.setActiveGoal(goal);
+        PathMovement movement = legacyPath(constructor);
+        goal.set(2, 64, 0);
+        movementSync.setActiveGoal(goal);
+
+        movement.onTick();
+
+        assertTrue(movement.isFinished(), "the captured goal must not alias the mutable active goal");
+        assertEquals(goal, movementSync.getActiveGoal());
+        assertEquals(0.0, movementSync.velocity.get().x);
+    }
+
+    private static MovementSync readyToWalk() throws Exception {
+        MovementSync movementSync = new MovementSync();
+        Field worldField = MovementSync.class.getDeclaredField("world");
+        worldField.setAccessible(true);
+        worldField.set(movementSync, flatWorld());
+        movementSync.position.set(new Vector3d(0.5, 64.0, 0.5));
+        movementSync.velocity.set(new Vector3d());
+        movementSync.onGround.set(true);
+        movementSync.setFollowTargetId(-1);
+        return movementSync;
+    }
+
+    private static PathMovement legacyPath(int constructor) {
+        List<PathStep> path = List.of(
+            new PathStep(new Node(0, 64, 0), BuiltinMovementType.WALK),
+            new PathStep(new Node(2, 64, 0), BuiltinMovementType.WALK)
+        );
+        return switch (constructor) {
+            case 0 -> new PathMovement(path);
+            case 1 -> new PathMovement(path, true);
+            case 2 -> new PathMovement(path, 1.5);
+            case 3 -> new PathMovement(path, 1.5, true);
+            default -> throw new IllegalArgumentException("Unknown constructor: " + constructor);
+        };
     }
 
     private static World flatWorld() {

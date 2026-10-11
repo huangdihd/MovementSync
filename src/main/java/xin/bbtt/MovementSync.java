@@ -315,6 +315,14 @@ public class MovementSync implements Plugin {
         }
     }
 
+    /** Clears a failed request's goal without disturbing newer navigation or other state. */
+    public void abandonNavigationRequest(long generation) {
+        synchronized (navigationLock) {
+            if (!isNavigationRequestCurrent(generation)) return;
+            activeGoal = null;
+        }
+    }
+
     public void cancelNavigation() {
         synchronized (navigationLock) {
             navigationGeneration.incrementAndGet();

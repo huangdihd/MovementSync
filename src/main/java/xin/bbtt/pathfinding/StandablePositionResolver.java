@@ -186,6 +186,8 @@ public final class StandablePositionResolver {
     /**
      * Replays a cardinal jump with the same horizontal input, gravity, drag,
      * and axis-separated collision order as PathMovement and updateMotionTask.
+     * Each tick moves with the current vertical velocity, then applies gravity
+     * and drag for the next tick, clamped to terminal velocity.
      * A ceiling hit zeros upward velocity but does not fail the edge when the
      * remaining trajectory can still get over the target support.
      */
@@ -218,9 +220,6 @@ public final class StandablePositionResolver {
                 velocityX = dx / horizontalDistance * speed;
                 velocityZ = dz / horizontalDistance * speed;
             }
-
-            if (tick > 0) velocityY += MovementSync.gravitationalAcceleration.y;
-            velocityY *= MovementSync.verticalDrag;
 
             if (velocityX != 0.0) {
                 Vector3d candidate = new Vector3d(position.x + velocityX, position.y, position.z);
@@ -265,6 +264,9 @@ public final class StandablePositionResolver {
             if (velocityY < 0.0 && position.y < Math.min(sourceFeetY, targetFeetY) - 1.0) {
                 return false;
             }
+            velocityY = Math.max(
+                (velocityY + MovementSync.gravitationalAcceleration.y) * MovementSync.verticalDrag,
+                MovementSync.terminalVelocity);
         }
         return false;
     }

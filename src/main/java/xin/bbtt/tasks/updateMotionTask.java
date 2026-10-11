@@ -134,7 +134,7 @@ public class updateMotionTask implements Runnable {
             Bot.INSTANCE.getSession().send(new org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.level.ServerboundPlayerInputPacket(
                 sideways > 0, sideways < 0, forward > 0, forward < 0, jump, sneak, false));
             MovementSync.INSTANCE.applyPersistentGazeIfIdle();
-            syncPositionToServer(false, true, false);
+            syncPositionToServer(false, true, true);
             return;
         }
 

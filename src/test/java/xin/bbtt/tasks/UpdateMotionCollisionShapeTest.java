@@ -7,6 +7,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
+import java.util.List;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.OptionalDouble;
+import java.util.Set;
+import org.joml.Vector3i;
+import xin.bbtt.pathfinding.Node;
+import xin.bbtt.pathfinding.StandablePositionResolver;
+import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundMovePlayerPosRotPacket;
 import org.geysermc.mcprotocollib.network.ClientSession;
 import org.joml.Vector3d;
 import org.junit.jupiter.api.AfterEach;
@@ -31,6 +40,7 @@ final class UpdateMotionCollisionShapeTest {
     private MovementSync movementSync;
     private updateMotionTask task;
     private Method isPlayerBoxColliding;
+    private final List<Object> sentPackets = new ArrayList<>();
 
     @BeforeEach
     void setUp() throws Exception {
@@ -61,6 +71,7 @@ final class UpdateMotionCollisionShapeTest {
             ClientSession.class.getClassLoader(),
             new Class<?>[]{ClientSession.class},
             (proxy, method, args) -> {
+                if (method.getName().equals("send")) sentPackets.add(args[0]);
                 Class<?> returnType = method.getReturnType();
                 if (!returnType.isPrimitive()) return null;
                 if (returnType == boolean.class) return false;
@@ -141,6 +152,87 @@ final class UpdateMotionCollisionShapeTest {
         Vector3d stepped = movementSync.position.get();
         assertTrue(stepped.x > 0.5, "horizontal motion should continue onto the higher surface");
         assertEquals(1.0, stepped.y, 1.0e-9, "feet should rise by the dirt-path height difference");
+    }
+
+    @Test
+    void ridingSendsCurrentRotationEveryTick() throws Exception {
+        Field vehicleField = MovementSync.class.getDeclaredField("vehicleId");
+        vehicleField.setAccessible(true);
+        vehicleField.set(movementSync, 42);
+        movementSync.yaw.set(73.0f);
+        movementSync.pitch.set(-21.0f);
+
+        for (int tick = 0; tick < 2; tick++) {
+            sentPackets.clear();
+            task.run();
+            List<Object> movementPackets = sentPackets.stream()
+                .filter(packet -> packet.getClass().getSimpleName().startsWith("ServerboundMovePlayer"))
+                .toList();
+            assertEquals(1, movementPackets.size());
+            var packet = org.junit.jupiter.api.Assertions.assertInstanceOf(
+                ServerboundMovePlayerPosRotPacket.class,
+                movementPackets.get(0));
+            assertEquals(73.0f, packet.getYaw());
+            assertEquals(-21.0f, packet.getPitch());
+        }
+    }
+
+    @Test
+    void plannerJumpHeightsMatchEveryPhysicsTick() throws Exception {
+        List<Double> simulatedHeights = new ArrayList<>();
+        // With no horizontal displacement, upward box checks and downward support
+        // queries expose each simulated tick without adding a production tracing API.
+        World world = new World() {
+            @Override
+            public boolean chunkLoaded(int chunkX, int chunkZ) { return true; }
+
+            @Override
+            public int getBlockAt(Vector3d position) {
+                return Math.floor(position.y) == -1 ? STONE : AIR;
+            }
+
+            @Override
+            public boolean isBoxColliding(double minX, double minY, double minZ,
+                    double maxX, double maxY, double maxZ) {
+                return false;
+            }
+
+            @Override
+            public boolean isBoxCollidingExcluding(double minX, double minY, double minZ,
+                    double maxX, double maxY, double maxZ, Set<Vector3i> excluded) {
+                simulatedHeights.add(minY);
+                return false;
+            }
+
+            @Override
+            public OptionalDouble findHighestCollisionTopExcluding(
+                    double minX, double minY, double minZ, double maxX, double maxY,
+                    double maxZ, Set<Vector3i> excluded) {
+                if (maxY > 1.0e-6) simulatedHeights.add(Math.max(0.0, minY));
+                return minY <= 0 && maxY >= 0
+                    ? OptionalDouble.of(0) : OptionalDouble.empty();
+            }
+        };
+        Method simulate = StandablePositionResolver.class.getDeclaredMethod(
+            "canCompleteJumpTrajectory", World.class, Node.class,
+            Node.class, double.class, double.class, double.class);
+        simulate.setAccessible(true);
+        assertTrue((boolean) simulate.invoke(null, world,
+            new Node(0, 0, 0), new Node(0, 0, 0),
+            0.0, 0.0, 1.0));
+        List<Double> expectedHeights = List.copyOf(simulatedHeights);
+        setWorld(world);
+        movementSync.position.set(new Vector3d(0.5, 0, 0.5));
+        movementSync.velocity.set(new Vector3d());
+        movementSync.onGround.set(true);
+        movementSync.jump();
+        for (int tick = 0; tick < expectedHeights.size(); tick++) {
+            task.run();
+            assertEquals(movementSync.position.get().y, expectedHeights.get(tick), 1.0e-9,
+                "planner and physics height at tick " + tick);
+        }
+        assertEquals(0.42, expectedHeights.get(0), 1.0e-9);
+        assertEquals(1.2522, Collections.max(expectedHeights), 1.0e-4);
     }
 
     @Test
