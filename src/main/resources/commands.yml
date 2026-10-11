@@ -78,6 +78,11 @@ follow:
   usage: "movementsync.command.follow.usage"
   aliases: ["follow"]
   executor: "xin.bbtt.commands.FollowCommandExecutor"
+elytra:
+  description: "movementsync.command.elytra.description"
+  usage: "movementsync.command.elytra.usage"
+  aliases: ["elytra"]
+  executor: "xin.bbtt.commands.ElytraCommandExecutor"
 ride:
   description: "movementsync.command.ride.description"
   usage: "movementsync.command.ride.usage"

@@ -88,6 +88,15 @@ movementsync.command.goto.description=寻路至指定坐标
 movementsync.command.goto.usage=goto <x> <y> <z>
 movementsync.command.follow.description=通过 ID 跟随实体
 movementsync.command.follow.usage=follow <entityId> [保持半径]
+movementsync.command.elytra.description=手动鞘翅起飞、烟花推进或查看飞行状态
+movementsync.command.elytra.usage=elytra <start|boost|status>
+movementsync.command.elytra.start.riding=骑乘实体时无法起飞。
+movementsync.command.elytra.start.gliding=当前已经在滑翔。
+movementsync.command.elytra.start.no_elytra=请先在胸甲栏装备鞘翅。
+movementsync.command.elytra.start.requested=已发送滑翔请求，等待服务器确认。
+movementsync.command.elytra.start.failed=起飞失败：已超时、被中断或无法发送滑翔请求。
+movementsync.command.elytra.boost.failed=烟花推进失败：需要正在滑翔、快捷栏有烟花且已连接服务器。
+movementsync.command.elytra.status=滑翔: %s | 位置: %.2f, %.2f, %.2f | 速度: %.3f, %.3f, %.3f | 水平速度: %.3f 格/tick | 偏航角/俯仰角: %.2f/%.2f | 附着烟花: %s
 movementsync.command.ride.description=骑乘实体或下车
 movementsync.command.ride.usage=ride <entityId> | ride dismount
 

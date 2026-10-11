@@ -88,6 +88,15 @@ movementsync.command.goto.description=Pathfind to a coordinate
 movementsync.command.goto.usage=goto <x> <y> <z>
 movementsync.command.follow.description=Follow an entity by ID
 movementsync.command.follow.usage=follow <entityId> [keepRadius]
+movementsync.command.elytra.description=Manually launch, boost, or inspect elytra flight
+movementsync.command.elytra.usage=elytra <start|boost|status>
+movementsync.command.elytra.start.riding=Cannot launch while riding an entity.
+movementsync.command.elytra.start.gliding=Already gliding.
+movementsync.command.elytra.start.no_elytra=Equip an elytra in the chest slot before launching.
+movementsync.command.elytra.start.requested=Glide start request sent; awaiting server confirmation.
+movementsync.command.elytra.start.failed=Launch failed: timed out, interrupted, or unable to send the glide request.
+movementsync.command.elytra.boost.failed=Boost failed: must be gliding with fireworks in the hotbar and connected to the server.
+movementsync.command.elytra.status=Gliding: %s | Position: %.2f, %.2f, %.2f | Velocity: %.3f, %.3f, %.3f | Horizontal speed: %.3f blocks/tick | Yaw/Pitch: %.2f/%.2f | Attached firework: %s
 movementsync.command.ride.description=Ride an entity or dismount
 movementsync.command.ride.usage=ride <entityId> | ride dismount
 
