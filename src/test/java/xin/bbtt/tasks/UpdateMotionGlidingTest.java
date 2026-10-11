@@ -62,7 +62,8 @@ final class UpdateMotionGlidingTest {
         setBotField("session", Proxy.newProxyInstance(
             ClientSession.class.getClassLoader(), new Class<?>[]{ClientSession.class},
             (proxy, method, arguments) -> {
-                if (method.getName().equals("send")) sentPackets.add(arguments[0]);
+                // The per-tick end marker is asserted separately; keep it out of movement-packet counts.
+                if (method.getName().equals("send") && !(arguments[0] instanceof org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.ServerboundClientTickEndPacket)) sentPackets.add(arguments[0]);
                 Class<?> returnType = method.getReturnType();
                 if (!returnType.isPrimitive()) return null;
                 if (returnType == boolean.class) return false;

@@ -95,6 +95,17 @@ public class updateMotionTask implements Runnable {
         if (!Bot.INSTANCE.isRunning()) return;
         if (Bot.INSTANCE.getServer() != Server.Game) return;
 
+        try {
+            tick();
+        } finally {
+            // The vanilla client closes every tick with this packet (1.21.2+);
+            // servers and anti-cheats use it to count client ticks.
+            Bot.INSTANCE.getSession().send(
+                org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.ServerboundClientTickEndPacket.INSTANCE);
+        }
+    }
+
+    private void tick() {
         if (MovementSync.INSTANCE.isRiding()) {
             xin.bbtt.Entity.Entity vehicle = MovementSync.INSTANCE.getWorld().getEntity(MovementSync.INSTANCE.getVehicleId());
             if (vehicle != null) {

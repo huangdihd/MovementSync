@@ -41,6 +41,7 @@ final class UpdateMotionCollisionShapeTest {
     private updateMotionTask task;
     private Method isPlayerBoxColliding;
     private final List<Object> sentPackets = new ArrayList<>();
+    private int tickEndPackets;
 
     @BeforeEach
     void setUp() throws Exception {
@@ -71,7 +72,12 @@ final class UpdateMotionCollisionShapeTest {
             ClientSession.class.getClassLoader(),
             new Class<?>[]{ClientSession.class},
             (proxy, method, args) -> {
-                if (method.getName().equals("send")) sentPackets.add(args[0]);
+                if (method.getName().equals("send")) {
+                    // The per-tick end marker is counted on its own so movement-packet
+                    // assertions keep describing movement packets only.
+                    if (args[0] instanceof org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.ServerboundClientTickEndPacket) tickEndPackets++;
+                    else sentPackets.add(args[0]);
+                }
                 Class<?> returnType = method.getReturnType();
                 if (!returnType.isPrimitive()) return null;
                 if (returnType == boolean.class) return false;
@@ -153,6 +159,15 @@ final class UpdateMotionCollisionShapeTest {
         assertEquals(z, packet.getZ(), 1.0e-9);
         assertEquals(onGround, packet.isOnGround());
         assertEquals(collision, packet.isHorizontalCollision());
+    }
+
+    @Test
+    void everyTickEndsWithATickEndPacketEvenWithoutMovement() throws Exception {
+        useTerrain(position -> Math.floor(position.y) == 0 ? STONE : AIR);
+        assertTick(0.5, 1, 0.5, 0, 0, 0, true, false, true);
+        int afterFirst = tickEndPackets;
+        assertTick(0.5, 1, 0.5, 0, 0, 0, true, false, false);
+        assertEquals(afterFirst + 1, tickEndPackets);
     }
 
     @Test
