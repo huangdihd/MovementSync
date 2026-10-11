@@ -4,7 +4,12 @@ import org.joml.Vector3d;
 
 /** Tick-end motion; collision flags also tell the caller which velocity axes to stop. */
 public record PhysicsResult(
-        Vector3d position, Vector3d velocity, boolean collidedX, boolean collidedZ) {
+        Vector3d position, Vector3d velocity, boolean collidedX, boolean collidedZ,
+        boolean onGround) {
+    public PhysicsResult(Vector3d position, Vector3d velocity, boolean collidedX, boolean collidedZ) {
+        this(position, velocity, collidedX, collidedZ, false);
+    }
+
     public PhysicsResult {
         position = new Vector3d(position);
         velocity = new Vector3d(velocity);

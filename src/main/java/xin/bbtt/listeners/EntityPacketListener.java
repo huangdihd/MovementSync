@@ -71,10 +71,17 @@ public class EntityPacketListener implements Listener {
                 List<String> keys = registryEntry.getMetadataKeys();
                 for (org.geysermc.mcprotocollib.protocol.data.game.entity.metadata.EntityMetadata<?, ?> entry : packet.getMetadata()) {
                     int id = entry.getId();
-                    if (id < keys.size()) {
+                    if (id >= 0 && id < keys.size()) {
                         String key = keys.get(id);
                         Object value = entry.getValue();
-                        MovementSync.INSTANCE.getSelfMetadata().put(key, value);
+                        if (value == null) {
+                            MovementSync.INSTANCE.getSelfMetadata().remove(key);
+                        } else {
+                            MovementSync.INSTANCE.getSelfMetadata().put(key, value);
+                        }
+                        if ("shared_flags".equals(key) && value instanceof Byte flags) {
+                            MovementSync.INSTANCE.setGliding((flags & 0x80) != 0);
+                        }
                     }
                 }
             }

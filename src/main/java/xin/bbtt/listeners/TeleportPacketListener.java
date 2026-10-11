@@ -25,6 +25,8 @@ public class TeleportPacketListener extends SessionAdapter {
         MovementSync.INSTANCE.yaw.set(playerPositionPacket.getYRot());
         session.send(new ServerboundAcceptTeleportationPacket(playerPositionPacket.getId()));
         MovementSync.INSTANCE.cancelNavigation();
+        // A teleport does not end a glide: the server keeps its gliding flag set and
+        // sends no metadata update, so clearing it here would leave the two sides out of sync.
         MovementSync.INSTANCE.velocity.set(new Vector3d());
         checkOnGround();
     }

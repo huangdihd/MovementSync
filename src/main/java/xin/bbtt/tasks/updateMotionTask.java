@@ -9,6 +9,7 @@ import xin.bbtt.MovementSync;
 import xin.bbtt.mcbot.Bot;
 import xin.bbtt.mcbot.Server;
 
+import xin.bbtt.physics.GlidingPhysics;
 import xin.bbtt.physics.PhysicsResult;
 import xin.bbtt.physics.PhysicsState;
 import xin.bbtt.physics.PhysicsStepper;
@@ -65,6 +66,8 @@ public class updateMotionTask implements Runnable {
                 halfWidth = vehicle.getWidth() / 2.0;
                 height = vehicle.getHeight();
             }
+        } else if (MovementSync.INSTANCE.isGliding()) {
+            height = 0.6;
         } else {
             Object pose = MovementSync.INSTANCE.getSelfMetadata().get("pose");
             if (pose != null) {
@@ -128,7 +131,12 @@ public class updateMotionTask implements Runnable {
         final double initialVelY = velocity.y;
         checkOnGround();
         BodyDimensions dimensions = getBodyDimensions();
-        PhysicsResult result = WALKING_PHYSICS.step(
+        boolean gliding = MovementSync.INSTANCE.isGliding();
+        PhysicsStepper physics = gliding
+                ? new GlidingPhysics(MovementSync.INSTANCE.yaw.get(), MovementSync.INSTANCE.pitch.get(),
+                        MovementSync.INSTANCE.hasAttachedFirework())
+                : WALKING_PHYSICS;
+        PhysicsResult result = physics.step(
             MovementSync.INSTANCE.getWorld(),
             new PhysicsState(position, velocity, MovementSync.INSTANCE.onGround.get()),
             dimensions.halfWidth(), dimensions.height());
@@ -137,19 +145,25 @@ public class updateMotionTask implements Runnable {
         boolean collidedX = result.collidedX();
         boolean collidedZ = result.collidedZ();
 
-        // Merge instead of set(): movements may change velocity concurrently during this
-        // tick (e.g. WalkMovement.onStop subtracting its component); overwriting the whole
-        // vector with our stale snapshot would silently undo those updates.
-        final double newVelY = velocity.y;
-        final boolean stopX = collidedX;
-        final boolean stopZ = collidedZ;
-        MovementSync.INSTANCE.velocity.updateAndGet(v -> {
-            Vector3d merged = new Vector3d(v);
-            if (merged.y == initialVelY) merged.y = newVelY;
-            if (stopX) merged.x = 0;
-            if (stopZ) merged.z = 0;
-            return merged;
-        });
+        if (gliding) {
+            MovementSync.INSTANCE.velocity.set(velocity);
+            MovementSync.INSTANCE.onGround.set(result.onGround());
+            if (result.onGround()) MovementSync.INSTANCE.setGliding(false);
+        } else {
+            // Merge instead of set(): movements may change velocity concurrently during this
+            // tick (e.g. WalkMovement.onStop subtracting its component); overwriting the whole
+            // vector with our stale snapshot would silently undo those updates.
+            final double newVelY = velocity.y;
+            final boolean stopX = collidedX;
+            final boolean stopZ = collidedZ;
+            MovementSync.INSTANCE.velocity.updateAndGet(v -> {
+                Vector3d merged = new Vector3d(v);
+                if (merged.y == initialVelY) merged.y = newVelY;
+                if (stopX) merged.x = 0;
+                if (stopZ) merged.z = 0;
+                return merged;
+            });
+        }
         MovementSync.INSTANCE.position.set(position);
         MovementSync.INSTANCE.applyPersistentGazeIfIdle();
 
@@ -158,7 +172,7 @@ public class updateMotionTask implements Runnable {
         boolean rotationChanged = lastPitch != MovementSync.INSTANCE.pitch.get()
                 || lastYaw != MovementSync.INSTANCE.yaw.get();
         if (positionChanged || rotationChanged || lastHorizontalCollision != horizontalCollision) {
-            checkOnGround();
+            if (!gliding) checkOnGround();
             syncPositionToServer(horizontalCollision, positionChanged, rotationChanged);
             lastPos.set(position);
             lastPitch = MovementSync.INSTANCE.pitch.get();

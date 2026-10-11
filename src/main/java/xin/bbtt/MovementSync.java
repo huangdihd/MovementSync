@@ -1,5 +1,12 @@
 package xin.bbtt;
 
+import org.geysermc.mcprotocollib.protocol.data.game.item.ItemStack;
+import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundPlayerCommandPacket;
+import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundUseItemPacket;
+import org.geysermc.mcprotocollib.protocol.data.game.entity.player.PlayerState;
+import org.geysermc.mcprotocollib.protocol.data.game.entity.player.Hand;
+import xin.bbtt.inventory.ItemRegistry;
+import java.util.OptionalInt;
 import lombok.Getter;
 import lombok.Setter;
 import org.joml.Vector3d;
@@ -39,6 +46,7 @@ public class MovementSync implements Plugin {
     public static final double jumpVelocity = 0.42;
     public static final double verticalDrag = 0.9800000190734863D;
     public AtomicBoolean onGround = new AtomicBoolean(true);
+    private final AtomicBoolean gliding = new AtomicBoolean();
     private ScheduledExecutorService physicalSimulationService;
     public ScheduledExecutorService movementService;
 
@@ -129,6 +137,77 @@ public class MovementSync implements Plugin {
         getLogger().info(LangManager.get("movementsync.plugin.disabling"));
         physicalSimulationService.shutdown();
         movementService.shutdown();
+    }
+
+    public boolean isGliding() {
+        return gliding.get();
+    }
+
+    /** Updates local state, including authoritative server corrections; sends no packet. */
+    public void setGliding(boolean gliding) {
+        this.gliding.set(gliding);
+    }
+
+    /** Returns whether a start request was sent, not whether the server accepted it. */
+    public boolean startGliding() {
+        if (isGliding() || onGround.get() || isRiding() || entityId < 0) return false;
+        ItemStack[] inventory = inventoryManager.getInventory();
+        if (inventory == null || inventory.length <= 6 || !isItem(inventory[6], "elytra")) return false;
+        if (Bot.INSTANCE == null || Bot.INSTANCE.getSession() == null || !Bot.INSTANCE.getSession().isConnected()) return false;
+        setGliding(true);
+        Bot.INSTANCE.getSession().send(new ServerboundPlayerCommandPacket(
+                entityId, PlayerState.START_ELYTRA_FLYING));
+        return true;
+    }
+
+    /** The protocol has a start command only: stopping is local, never a toggle packet. */
+    public boolean stopGliding() {
+        boolean wasGliding = isGliding();
+        setGliding(false);
+        return wasGliding;
+    }
+
+    /** Selects a hotbar rocket; acceleration waits for server-confirmed entity attachment. */
+    public boolean useFirework() {
+        if (!isGliding()) return false;
+        ItemStack[] inventory = inventoryManager.getInventory();
+        if (inventory == null || inventory.length < 45) return false;
+        int rocketSlot = -1;
+        for (int slot = 36; slot < 45; slot++) {
+            if (isItem(inventory[slot], "firework_rocket")) {
+                rocketSlot = slot - 36;
+                break;
+            }
+        }
+        if (rocketSlot < 0) return false;
+        if (Bot.INSTANCE == null || Bot.INSTANCE.getSession() == null || !Bot.INSTANCE.getSession().isConnected()) return false;
+        inventoryManager.switchToSlot(rocketSlot);
+        Bot.INSTANCE.getSession().send(new ServerboundUseItemPacket(
+                Hand.MAIN_HAND, Bot.INSTANCE.getAndIncreaseSequence(), yaw.get(), pitch.get()));
+        return true;
+    }
+
+    private static boolean isItem(ItemStack stack, String name) {
+        if (stack == null || stack.getAmount() <= 0) return false;
+        ItemRegistry.ItemEntry item = ItemRegistry.Instance.getItem(stack.getId());
+        return item != null && name.equals(item.getName());
+    }
+
+    public boolean hasAttachedFirework() {
+        if (!isGliding() || entityId < 0) return false;
+        for (xin.bbtt.Entity.Entity entity : world.getEntities().values()) {
+            if (entity.getType() != org.geysermc.mcprotocollib.protocol.data.game.entity.type.EntityType.FIREWORK_ROCKET) continue;
+            Object target = entity.getMetadata().get("attached_to_target");
+            if (target instanceof OptionalInt attached && attached.isPresent()
+                    && attached.getAsInt() == entityId) return true;
+        }
+        return false;
+    }
+
+    public void clearFlightState() {
+        setGliding(false);
+        selfMetadata.remove("shared_flags");
+        selfMetadata.remove("pose");
     }
 
     public void jump() {
