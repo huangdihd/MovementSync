@@ -15,7 +15,7 @@ import java.util.List;
 public class PathMovement extends Movement {
     /** Default follow keep radius in blocks. */
     private static final double DEFAULT_FOLLOW_KEEP_DISTANCE = 1.0;
-    /** Adjacent path nodes should complete quickly; ten seconds means execution is livelocked. */
+    /** Ten seconds of execution opportunities without a new completed node is livelock. */
     private static final int MAX_TICKS_WITHOUT_NODE_PROGRESS = 200;
 
     private List<PathStep> path;
@@ -42,6 +42,8 @@ public class PathMovement extends Movement {
     private final int requestedFollowTargetId;
     /** Monotonic request identity; coordinates alone cannot distinguish replacements. */
     private final long requestGeneration;
+    private org.joml.Vector3i navigationGoal;
+    private boolean intermediateLeg;
 
     public PathMovement(List<PathStep> path) {
         this(path, DEFAULT_FOLLOW_KEEP_DISTANCE, false);
@@ -79,6 +81,14 @@ public class PathMovement extends Movement {
         this.requestedGoal = requestedGoal == null ? null : new org.joml.Vector3i(requestedGoal);
         this.requestedFollowTargetId = requestedFollowTargetId;
         this.requestGeneration = requestGeneration;
+        this.navigationGoal = this.requestedGoal;
+    }
+
+    /** Keeps a local walking destination within the enclosing navigation request. */
+    public PathMovement asIntermediateLeg(org.joml.Vector3i finalGoal) {
+        navigationGoal = new org.joml.Vector3i(finalGoal);
+        intermediateLeg = true;
+        return this;
     }
 
     public void requestRepath() {
@@ -110,6 +120,12 @@ public class PathMovement extends Movement {
         if (isSuperseded()) {
             stopHorizontal();
             setFinished(true);
+            return;
+        }
+        if (requestedFollowTargetId == -1
+                && requestedGoal != null
+                && progressWatchdog.tick()) {
+            abortLivelockedGoal(MovementSync.INSTANCE.position.get());
             return;
         }
         repathThrottler++;
@@ -147,7 +163,7 @@ public class PathMovement extends Movement {
                 && !MovementSync.INSTANCE.onGround.get();
         if (!jumpRequiresLanding && hasReachedNode(currentPos, targetPos)) {
             currentIndex++;
-            progressWatchdog.nodeAdvanced();
+            progressWatchdog.nodeAdvanced(targetNode);
             if (currentIndex >= path.size()) {
                 finishPath();
                 return;
@@ -156,13 +172,6 @@ public class PathMovement extends Movement {
             targetNode = currentStep.getNode();
             currentType = currentStep.getType();
             targetPos = targetPosition(targetNode);
-        }
-
-        if (requestedFollowTargetId == -1
-                && requestedGoal != null
-                && progressWatchdog.tick()) {
-            abortLivelockedGoal(currentPos);
-            return;
         }
 
         if (isPathDeviated(currentPos, targetNode)) return;
@@ -281,7 +290,7 @@ public class PathMovement extends Movement {
         if (MovementSync.INSTANCE.isRiding()) {
             targetYaw = (targetYaw + 180.0f) % 360.0f;
         }
-        MovementSync.INSTANCE.yaw.set(targetYaw);
+        MovementSync.INSTANCE.setYawToward(targetYaw);
         MovementSync.INSTANCE.pitch.set(0f);
     }
 
@@ -357,7 +366,7 @@ public class PathMovement extends Movement {
         JumpInputController.Command command = JumpInputController.toward(
                 currentPos, targetPos, MovementSync.INSTANCE.velocity.get(),
                 MovementSync.INSTANCE.onGround.get(), isGapJump);
-        MovementSync.INSTANCE.yaw.set(command.yaw());
+        MovementSync.INSTANCE.setYawToward(command.yaw());
         issuedInput = command.input();
         MovementSync.INSTANCE.setInput(issuedInput);
     }
@@ -403,7 +412,7 @@ public class PathMovement extends Movement {
         MovementSync.INSTANCE.runIfNavigationRequestCurrent(requestGeneration, () -> {
             stopHorizontal();
 
-            if (requestedFollowTargetId == -1
+            if (!intermediateLeg && requestedFollowTargetId == -1
                     && requestedGoal != null
                     && requestedGoal.equals(MovementSync.INSTANCE.getActiveGoal())) {
                 MovementSync.INSTANCE.setActiveGoal(null);
@@ -413,7 +422,7 @@ public class PathMovement extends Movement {
 
     private void abortLivelockedGoal(Vector3d currentPos) {
         MovementSync.getLogger().warn(
-                "Pathfinding aborted: no path node completed for {} ticks despite replanning; position={}, goal={}",
+                "Pathfinding aborted: no new path node completed for {} execution ticks despite replanning; position={}, goal={}",
                 MAX_TICKS_WITHOUT_NODE_PROGRESS,
                 currentPos,
                 requestedGoal
@@ -427,6 +436,16 @@ public class PathMovement extends Movement {
     }
 
     private void repathInternally() {
+        // Release owned keys before synchronous planning; physics runs independently.
+        stopHorizontal();
+        try {
+            computeRepath();
+        } finally {
+            progressWatchdog.excludeElapsedTime();
+        }
+    }
+
+    private void computeRepath() {
         if (!MovementSync.INSTANCE.isNavigationRequestCurrent(requestGeneration)) {
             setFinished(true);
             return;
@@ -494,7 +513,7 @@ public class PathMovement extends Movement {
             return MovementSync.INSTANCE.getFollowTargetId() != requestedFollowTargetId;
         }
         return MovementSync.INSTANCE.getFollowTargetId() != -1
-                || !java.util.Objects.equals(requestedGoal, MovementSync.INSTANCE.getActiveGoal());
+                || !java.util.Objects.equals(navigationGoal, MovementSync.INSTANCE.getActiveGoal());
     }
 
     private static org.joml.Vector3i currentActiveGoal() {
@@ -539,8 +558,14 @@ public class PathMovement extends Movement {
     public long getTime() { return -1; }
 
     @Override
-    public void onStop() { stopHorizontal(); }
+    public void onStop() {
+        stopHorizontal();
+        progressWatchdog.pause();
+    }
 
     @Override
-    public void onPause() { stopHorizontal(); }
+    public void onPause() {
+        stopHorizontal();
+        progressWatchdog.pause();
+    }
 }

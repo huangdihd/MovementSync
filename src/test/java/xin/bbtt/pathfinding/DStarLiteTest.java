@@ -9,6 +9,45 @@ import org.junit.jupiter.api.Test;
 class DStarLiteTest {
 
     @Test
+    void customContextDoesNotOptIntoUnloadedFrontierStopping() {
+        GridContext context = new GridContext(Set.of());
+        Node goal = new Node(150, 0, 0);
+        assertFalse(context.isUnloadedFrontier(new Node(15, 0, 0), goal));
+        List<PathStep> path = new DStarLite(new Node(0, 0, 0), goal, context).findPath(5000);
+        assertEquals(goal, path.get(path.size() - 1).getNode());
+    }
+
+    @Test
+    void boundaryDoesNotStopSearchWhenAnOpenNodeIsCloserToGoal() {
+        Node start = new Node(0, 0, 0);
+        Node boundary = new Node(1, 0, 0);
+        Node closer = new Node(2, 0, 0);
+        Node goal = new Node(3, 0, 0);
+        PathfindingContext context = new PathfindingContext() {
+            @Override
+            public List<Edge> getEdges(Node node) {
+                if (node.equals(start)) return List.of(
+                    new Edge(boundary, 1, BuiltinMovementType.WALK),
+                    new Edge(closer, 10, BuiltinMovementType.WALK));
+                if (node.equals(closer)) return List.of(new Edge(goal, 1, BuiltinMovementType.WALK));
+                return List.of();
+            }
+
+            @Override
+            public double getHeuristic(Node source, Node target) {
+                return Math.abs(target.x - source.x);
+            }
+
+            @Override
+            public boolean isUnloadedFrontier(Node node, Node target) {
+                return node.equals(boundary);
+            }
+        };
+        List<PathStep> path = new DStarLite(start, goal, context).findPath(100);
+        assertEquals(goal, path.get(path.size() - 1).getNode());
+    }
+
+    @Test
     void straightLineOnEmptyPlane() {
         Node start = new Node(0, 0, 0);
         Node goal = new Node(5, 0, 0);

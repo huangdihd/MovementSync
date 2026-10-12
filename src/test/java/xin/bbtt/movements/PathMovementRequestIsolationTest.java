@@ -179,6 +179,73 @@ final class PathMovementRequestIsolationTest {
         assertEquals(0.0, movementSync.velocity.get().x);
     }
 
+    @Test
+    void partialPathEndpointContinuesTowardCapturedGoal() throws Exception {
+        MovementSync movementSync = readyToWalk();
+        Vector3i goal = new Vector3i(4, 64, 0);
+        movementSync.setActiveGoal(goal);
+        PathMovement movement = legacyPath(0);
+        movement.onTick();
+        movementSync.position.set(new Vector3d(2.5, 64, 0.5));
+
+        movement.onTick();
+
+        assertFalse(movement.isFinished());
+        assertEquals(goal, movementSync.getActiveGoal());
+        assertEquals(xin.bbtt.physics.PlayerInput.NONE, movementSync.getInput());
+        movement.onTick();
+        assertTrue(movementSync.getInput().forward());
+    }
+
+    @Test
+    void synchronousRepathReleasesKeysBeforeReadingWorld() throws Exception {
+        MovementSync movementSync = readyToWalk();
+        movementSync.setActiveGoal(new Vector3i(4, 64, 0));
+        PathMovement movement = legacyPath(0);
+        movement.onTick();
+        assertTrue(movementSync.getInput().forward());
+        java.util.concurrent.atomic.AtomicInteger reads = new java.util.concurrent.atomic.AtomicInteger();
+        Field worldField = MovementSync.class.getDeclaredField("world");
+        worldField.setAccessible(true);
+        worldField.set(movementSync, new World() {
+            @Override
+            public boolean chunkLoaded(int chunkX, int chunkZ) { return true; }
+
+            @Override
+            public BlockState getBlockStateAt(Vector3d position) {
+                reads.incrementAndGet();
+                assertEquals(xin.bbtt.physics.PlayerInput.NONE, movementSync.getInput(),
+                        "physics must not keep consuming stale keys during planning");
+                return Math.floor(position.y) == 63 ? STONE : AIR;
+            }
+        });
+        Method repath = PathMovement.class.getDeclaredMethod("repathInternally");
+        repath.setAccessible(true);
+        repath.invoke(movement);
+        assertTrue(reads.get() > 0);
+        assertFalse(movement.isFinished());
+    }
+
+    @Test
+    void repeatedInPlaceRepathsStillAbortWithoutChargingPlannerTime() throws Exception {
+        MovementSync movementSync = readyToWalk();
+        movementSync.setActiveGoal(new Vector3i(4, 64, 0));
+        PathMovement movement = legacyPath(0);
+        java.util.concurrent.atomic.AtomicLong clock = new java.util.concurrent.atomic.AtomicLong();
+        Field watchdogField = PathMovement.class.getDeclaredField("progressWatchdog");
+        watchdogField.setAccessible(true);
+        watchdogField.set(movement, new PathProgressWatchdog(60, clock::get));
+        movement.onTick();
+        for (int index = 0; index < 61 && !movement.isFinished(); index++) {
+            clock.addAndGet(50_000_000L);
+            movement.requestRepath();
+            movement.onTick();
+        }
+        assertTrue(movement.isFinished(), "replanning must not reset execution stall history");
+        assertEquals(null, movementSync.getActiveGoal());
+        assertEquals(xin.bbtt.physics.PlayerInput.NONE, movementSync.getInput());
+    }
+
     private static MovementSync readyToWalk() throws Exception {
         MovementSync movementSync = new MovementSync();
         Field worldField = MovementSync.class.getDeclaredField("world");

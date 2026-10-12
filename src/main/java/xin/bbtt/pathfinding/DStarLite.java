@@ -40,6 +40,14 @@ public class DStarLite {
     }
 
     public List<PathStep> findPath(int maxIterations) {
+        if (maxIterations < 0) return new ArrayList<>();
+        if (start.equals(goal)) return new ArrayList<>(List.of(new PathStep(start, BuiltinMovementType.WALK)));
+        try (StandablePositionResolver.SearchCache ignored = StandablePositionResolver.beginSearch()) {
+            return search(maxIterations);
+        }
+    }
+
+    private List<PathStep> search(int maxIterations) {
         long startTime = System.currentTimeMillis();
         PriorityQueue<NodeEntry> openSet = new PriorityQueue<>();
         Map<Node, Double> gScore = new HashMap<>();
@@ -67,6 +75,13 @@ public class DStarLite {
             if (h < minH) { 
                 minH = h; 
                 bestNode = curr; 
+            }
+
+            // A partial route is useful immediately once the closest search
+            // frontier reaches unknown terrain toward an unloaded goal.
+            if (h <= minH && context.isUnloadedFrontier(curr, goal)
+                    && openSet.stream().noneMatch(entry -> context.getHeuristic(entry.node, goal) < h)) {
+                return reconstructPath(cameFromNode, cameFromType, curr);
             }
             
             for (Edge edge : context.getEdges(curr)) {

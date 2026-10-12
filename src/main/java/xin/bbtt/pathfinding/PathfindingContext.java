@@ -12,4 +12,9 @@ public interface PathfindingContext {
      * Returns a heuristic estimate of the cost from node 'a' to the goal 'b'.
      */
     double getHeuristic(Node a, Node b);
+
+    /** Opt-in boundary stop; custom graphs remain exhaustive by default. */
+    default boolean isUnloadedFrontier(Node node, Node goal) {
+        return false;
+    }
 }

@@ -18,6 +18,13 @@ public class DebugCommandExecutor extends CommandExecutor {
 
         MovementSync.getLogger().info(LangManager.get("movementsync.command.debug.pos",
                 pos.x, pos.y, pos.z));
+        var loadedChunks = MovementSync.INSTANCE.getWorld().loadedChunks();
+        if (!loadedChunks.isEmpty()) {
+            var chunkX = loadedChunks.stream().mapToInt(xin.bbtt.world.World.ChunkPosition::x).summaryStatistics();
+            var chunkZ = loadedChunks.stream().mapToInt(xin.bbtt.world.World.ChunkPosition::z).summaryStatistics();
+            MovementSync.getLogger().info("Loaded chunks: count={}, x={}..{}, z={}..{}",
+                    loadedChunks.size(), chunkX.getMin(), chunkX.getMax(), chunkZ.getMin(), chunkZ.getMax());
+        }
         MovementSync.getLogger().info(LangManager.get("movementsync.command.debug.vel",
                 vel.x, vel.y, vel.z));
         MovementSync.getLogger().info(LangManager.get("movementsync.command.debug.rotation",

@@ -435,7 +435,8 @@ final class UpdateMotionCollisionShapeTest {
                 movement.onTick();
                 assertFalse(movement.isFinished(), message + " must not finish before landing");
                 assertEquals(previewCommands.get(tick).input(), movementSync.getInput(), message + " keys");
-                assertEquals(previewCommands.get(tick).yaw(), movementSync.yaw.get(), message + " yaw");
+                assertEquals(0.0, Math.IEEEremainder(movementSync.yaw.get() - previewCommands.get(tick).yaw(), 360.0),
+                        1.0e-6, message + " yaw direction");
                 task.run();
                 assertEquals(expected.position().x, movementSync.position.get().x, 1.0e-9, message + " x");
                 assertEquals(expected.position().y, movementSync.position.get().y, 1.0e-9, message + " y");

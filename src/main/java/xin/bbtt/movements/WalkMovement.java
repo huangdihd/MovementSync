@@ -37,7 +37,7 @@ public class WalkMovement extends Movement {
     @Override
     public void init() {
         if (acquiredInput != null) return;
-        if (direction.yaw != null) MovementSync.INSTANCE.yaw.set(direction.yaw);
+        if (direction.yaw != null) MovementSync.INSTANCE.setYawToward(direction.yaw);
         PlayerInput current = MovementSync.INSTANCE.getInput();
         boolean forward = direction == Direction.FRONT || direction.yaw != null;
         boolean backward = direction == Direction.BACK;

@@ -2,6 +2,7 @@ package xin.bbtt.movements;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -163,6 +164,47 @@ final class PathMovementInputTest {
 
         runToCompletion(movement, goal);
         settleAtGoal(goal);
+    }
+
+    @Test
+    void travelPartialFinalPathReplansAndOnlyFinishesAtRequestedGoal() {
+        Vector3i goal = new Vector3i(3, 1, 0);
+        long generation = movementSync.beginStaticNavigationRequest(goal);
+        PathMovement[] walking = new PathMovement[1];
+        TravelMovement travel = new TravelMovement(goal, generation, false, new TravelMovement.Legs() {
+            @Override public List<PathStep> plan(Vector3i destination) {
+                assertEquals(goal, destination);
+                // A nonempty partial can contain only the currently reached start node.
+                return List.of(new PathStep(new Node(0, 1, 0), BuiltinMovementType.WALK));
+            }
+            @Override public xin.bbtt.movement.Movement walk(
+                    List<PathStep> path, Vector3i destination, boolean intermediate) {
+                assertFalse(intermediate);
+                walking[0] = new PathMovement(path, -1, false, destination, -1, generation);
+                return walking[0];
+            }
+            @Override public xin.bbtt.movement.Movement flight() {
+                throw new AssertionError("ground travel must not fly");
+            }
+        });
+        travel.onTick();
+        assertNotNull(walking[0]);
+        travel.onTick(); // Exhaust the partial and invoke the real PathMovement replanner.
+        assertFalse(walking[0].isFinished());
+        assertFalse(travel.isFinished());
+        assertEquals(goal, movementSync.getActiveGoal());
+
+        for (int tick = 0; tick < 100 && !travel.isFinished(); tick++) {
+            travel.onTick();
+            if (!travel.isFinished()) motionTask.run();
+        }
+        assertTrue(travel.isFinished());
+        assertTrue(walking[0].isFinished());
+        assertEquals(goal.x + 0.5, movementSync.position.get().x, 0.3);
+        assertEquals(goal.y, movementSync.position.get().y, 0.5);
+        assertEquals(goal.z + 0.5, movementSync.position.get().z, 0.3);
+        assertNull(movementSync.getActiveGoal());
+        assertEquals(PlayerInput.NONE, movementSync.getInput());
     }
 
     private PathMovement startMoving() {

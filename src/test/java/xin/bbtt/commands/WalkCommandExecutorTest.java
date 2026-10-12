@@ -48,7 +48,7 @@ final class WalkCommandExecutorTest {
         for (int index = 0; index < directions.length; index++) {
             WalkMovement movement = WalkCommandExecutor.parseMovement(new String[]{directions[index]});
             movement.init();
-            assertEquals(yaws[index], movementSync.yaw.get());
+            assertEquals(0.0, Math.IEEEremainder(movementSync.yaw.get() - yaws[index], 360.0), 1.0e-6);
             assertEquals(new PlayerInput(true, false, false, false, false, false, false), movementSync.getInput());
             movement.onStop();
         }

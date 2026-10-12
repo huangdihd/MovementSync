@@ -35,6 +35,11 @@ public class DefaultPathfindingContext implements PathfindingContext {
     }
 
     @Override
+    public boolean isUnloadedFrontier(Node node, Node goal) {
+        return internalContext.isUnloadedFrontier(node, goal);
+    }
+
+    @Override
     public double getHeuristic(Node a, Node b) {
         return internalContext.getHeuristic(a, b);
     }

@@ -45,7 +45,7 @@ public class LookAtMovement extends Movement {
 
     @Override
     public void onTick() {
-        MovementSync.INSTANCE.yaw.updateAndGet(yaw -> yaw + this.vy);
+        MovementSync.INSTANCE.setYawToward(MovementSync.INSTANCE.yaw.get() + this.vy);
         MovementSync.INSTANCE.pitch.updateAndGet(pitch -> pitch + this.vp);
     }
 
@@ -56,7 +56,7 @@ public class LookAtMovement extends Movement {
 
     @Override
     public void onStop() {
-        MovementSync.INSTANCE.yaw.set(targetYaw);
+        MovementSync.INSTANCE.setYawToward(targetYaw);
         MovementSync.INSTANCE.pitch.set(targetPitch);
     }
 }

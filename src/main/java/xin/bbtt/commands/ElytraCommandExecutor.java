@@ -1,9 +1,7 @@
 package xin.bbtt.commands;
 
-import org.geysermc.mcprotocollib.protocol.data.game.item.ItemStack;
 import org.joml.Vector3d;
 import xin.bbtt.MovementSync;
-import xin.bbtt.inventory.ItemRegistry;
 import xin.bbtt.mcbot.LangManager;
 import xin.bbtt.mcbot.command.Command;
 import xin.bbtt.mcbot.command.CommandExecutor;
@@ -25,10 +23,7 @@ public class ElytraCommandExecutor extends SubCommandExecutor {
                     MovementSync.getLogger().info(LangManager.get("movementsync.command.elytra.start.gliding"));
                     return;
                 }
-                ItemStack[] inventory = movementSync.getInventoryManager().getInventory();
-                ItemStack chest = inventory != null && inventory.length > 6 ? inventory[6] : null;
-                ItemRegistry.ItemEntry item = chest == null ? null : ItemRegistry.Instance.getItem(chest.getId());
-                if (chest == null || chest.getAmount() <= 0 || item == null || !"elytra".equals(item.getName())) {
+                if (!movementSync.hasEquippedElytra()) {
                     MovementSync.getLogger().info(LangManager.get("movementsync.command.elytra.start.no_elytra"));
                     return;
                 }
@@ -62,24 +57,11 @@ public class ElytraCommandExecutor extends SubCommandExecutor {
                     MovementSync.getLogger().info(LangManager.get("movementsync.command.elytra.start.riding"));
                     return;
                 }
-                ItemStack[] inventory = movementSync.getInventoryManager().getInventory();
-                ItemStack chest = inventory != null && inventory.length > 6 ? inventory[6] : null;
-                ItemRegistry.ItemEntry item = chest == null ? null : ItemRegistry.Instance.getItem(chest.getId());
-                if (chest == null || chest.getAmount() <= 0 || item == null || !"elytra".equals(item.getName())) {
+                if (!movementSync.hasEquippedElytra()) {
                     MovementSync.getLogger().info(LangManager.get("movementsync.command.elytra.start.no_elytra"));
                     return;
                 }
-                boolean hasFireworks = false;
-                for (int slot = 36; slot < Math.min(45, inventory.length); slot++) {
-                    ItemStack stack = inventory[slot];
-                    if (stack == null || stack.getAmount() <= 0) continue;
-                    ItemRegistry.ItemEntry hotbarItem = ItemRegistry.Instance.getItem(stack.getId());
-                    if (hotbarItem != null && "firework_rocket".equals(hotbarItem.getName())) {
-                        hasFireworks = true;
-                        break;
-                    }
-                }
-                if (movementSync.onGround.get() && !hasFireworks) {
+                if (movementSync.onGround.get() && movementSync.countHotbarFireworks() == 0) {
                     MovementSync.getLogger().info(LangManager.get("movementsync.command.elytra.fly.no_fireworks"));
                     return;
                 }

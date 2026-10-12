@@ -191,8 +191,7 @@ public class MovementSync implements Plugin {
     /** Returns whether a start request was sent, not whether the server accepted it. */
     public synchronized boolean startGliding() {
         if (isGliding() || onGround.get() || isRiding() || entityId < 0) return false;
-        ItemStack[] inventory = inventoryManager.getInventory();
-        if (inventory == null || inventory.length <= 6 || !isItem(inventory[6], "elytra")) return false;
+        if (!hasEquippedElytra()) return false;
         if (Bot.INSTANCE == null || Bot.INSTANCE.getSession() == null || !Bot.INSTANCE.getSession().isConnected()) return false;
         jump();
         setGliding(true);
@@ -211,15 +210,7 @@ public class MovementSync implements Plugin {
     /** Selects a hotbar rocket; acceleration waits for server-confirmed entity attachment. */
     public synchronized boolean useFirework() {
         if (!isGliding()) return false;
-        ItemStack[] inventory = inventoryManager.getInventory();
-        if (inventory == null || inventory.length < 45) return false;
-        int rocketSlot = -1;
-        for (int slot = 36; slot < 45; slot++) {
-            if (isItem(inventory[slot], "firework_rocket")) {
-                rocketSlot = slot - 36;
-                break;
-            }
-        }
+        int rocketSlot = hotbarFireworks().firstSlot();
         if (rocketSlot < 0) return false;
         if (Bot.INSTANCE == null || Bot.INSTANCE.getSession() == null || !Bot.INSTANCE.getSession().isConnected()) return false;
         if (inventoryManager.getHeldSlot() != rocketSlot) {
@@ -229,6 +220,30 @@ public class MovementSync implements Plugin {
         queueBeforeMovement(new ServerboundUseItemPacket(
                 Hand.MAIN_HAND, Bot.INSTANCE.getAndIncreaseSequence(), yaw.get(), pitch.get()));
         return true;
+    }
+
+    public boolean hasEquippedElytra() {
+        ItemStack[] inventory = inventoryManager.getInventory();
+        return inventory != null && inventory.length > 6 && isItem(inventory[6], "elytra");
+    }
+
+    public int countHotbarFireworks() {
+        return hotbarFireworks().count();
+    }
+
+    private record HotbarFireworks(int firstSlot, int count) {}
+
+    private HotbarFireworks hotbarFireworks() {
+        ItemStack[] inventory = inventoryManager.getInventory();
+        int firstSlot = -1;
+        int count = 0;
+        if (inventory == null) return new HotbarFireworks(firstSlot, count);
+        for (int slot = 36; slot < Math.min(45, inventory.length); slot++) {
+            if (!isItem(inventory[slot], "firework_rocket")) continue;
+            if (firstSlot < 0) firstSlot = slot - 36;
+            count += inventory[slot].getAmount();
+        }
+        return new HotbarFireworks(firstSlot, count);
     }
 
     private static boolean isItem(ItemStack stack, String name) {
@@ -262,13 +277,25 @@ public class MovementSync implements Plugin {
         getMovementController().addMovement(new xin.bbtt.movements.LookAtMovement(target));
     }
 
+    /** Direction changes preserve accumulated turns; server teleports write yaw directly. */
+    public void setYawToward(float direction) {
+        yaw.updateAndGet(current -> nearestEquivalentYaw(current, direction));
+    }
+
+    public static float nearestEquivalentYaw(float current, float direction) {
+        float difference = (direction - current) % 360.0f;
+        if (difference >= 180.0f) difference -= 360.0f;
+        if (difference < -180.0f) difference += 360.0f;
+        return current + difference;
+    }
+
     public void directLookAt(Vector3d target) {
         Vector3d headPos = getHeadPosition();
         Vector3d diff = new Vector3d(target).sub(headPos);
         double distanceXZ = Math.sqrt(diff.x * diff.x + diff.z * diff.z);
         float targetYaw = (float) Math.toDegrees(Math.atan2(-diff.x, diff.z));
         float targetPitch = (float) Math.toDegrees(Math.atan2(-diff.y, distanceXZ));
-        this.yaw.set(targetYaw);
+        setYawToward(targetYaw);
         this.pitch.set(targetPitch);
     }
 
@@ -498,6 +525,8 @@ public class MovementSync implements Plugin {
         xin.bbtt.movement.Movement current = movementController.getCurrentMovement();
         if (current instanceof xin.bbtt.movements.PathMovement pathMovement) {
             pathMovement.requestRepath();
+        } else if (current instanceof xin.bbtt.movements.TravelMovement travelMovement) {
+            travelMovement.requestRepath();
         }
     }
 

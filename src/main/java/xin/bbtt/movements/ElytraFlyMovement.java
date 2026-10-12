@@ -1,9 +1,7 @@
 package xin.bbtt.movements;
 
-import org.geysermc.mcprotocollib.protocol.data.game.item.ItemStack;
 import org.joml.Vector3d;
 import xin.bbtt.MovementSync;
-import xin.bbtt.inventory.ItemRegistry;
 import xin.bbtt.mcbot.LangManager;
 import xin.bbtt.movement.Movement;
 import xin.bbtt.physics.ElytraFlightController;
@@ -94,7 +92,7 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
             decision = controller.decide(movementSync.getWorld(), state,
                     movementSync.yaw.get(), movementSync.pitch.get(),
                     movementSync.hasAttachedFirework() || rocketCooldown > 35,
-                    target, rocketCooldown == 0 ? countFireworks(movementSync) : 0, arrivalRadius);
+                    target, rocketCooldown == 0 ? movementSync.countHotbarFireworks() : 0, arrivalRadius);
         } catch (IllegalStateException error) {
             MovementSync.getLogger().warn("Flight prediction failed at {} with velocity {}: {}",
                     state.position(), state.velocity(), error.getMessage());
@@ -104,26 +102,13 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
         // Cancellation may happen while trajectory evaluation is running. Guard the actual writes too.
         movementSync.runIfNavigationRequestCurrent(generation, () -> {
             if (isFinished()) return;
-            movementSync.yaw.set(decision.yaw());
+            movementSync.setYawToward(decision.yaw());
             movementSync.pitch.set(decision.pitch());
             if (decision.firework() && !movementSync.hasAttachedFirework()) {
                 rocketCooldown = 40;
                 movementSync.useFirework();
             }
         });
-    }
-
-    private static int countFireworks(MovementSync movementSync) {
-        ItemStack[] inventory = movementSync.getInventoryManager().getInventory();
-        if (inventory == null) return 0;
-        int count = 0;
-        for (int slot = 36; slot < Math.min(45, inventory.length); slot++) {
-            ItemStack stack = inventory[slot];
-            if (stack == null || stack.getAmount() <= 0) continue;
-            ItemRegistry.ItemEntry item = ItemRegistry.Instance.getItem(stack.getId());
-            if (item != null && "firework_rocket".equals(item.getName())) count += stack.getAmount();
-        }
-        return count;
     }
 
     private void finish(boolean arrived) {

@@ -1,5 +1,8 @@
 package xin.bbtt.pathfinding;
 
+import java.util.HashMap;
+import java.util.IdentityHashMap;
+import java.util.Map;
 import java.util.OptionalDouble;
 import java.util.Set;
 import java.util.function.BiConsumer;
@@ -19,7 +22,32 @@ public final class StandablePositionResolver {
     public static final double MAX_JUMP_RISE = 1.20;
     private static final double EPSILON = 1.0e-7;
 
+    private static final ThreadLocal<SearchCache> SEARCH_CACHE = new ThreadLocal<>();
+
     private StandablePositionResolver() {}
+
+    /** Query results live only for one synchronous search, never across world updates. */
+    static SearchCache beginSearch() {
+        SearchCache cache = new SearchCache(SEARCH_CACHE.get());
+        SEARCH_CACHE.set(cache);
+        return cache;
+    }
+
+    static final class SearchCache implements AutoCloseable {
+        private final SearchCache previous;
+        private final Map<World, Map<Node, OptionalDouble>> feet = new IdentityHashMap<>();
+        private final Map<World, Map<Node, OptionalDouble>> supports = new IdentityHashMap<>();
+
+        private SearchCache(SearchCache previous) {
+            this.previous = previous;
+        }
+
+        @Override
+        public void close() {
+            if (previous == null) SEARCH_CACHE.remove();
+            else SEARCH_CACHE.set(previous);
+        }
+    }
 
     public static int nodeY(double feetY) {
         if (!Double.isFinite(feetY)) throw new IllegalArgumentException("feetY must be finite");
@@ -27,6 +55,13 @@ public final class StandablePositionResolver {
     }
 
     public static OptionalDouble feetY(World world, int x, int nodeY, int z) {
+        SearchCache cache = SEARCH_CACHE.get();
+        if (cache == null) return resolveFeetY(world, x, nodeY, z);
+        return cache.feet.computeIfAbsent(world, ignored -> new HashMap<>())
+            .computeIfAbsent(new Node(x, nodeY, z), ignored -> resolveFeetY(world, x, nodeY, z));
+    }
+
+    private static OptionalDouble resolveFeetY(World world, int x, int nodeY, int z) {
         OptionalDouble support = supportY(world, x, nodeY, z);
         if (support.isEmpty()) return OptionalDouble.empty();
         double feetY = support.getAsDouble();
@@ -44,6 +79,13 @@ public final class StandablePositionResolver {
     }
 
     public static OptionalDouble supportY(World world, int x, int nodeY, int z) {
+        SearchCache cache = SEARCH_CACHE.get();
+        if (cache == null) return resolveSupportY(world, x, nodeY, z);
+        return cache.supports.computeIfAbsent(world, ignored -> new HashMap<>())
+            .computeIfAbsent(new Node(x, nodeY, z), ignored -> resolveSupportY(world, x, nodeY, z));
+    }
+
+    private static OptionalDouble resolveSupportY(World world, int x, int nodeY, int z) {
         if (!world.chunkLoaded(x >> 4, z >> 4)) return OptionalDouble.empty();
         double centerX = x + 0.5;
         double centerZ = z + 0.5;

@@ -33,8 +33,8 @@ public class JumpStrategy extends AbstractMovementStrategy {
             // same integer nodeY (for example carpet 0.0625 -> block top 1.0).
             Node sameYTarget = new Node(nx, u.y, nz);
             if (isStandable(nx, u.y, nz, world)
-                    && StandablePositionResolver.canJump(world, u, sameYTarget)
-                    && !StandablePositionResolver.canWalk(world, u, sameYTarget)) {
+                    && !StandablePositionResolver.canWalk(world, u, sameYTarget)
+                    && StandablePositionResolver.canJump(world, u, sameYTarget)) {
                 edges.add(new Edge(
                     sameYTarget,
                     getEuclideanDistance(u, sameYTarget) + 0.5,
