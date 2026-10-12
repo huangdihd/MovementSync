@@ -110,13 +110,16 @@ public class updateMotionTask implements Runnable {
         if (!Bot.INSTANCE.isRunning()) return;
         if (Bot.INSTANCE.getServer() != Server.Game) return;
 
-        try {
-            tick();
-        } finally {
-            // The vanilla client closes every tick with this packet (1.21.2+);
-            // servers and anti-cheats use it to count client ticks.
-            Bot.INSTANCE.getSession().send(
-                org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.ServerboundClientTickEndPacket.INSTANCE);
+        // A start request must not change flight physics or enqueue its action
+        // between this tick's input snapshot and movement/tick-end packets.
+        synchronized (MovementSync.INSTANCE) {
+            try {
+                tick();
+            } finally {
+                // Close the same atomic packet batch, including on failure.
+                Bot.INSTANCE.getSession().send(
+                    org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.ServerboundClientTickEndPacket.INSTANCE);
+            }
         }
     }
 
@@ -156,6 +159,34 @@ public class updateMotionTask implements Runnable {
         PlayerInput input = MovementSync.INSTANCE.snapshotInput();
         float tickYaw = MovementSync.INSTANCE.yaw.get();
         float tickPitch = MovementSync.INSTANCE.pitch.get();
+        // ElytraB checks the previous (released) input at the action, then
+        // this tick's jump at movement. Deployment must precede the input edge.
+        java.util.List<Packet> actions = new java.util.ArrayList<>();
+        java.util.List<Packet> deferredActions = new java.util.ArrayList<>();
+        boolean releaseBeforeDeployment = false;
+        Packet queuedAction;
+        while ((queuedAction = MovementSync.INSTANCE.pollBeforeMovementPacket()) != null) {
+            if (queuedAction instanceof ServerboundPlayerCommandPacket command
+                    && command.getState() == PlayerState.START_ELYTRA_FLYING) {
+                if (lastInput.jump()) {
+                    releaseBeforeDeployment = true;
+                    deferredActions.add(queuedAction);
+                    MovementSync.INSTANCE.setGliding(false);
+                    input = input.withJump(false);
+                } else {
+                    MovementSync.INSTANCE.setGliding(true);
+                    input = input.withJump(true);
+                    Bot.INSTANCE.getSession().send(queuedAction);
+                }
+            } else {
+                actions.add(queuedAction);
+            }
+        }
+        if (releaseBeforeDeployment) {
+            deferredActions.addAll(actions);
+            actions.clear();
+            for (Packet action : deferredActions) MovementSync.INSTANCE.queueBeforeMovement(action);
+        }
         if (!input.equals(lastInput)) {
             Bot.INSTANCE.getSession().send(new ServerboundPlayerInputPacket(
                     input.forward(), input.backward(), input.left(), input.right(), input.jump(), input.sneak(), input.sprint()));
@@ -168,8 +199,12 @@ public class updateMotionTask implements Runnable {
                     : PlayerState.STOP_SPRINTING));
             lastSprinting = input.sprint();
         }
-        Packet action;
-        while ((action = MovementSync.INSTANCE.pollBeforeMovementPacket()) != null) {
+        for (Packet action : actions) {
+            // Steering can change after a rocket is queued. Use the rotation of
+            // the tick that actually sends it, not the request thread's snapshot.
+            if (action instanceof org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundUseItemPacket useItem) {
+                action = useItem.withYRot(tickYaw).withXRot(tickPitch);
+            }
             Bot.INSTANCE.getSession().send(action);
         }
         Vector3d initialVelocity = MovementSync.INSTANCE.velocity.get();
@@ -183,7 +218,7 @@ public class updateMotionTask implements Runnable {
             jumpCooldown = 10;
         }
         PhysicsStepper physics = gliding
-                ? new GlidingPhysics(MovementSync.INSTANCE.yaw.get(), MovementSync.INSTANCE.pitch.get(),
+                ? new GlidingPhysics(tickYaw, tickPitch,
                         MovementSync.INSTANCE.hasAttachedFirework())
                 : new WalkingPhysics(input, tickYaw, jumpAllowed);
         PhysicsResult result = physics.step(
@@ -198,7 +233,8 @@ public class updateMotionTask implements Runnable {
         if (gliding) {
             MovementSync.INSTANCE.velocity.set(velocity);
             MovementSync.INSTANCE.onGround.set(result.onGround());
-            if (result.onGround()) MovementSync.INSTANCE.setGliding(false);
+            // Client tickGliding does not clear flight on contact. Keep flight travel
+            // until authoritative shared_flags metadata clears the gliding bit.
         } else {
             // Identity CAS preserves even a concurrent same-valued write by a legacy action.
             // If another writer wins, its complete velocity takes priority over this tick's drag.
@@ -211,8 +247,8 @@ public class updateMotionTask implements Runnable {
         boolean horizontalCollision = collidedX || collidedZ;
         boolean positionChanged = !lastPos.equals(position);
         // Report the rotation used for acceleration, not concurrent next-tick steering.
-        float packetYaw = gliding ? MovementSync.INSTANCE.yaw.get() : tickYaw;
-        float packetPitch = gliding ? MovementSync.INSTANCE.pitch.get() : tickPitch;
+        float packetYaw = tickYaw;
+        float packetPitch = tickPitch;
         boolean rotationChanged = lastPitch != packetPitch || lastYaw != packetYaw;
         if (positionChanged || rotationChanged || lastHorizontalCollision != horizontalCollision
                 || lastOnGround != MovementSync.INSTANCE.onGround.get()) {

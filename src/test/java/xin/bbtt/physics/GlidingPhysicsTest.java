@@ -89,7 +89,7 @@ final class GlidingPhysicsTest {
     }
 
     @Test
-    void downwardCollisionLandsAndSuppressesRocket() {
+    void downwardCollisionLandsAndRetainsAttachedRocketBoost() {
         World floor = new World() {
             @Override
             public boolean isBoxColliding(double minX, double minY, double minZ,
@@ -108,7 +108,16 @@ final class GlidingPhysicsTest {
         assertTrue(result.onGround());
         assertEquals(0, result.position().y);
         assertEquals(0, result.velocity().y);
-        assertEquals(0.0018 * (double) 0.99f, result.velocity().z, 1.0e-12);
+        assertEquals(0.85 + 0.0018 * (double) 0.99f / 2, result.velocity().z, 1.0e-12);
+    }
+
+    @Test
+    void tickStartSnapsSmallPlayerVelocityBeforeGliding() {
+        PhysicsState tiny = new PhysicsState(new Vector3d(0, 20, 0), new Vector3d(0.001, -0.0029, 0.002), false);
+        PhysicsState stationary = new PhysicsState(new Vector3d(0, 20, 0), new Vector3d(), false);
+        assertEquals(step(stationary, 10, false), step(tiny, 10, false));
+        PhysicsState diagonal = new PhysicsState(new Vector3d(0, 20, 0), new Vector3d(0.0025, 0, 0.0025), false);
+        assertNotEquals(step(stationary, 10, false), step(diagonal, 10, false));
     }
 
     @Test

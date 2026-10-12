@@ -38,17 +38,25 @@ public final class GlidingPhysics implements PhysicsStepper {
     public PhysicsResult step(World world, PhysicsState state, double halfWidth, double height) {
         Vector3d position = state.position();
         Vector3d velocity = state.velocity();
-        float yawRadians = -yaw * DEGREES_TO_RADIANS - (float) Math.PI;
+        // LivingEntity.tickMovement snaps player motion before travel.
+        if (velocity.x * velocity.x + velocity.z * velocity.z < 9.0E-6) {
+            velocity.x = 0;
+            velocity.z = 0;
+        }
+        if (Math.abs(velocity.y) < 0.003) velocity.y = 0;
+        float yawRadians = -yaw * DEGREES_TO_RADIANS;
         float pitchRadians = pitch * DEGREES_TO_RADIANS;
-        float pitchBase = -cos(-pitchRadians);
-        Vector3d look = new Vector3d(sin(yawRadians) * pitchBase,
-                sin(-pitchRadians), cos(yawRadians) * pitchBase);
+        float pitchCos = cos(pitchRadians);
+        Vector3d look = new Vector3d(sin(yawRadians) * pitchCos,
+                -sin(pitchRadians), cos(yawRadians) * pitchCos);
         double lookHorizontal = Math.sqrt(look.x * look.x + look.z * look.z);
         double velocityHorizontal = Math.sqrt(velocity.x * velocity.x + velocity.z * velocity.z);
-        float pitchCosine = cos(pitchRadians);
-        float lift = (float) ((double) pitchCosine * pitchCosine * Math.min(1, look.length() / 0.4));
+        // Since 1.18.2, lift uses double-precision Java cosine, not the
+        // lookup table still used by the look vector and pitch acceleration.
+        double pitchCosine = Math.cos(pitchRadians);
+        double lift = pitchCosine * pitchCosine;
 
-        velocity.y += -0.08 + lift * 0.06;
+        velocity.y += 0.08 * (-1.0 + lift * 0.75);
         if (velocity.y < 0 && lookHorizontal > 0) {
             double amount = velocity.y * -0.1 * lift;
             velocity.add(look.x * amount / lookHorizontal, amount, look.z * amount / lookHorizontal);
@@ -104,9 +112,9 @@ public final class GlidingPhysics implements PhysicsStepper {
             }
         }
 
-        // Baritone applies the attached rocket after travel: it changes next tick's
-        // motion, not the displacement just calculated. Landing ends flight first.
-        if (firework && !onGround) {
+        // FireworkRocketEntity ticks after player travel. Contact does not clear
+        // the client's gliding flag, so an attached rocket still boosts on ground.
+        if (firework) {
             velocity.add(look.x * 0.1 + (look.x * 1.5 - velocity.x) * 0.5,
                     look.y * 0.1 + (look.y * 1.5 - velocity.y) * 0.5,
                     look.z * 0.1 + (look.z * 1.5 - velocity.z) * 0.5);

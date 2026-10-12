@@ -68,6 +68,8 @@ final class ElytraStateTest {
             inventory[6] = elytra;
             assertTrue(movementSync.startGliding());
             assertTrue(movementSync.isGliding());
+            assertTrue(movementSync.snapshotInput().jump(), "deployment tick presses jump");
+            assertFalse(movementSync.snapshotInput().jump(), "deployment jump is one-shot");
             var start = assertInstanceOf(org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundPlayerCommandPacket.class, movementSync.pollBeforeMovementPacket());
             assertEquals(org.geysermc.mcprotocollib.protocol.data.game.entity.player.PlayerState.START_ELYTRA_FLYING, start.getState());
             assertEquals(42, start.getEntityId());
@@ -75,19 +77,19 @@ final class ElytraStateTest {
             assertFalse(movementSync.startGliding());
             assertNull(movementSync.pollBeforeMovementPacket(), "duplicate start must not queue another action");
             assertTrue(movementSync.useFirework());
-            var use = assertInstanceOf(org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundUseItemPacket.class, packets.get(0));
+            var use = assertInstanceOf(org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundUseItemPacket.class, movementSync.pollBeforeMovementPacket());
             assertEquals(org.geysermc.mcprotocollib.protocol.data.game.entity.player.Hand.MAIN_HAND, use.getHand());
             assertFalse(movementSync.hasAttachedFirework());
             assertEquals(3, inventory[36].getAmount());
             inventory[40] = inventory[36];
             inventory[36] = null;
             assertTrue(movementSync.useFirework());
-            var switchSlot = assertInstanceOf(org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundSetCarriedItemPacket.class, packets.get(1));
+            var switchSlot = assertInstanceOf(org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundSetCarriedItemPacket.class, movementSync.pollBeforeMovementPacket());
             assertEquals(4, switchSlot.getSlot());
-            var hotbar = assertInstanceOf(org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundUseItemPacket.class, packets.get(2));
+            var hotbar = assertInstanceOf(org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundUseItemPacket.class, movementSync.pollBeforeMovementPacket());
             assertEquals(org.geysermc.mcprotocollib.protocol.data.game.entity.player.Hand.MAIN_HAND, hotbar.getHand());
             assertTrue(movementSync.stopGliding());
-            assertEquals(3, packets.size(), "stop must not send a start/toggle packet");
+            assertTrue(packets.isEmpty(), "actions are queued; stop must not send a start/toggle packet");
             movementSync.setGliding(true);
             addAttachedFirework(7, OptionalInt.of(42));
             new xin.bbtt.listeners.TeleportPacketListener().packetReceived(

@@ -189,11 +189,12 @@ public class MovementSync implements Plugin {
     }
 
     /** Returns whether a start request was sent, not whether the server accepted it. */
-    public boolean startGliding() {
+    public synchronized boolean startGliding() {
         if (isGliding() || onGround.get() || isRiding() || entityId < 0) return false;
         ItemStack[] inventory = inventoryManager.getInventory();
         if (inventory == null || inventory.length <= 6 || !isItem(inventory[6], "elytra")) return false;
         if (Bot.INSTANCE == null || Bot.INSTANCE.getSession() == null || !Bot.INSTANCE.getSession().isConnected()) return false;
+        jump();
         setGliding(true);
         queueBeforeMovement(new ServerboundPlayerCommandPacket(
                 entityId, PlayerState.START_ELYTRA_FLYING));
@@ -208,7 +209,7 @@ public class MovementSync implements Plugin {
     }
 
     /** Selects a hotbar rocket; acceleration waits for server-confirmed entity attachment. */
-    public boolean useFirework() {
+    public synchronized boolean useFirework() {
         if (!isGliding()) return false;
         ItemStack[] inventory = inventoryManager.getInventory();
         if (inventory == null || inventory.length < 45) return false;
@@ -221,8 +222,11 @@ public class MovementSync implements Plugin {
         }
         if (rocketSlot < 0) return false;
         if (Bot.INSTANCE == null || Bot.INSTANCE.getSession() == null || !Bot.INSTANCE.getSession().isConnected()) return false;
-        inventoryManager.switchToSlot(rocketSlot);
-        Bot.INSTANCE.getSession().send(new ServerboundUseItemPacket(
+        if (inventoryManager.getHeldSlot() != rocketSlot) {
+            queueBeforeMovement(new org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundSetCarriedItemPacket(rocketSlot));
+            inventoryManager.setHeldSlot(rocketSlot);
+        }
+        queueBeforeMovement(new ServerboundUseItemPacket(
                 Hand.MAIN_HAND, Bot.INSTANCE.getAndIncreaseSequence(), yaw.get(), pitch.get()));
         return true;
     }

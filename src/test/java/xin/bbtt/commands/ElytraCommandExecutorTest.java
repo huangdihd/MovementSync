@@ -97,8 +97,8 @@ final class ElytraCommandExecutorTest extends ElytraCommandTestSupport {
         movementSync.setGliding(true);
         inventory[36] = item("firework_rocket", 3);
         execute("boost");
-        assertEquals(1, packets.size());
-        ServerboundUseItemPacket packet = assertInstanceOf(ServerboundUseItemPacket.class, packets.get(0));
+        assertTrue(packets.isEmpty());
+        ServerboundUseItemPacket packet = assertInstanceOf(ServerboundUseItemPacket.class, movementSync.pollBeforeMovementPacket());
         assertEquals(Hand.MAIN_HAND, packet.getHand());
         assertEquals(3, inventory[36].getAmount());
         assertFalse(movementSync.hasAttachedFirework());
@@ -155,8 +155,8 @@ final class ElytraCommandExecutorTest extends ElytraCommandTestSupport {
     }
 
     @Test
-    void exposesOnlyStartBoostAndStatusNotAProtocolStopToggle() {
-        assertEquals(Set.of("start", "boost", "status"), executor.getSubCommands().keySet());
+    void exposesFlightCommandsNotAProtocolStopToggle() {
+        assertEquals(Set.of("start", "boost", "status", "fly"), executor.getSubCommands().keySet());
     }
 
     private void assertRejectedStart() {

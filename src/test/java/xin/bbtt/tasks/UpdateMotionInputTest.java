@@ -76,6 +76,65 @@ final class UpdateMotionInputTest {
     }
 
     @Test
+    void deploymentSendsActionThenJumpThenMovementThenTickEnd() {
+        var inventory = new org.geysermc.mcprotocollib.protocol.data.game.item.ItemStack[46];
+        inventory[6] = new org.geysermc.mcprotocollib.protocol.data.game.item.ItemStack(
+                xin.bbtt.inventory.ItemRegistry.Instance.getItem("elytra").getId(), 1);
+        movementSync.inventoryManager.setContainerItems(0, inventory);
+        movementSync.position.set(new Vector3d(0.5, 10, 0.5));
+        movementSync.onGround.set(false);
+        assertTrue(movementSync.startGliding());
+
+        task.run();
+
+        assertEquals(new ServerboundPlayerInputPacket(false, false, false, false, true, false, false), packets.get(1));
+        assertEquals(PlayerState.START_ELYTRA_FLYING,
+                assertInstanceOf(ServerboundPlayerCommandPacket.class, packets.get(0)).getState());
+        assertInstanceOf(ServerboundMovePlayerPosPacket.class, packets.get(2));
+        assertInstanceOf(ServerboundClientTickEndPacket.class, packets.get(3));
+    }
+
+    @Test
+    void deploymentReleasesHeldJumpForOneTickBeforePressingAgain() {
+        movementSync.position.set(new Vector3d(0.5, 20, 0.5));
+        movementSync.onGround.set(false);
+        movementSync.setInput(PlayerInput.NONE.withJump(true));
+        task.run();
+        packets.clear();
+        movementSync.queueBeforeMovement(new ServerboundPlayerCommandPacket(7, PlayerState.START_ELYTRA_FLYING));
+        task.run();
+        assertEquals(new ServerboundPlayerInputPacket(false, false, false, false, false, false, false), packets.get(0));
+        assertTrue(packets.stream().noneMatch(ServerboundPlayerCommandPacket.class::isInstance));
+        assertFalse(movementSync.isGliding());
+        packets.clear();
+        task.run();
+        assertEquals(PlayerState.START_ELYTRA_FLYING,
+                assertInstanceOf(ServerboundPlayerCommandPacket.class, packets.get(0)).getState());
+        assertEquals(new ServerboundPlayerInputPacket(false, false, false, false, true, false, false), packets.get(1));
+        assertInstanceOf(ServerboundMovePlayerPosPacket.class, packets.get(2));
+        assertInstanceOf(ServerboundClientTickEndPacket.class, packets.get(3));
+        assertTrue(movementSync.isGliding());
+    }
+
+    @Test
+    void queuedRocketUsesSendingTicksRotation() {
+        var rocket = new org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundUseItemPacket(
+                org.geysermc.mcprotocollib.protocol.data.game.entity.player.Hand.MAIN_HAND, 42, 0, 0);
+        movementSync.queueBeforeMovement(rocket);
+        movementSync.yaw.set(30f);
+        movementSync.pitch.set(-55f);
+        task.run();
+        var sent = packets.stream()
+                .filter(org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundUseItemPacket.class::isInstance)
+                .map(org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundUseItemPacket.class::cast)
+                .findFirst().orElseThrow();
+        assertEquals(30f, sent.getYRot());
+        assertEquals(-55f, sent.getXRot());
+        assertEquals(42, sent.getSequence());
+        assertTrue(packets.indexOf(sent) < packets.size() - 2);
+    }
+
+    @Test
     void movementPacketUsesTheRotationThatProducedItsDisplacement() {
         movementSync.yaw.set(-90f);
         movementSync.setInput(new PlayerInput(true, false, false, false, false, false, false));
@@ -95,25 +154,27 @@ final class UpdateMotionInputTest {
     @Test
     void inputSprintAndQueuedActionsPrecedeMovementAndTickEnd() {
         movementSync.setInput(new PlayerInput(true, false, false, false, false, false, true));
+        movementSync.position.set(new Vector3d(0.5, 20, 0.5));
+        movementSync.onGround.set(false);
         var first = new ServerboundPlayerCommandPacket(7, PlayerState.START_ELYTRA_FLYING);
-        var second = new ServerboundPlayerCommandPacket(7, PlayerState.START_ELYTRA_FLYING);
+        var second = new ServerboundPlayerCommandPacket(7, PlayerState.STOP_SPRINTING);
         movementSync.queueBeforeMovement(first);
         movementSync.queueBeforeMovement(second);
 
         task.run();
 
         assertEquals(6, packets.size());
-        assertInstanceOf(ServerboundPlayerInputPacket.class, packets.get(0));
+        assertSame(first, packets.get(0));
+        assertEquals(new ServerboundPlayerInputPacket(true, false, false, false, true, false, true), packets.get(1));
         assertEquals(PlayerState.START_SPRINTING,
-                assertInstanceOf(ServerboundPlayerCommandPacket.class, packets.get(1)).getState());
-        assertSame(first, packets.get(2));
+                assertInstanceOf(ServerboundPlayerCommandPacket.class, packets.get(2)).getState());
         assertSame(second, packets.get(3));
         assertInstanceOf(ServerboundMovePlayerPosPacket.class, packets.get(4));
         assertInstanceOf(ServerboundClientTickEndPacket.class, packets.get(5));
         assertNull(movementSync.pollBeforeMovementPacket());
 
         packets.clear();
-        movementSync.setInput(new PlayerInput(true, false, false, false, false, false, true));
+        movementSync.setInput(new PlayerInput(true, false, false, false, true, false, true));
         task.run();
         assertEquals(2, packets.size(), "equal held input sends neither input nor sprint again");
         assertInstanceOf(ServerboundMovePlayerPosPacket.class, packets.get(0));

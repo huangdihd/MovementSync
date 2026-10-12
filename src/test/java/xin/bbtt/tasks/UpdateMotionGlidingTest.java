@@ -99,18 +99,30 @@ final class UpdateMotionGlidingTest {
     }
 
     @Test
-    void landingClearsGlidingAndAttachedFireworkWithoutBoost() {
+    void landingRetainsGlidingAndRocketUntilServerMetadataClearsFlag() {
         attachFirework(movementSync.entityId);
         movementSync.position.set(new Vector3d(0.5, 1.01, 0.5));
 
         task.run();
 
         assertVector(movementSync.position.get(), 0.5, 1, 0.5 + BASE_Z);
-        assertVector(movementSync.velocity.get(), 0, 0, BASE_Z);
+        assertVector(movementSync.velocity.get(), 0, 0, 0.85 + BASE_Z / 2);
         assertTrue(movementSync.onGround.get());
+        assertTrue(movementSync.isGliding(), "contact must not clear client flight");
+        assertTrue(positionPacket().isOnGround());
+        for (int tick = 0; tick < 5; tick++) {
+            task.run();
+            assertTrue(movementSync.isGliding());
+            assertTrue(movementSync.hasAttachedFirework());
+        }
+        int flagsId = EntityRegistry.Instance.getEntity("PLAYER").getMetadataKeys().indexOf("shared_flags");
+        var metadata = new ClientboundSetEntityDataPacket(movementSync.entityId, new EntityMetadata<?, ?>[]{
+            new org.geysermc.mcprotocollib.protocol.data.game.entity.metadata.type.ByteEntityMetadata(
+                    flagsId, MetadataTypes.BYTE, (byte) 0)
+        });
+        entityListener.OnSetEntityMetadata(new ReceivePacketEvent<>(metadata, ClientboundSetEntityDataPacket.class));
         assertFalse(movementSync.isGliding());
         assertFalse(movementSync.hasAttachedFirework());
-        assertTrue(positionPacket().isOnGround());
     }
 
     @Test

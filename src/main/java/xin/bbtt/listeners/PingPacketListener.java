@@ -15,6 +15,15 @@ public class PingPacketListener extends SessionAdapter {
     @Override
     public void packetReceived(Session session, Packet packet) {
         if (!(packet instanceof ClientboundPingPacket pingPacket)) return;
-        session.send(new ServerboundPongPacket(pingPacket.getId()));
+        xin.bbtt.MovementSync movementSync = xin.bbtt.MovementSync.INSTANCE;
+        if (movementSync == null) {
+            session.send(new ServerboundPongPacket(pingPacket.getId()));
+            return;
+        }
+        // Grim commits Post observations on pong. Never acknowledge a ping
+        // halfway through the input/action/movement batch on the physics thread.
+        synchronized (movementSync) {
+            session.send(new ServerboundPongPacket(pingPacket.getId()));
+        }
     }
 }
