@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Test;
 import xin.bbtt.world.World;
 
 final class VerticalCollisionResolverTest {
+    private static final double PLAYER_HALF_WIDTH = (double) 0.6f / 2;
     private static final int AIR = 0;
     private static final int BOTTOM_OAK_SLAB = 13131;
 
@@ -33,8 +34,8 @@ final class VerticalCollisionResolverTest {
         Vector3d current = new Vector3d(0.5, 0.7, 0.5);
 
         assertEquals(0.5,
-            VerticalCollisionResolver.resolveDownwardY(world, current, 0.299, -0.3), 1e-9);
+            VerticalCollisionResolver.resolveDownwardY(world, current, PLAYER_HALF_WIDTH, -0.3), 1e-9);
         assertEquals(0.6,
-            VerticalCollisionResolver.resolveDownwardY(world, current, 0.299, -0.1), 1e-9);
+            VerticalCollisionResolver.resolveDownwardY(world, current, PLAYER_HALF_WIDTH, -0.1), 1e-9);
     }
 }

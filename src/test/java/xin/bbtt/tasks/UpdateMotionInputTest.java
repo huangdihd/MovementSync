@@ -11,6 +11,7 @@ import org.geysermc.mcprotocollib.protocol.data.game.entity.player.PlayerState;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.ServerboundClientTickEndPacket;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.level.ServerboundPlayerInputPacket;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundMovePlayerPosPacket;
+import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundMovePlayerPosRotPacket;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundPlayerCommandPacket;
 import org.joml.Vector3d;
 import org.junit.jupiter.api.AfterEach;
@@ -72,6 +73,23 @@ final class UpdateMotionInputTest {
         setBotField("session", null);
         Bot.INSTANCE.setServer(null);
         MovementSync.INSTANCE = null;
+    }
+
+    @Test
+    void movementPacketUsesTheRotationThatProducedItsDisplacement() {
+        movementSync.yaw.set(-90f);
+        movementSync.setInput(new PlayerInput(true, false, false, false, false, false, false));
+        duringInputSend = () -> movementSync.yaw.set(90f);
+
+        task.run();
+
+        var movement = packets.stream()
+                .filter(ServerboundMovePlayerPosRotPacket.class::isInstance)
+                .map(ServerboundMovePlayerPosRotPacket.class::cast)
+                .findFirst().orElseThrow();
+        assertTrue(movementSync.position.get().x > 0.5);
+        assertEquals(-90f, movement.getYaw());
+        assertEquals(90f, movementSync.yaw.get(), "next tick's steering must not be overwritten");
     }
 
     @Test

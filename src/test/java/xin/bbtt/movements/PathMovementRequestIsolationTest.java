@@ -122,7 +122,9 @@ final class PathMovementRequestIsolationTest {
         movement.onTick();
 
         assertFalse(movement.isFinished(), "a partial path is not a superseded request");
-        assertTrue(movementSync.velocity.get().x > 0, "the first tick must advance along the path");
+        assertTrue(movementSync.getInput().forward(), "the first tick must request forward movement");
+        assertEquals(-90f, movementSync.yaw.get(), "forward must point along the path");
+        assertEquals(0.0, movementSync.velocity.get().x, "only the physics tick may accelerate");
         assertEquals(goalBeyondPath, movementSync.getActiveGoal());
     }
 
@@ -137,7 +139,9 @@ final class PathMovementRequestIsolationTest {
         movement.onTick();
 
         assertFalse(movement.isFinished(), "a standalone path must preserve its null request goal");
-        assertTrue(movementSync.velocity.get().x > 0, "the first tick must advance along the path");
+        assertTrue(movementSync.getInput().forward(), "the first tick must request forward movement");
+        assertEquals(-90f, movementSync.yaw.get(), "forward must point along the path");
+        assertEquals(0.0, movementSync.velocity.get().x, "only the physics tick may accelerate");
         assertEquals(null, movementSync.getActiveGoal());
     }
 

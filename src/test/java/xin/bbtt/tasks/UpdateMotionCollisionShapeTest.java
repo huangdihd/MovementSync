@@ -9,10 +9,13 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.util.List;
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.OptionalDouble;
-import java.util.Set;
-import org.joml.Vector3i;
+import xin.bbtt.physics.JumpInputController;
+import xin.bbtt.physics.PhysicsResult;
+import xin.bbtt.physics.PlayerInput;
+import xin.bbtt.movements.PathMovement;
+import xin.bbtt.pathfinding.BuiltinMovementType;
+import xin.bbtt.pathfinding.PathStep;
+import java.util.function.BiConsumer;
 import xin.bbtt.pathfinding.Node;
 import xin.bbtt.pathfinding.StandablePositionResolver;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundMovePlayerPosRotPacket;
@@ -27,6 +30,7 @@ import xin.bbtt.mcbot.Server;
 import xin.bbtt.world.World;
 
 final class UpdateMotionCollisionShapeTest {
+    private static final double PLAYER_HALF_WIDTH = (double) 0.6f / 2;
     private static final double POST_COLLISION_VERTICAL_VELOCITY = -0.08 * 0.9800000190734863D;
     private static final int AIR = 0;
     private static final int STONE = 1;
@@ -121,6 +125,20 @@ final class UpdateMotionCollisionShapeTest {
 
     private boolean collides(Vector3d feetPosition) throws Exception {
         return (boolean) isPlayerBoxColliding.invoke(task, feetPosition);
+    }
+
+    @Test
+    void groundBodyUsesVanillaFloatWidthWithoutChangingGlidingWidth() throws Exception {
+        useTerrain(position -> Math.floor(position.x) == 1 ? STONE : AIR);
+        Vector3d vanillaContact = new Vector3d(1 - PLAYER_HALF_WIDTH, 1, 0.5);
+        assertFalse(collides(vanillaContact));
+        assertTrue(collides(new Vector3d(0.7005, 1, 0.5)),
+            "the old narrowed body misses this vanilla AABB overlap");
+        assertTrue(collides(new Vector3d(0.7, 1, 0.5)),
+            "double 0.3 is still narrower than half of vanilla's float width");
+        movementSync.setGliding(true);
+        assertFalse(collides(new Vector3d(0.7005, 1, 0.5)),
+            "this ground-only change must preserve the gliding body width");
     }
 
     private void useTerrain(java.util.function.ToIntFunction<Vector3d> blocks) throws Exception {
@@ -255,9 +273,12 @@ final class UpdateMotionCollisionShapeTest {
                 || Math.floor(xAxis ? position.x : position.z) == 1 ? STONE : AIR);
             task = new updateMotionTask();
             movementSync.velocity.set(xAxis ? new Vector3d(0.3, 0, 0) : new Vector3d(0, 0, 0.3));
-            assertTick(0.5, 1, 0.5, 0, POST_COLLISION_VERTICAL_VELOCITY, 0, true, true, true);
-            assertTick(0.5, 1, 0.5, 0, POST_COLLISION_VERTICAL_VELOCITY, 0, true, false, true);
-            assertTick(0.5, 1, 0.5, 0, POST_COLLISION_VERTICAL_VELOCITY, 0, true, false, false);
+            // Collision clips travel to the wall face rather than discarding the entire axis.
+            double x = xAxis ? 1 - PLAYER_HALF_WIDTH : 0.5;
+            double z = xAxis ? 0.5 : 1 - PLAYER_HALF_WIDTH;
+            assertTick(x, 1, z, 0, POST_COLLISION_VERTICAL_VELOCITY, 0, true, true, true);
+            assertTick(x, 1, z, 0, POST_COLLISION_VERTICAL_VELOCITY, 0, true, false, true);
+            assertTick(x, 1, z, 0, POST_COLLISION_VERTICAL_VELOCITY, 0, true, false, false);
         }
     }
 
@@ -279,7 +300,11 @@ final class UpdateMotionCollisionShapeTest {
     void ceilingCancelsJumpWithoutHorizontalCollision() throws Exception {
         useTerrain(position -> Math.floor(position.y) == 0 || Math.floor(position.y) == 3 ? STONE : AIR);
         movementSync.jump();
-        assertTick(0.5, 1, 0.5, 0, POST_COLLISION_VERTICAL_VELOCITY, 0, false, false, true);
+        // Feet rise until the 1.8-block body touches the ceiling at Y=3.
+        assertTick(0.5, 1.2, 0.5, 0, POST_COLLISION_VERTICAL_VELOCITY, 0, false, false, true);
+        assertTick(0.5, 1.2 + POST_COLLISION_VERTICAL_VELOCITY, 0.5, 0,
+            (POST_COLLISION_VERTICAL_VELOCITY - 0.08) * MovementSync.verticalDrag,
+            0, false, false, true);
         assertTick(0.5, 1, 0.5, 0, POST_COLLISION_VERTICAL_VELOCITY, 0, true, false, true);
         assertTick(0.5, 1, 0.5, 0, POST_COLLISION_VERTICAL_VELOCITY, 0, true, false, false);
     }
@@ -360,61 +385,81 @@ final class UpdateMotionCollisionShapeTest {
     }
 
     @Test
-    void plannerJumpHeightsMatchEveryPhysicsTick() throws Exception {
-        List<Double> simulatedHeights = new ArrayList<>();
-        // With no horizontal displacement, upward box checks and downward support
-        // queries expose each simulated tick without adding a production tracing API.
-        World world = new World() {
-            @Override
-            public boolean chunkLoaded(int chunkX, int chunkZ) { return true; }
+    void plannerJumpTrajectoryMatchesEveryPhysicsTick() throws Exception {
+        Node source = new Node(0, 1, 0);
+        for (Node target : new Node[] {new Node(1, 2, 0), new Node(2, 1, 0),
+                new Node(3, 1, 0), new Node(2, 1, 2)}) {
+            boolean gapJump = target.y == source.y;
+            World world = new World() {
+                @Override
+                public boolean chunkLoaded(int chunkX, int chunkZ) { return true; }
 
-            @Override
-            public int getBlockAt(Vector3d position) {
-                return Math.floor(position.y) == -1 ? STONE : AIR;
+                @Override
+                public int getBlockAt(Vector3d position) {
+                    int x = (int) Math.floor(position.x);
+                    int y = (int) Math.floor(position.y);
+                    int z = (int) Math.floor(position.z);
+                    return (x == source.x && y == source.y - 1 && z == source.z)
+                            || (x == target.x && y == target.y - 1 && z == target.z)
+                            ? STONE : AIR;
+                }
+            };
+            assertTrue(gapJump ? StandablePositionResolver.canGapJump(world, source, target)
+                    : StandablePositionResolver.canJump(world, source, target), target.toString());
+            setWorld(world);
+            task = new updateMotionTask();
+            movementSync.clearInput();
+            movementSync.position.set(new Vector3d(0.5, 1, 0.5));
+            movementSync.velocity.set(new Vector3d());
+            movementSync.onGround.set(true);
+            List<JumpInputController.Command> previewCommands = new ArrayList<>();
+            List<PhysicsResult> previewResults = new ArrayList<>();
+            Method preview = StandablePositionResolver.class.getDeclaredMethod(
+                    "canJump", World.class, Node.class, Node.class, boolean.class, BiConsumer.class);
+            preview.setAccessible(true);
+            BiConsumer<JumpInputController.Command, PhysicsResult> observer = (command, result) -> {
+                previewCommands.add(command);
+                previewResults.add(result);
+            };
+            assertEquals(true, preview.invoke(null, world, source, target, gapJump, observer));
+            assertFalse(previewResults.isEmpty());
+            PathMovement movement = new PathMovement(List.of(
+                    new PathStep(source, BuiltinMovementType.WALK),
+                    new PathStep(target, gapJump ? BuiltinMovementType.GAP_JUMP : BuiltinMovementType.JUMP)));
+            movement.init();
+            double maximumRise = 0;
+            boolean landed = false;
+            for (int tick = 0; tick < previewResults.size(); tick++) {
+                PhysicsResult expected = previewResults.get(tick);
+                String message = target + " at tick " + tick;
+                movement.onTick();
+                assertFalse(movement.isFinished(), message + " must not finish before landing");
+                assertEquals(previewCommands.get(tick).input(), movementSync.getInput(), message + " keys");
+                assertEquals(previewCommands.get(tick).yaw(), movementSync.yaw.get(), message + " yaw");
+                task.run();
+                assertEquals(expected.position().x, movementSync.position.get().x, 1.0e-9, message + " x");
+                assertEquals(expected.position().y, movementSync.position.get().y, 1.0e-9, message + " y");
+                assertEquals(expected.position().z, movementSync.position.get().z, 1.0e-9, message + " z");
+                assertEquals(expected.velocity().x, movementSync.velocity.get().x, 1.0e-9, message + " velocity x");
+                assertEquals(expected.velocity().y, movementSync.velocity.get().y, 1.0e-9, message + " velocity y");
+                assertEquals(expected.velocity().z, movementSync.velocity.get().z, 1.0e-9, message + " velocity z");
+                assertEquals(expected.onGround(), movementSync.onGround.get(), message + " grounded");
+                if (tick == 0) assertEquals(0.42, expected.position().y - source.y, 1.0e-9);
+                maximumRise = Math.max(maximumRise, expected.position().y - source.y);
+                assertEquals(tick == previewResults.size() - 1, expected.onGround(),
+                        message + " preview must run through landing");
+                if (!expected.onGround()) continue;
+                Vector3d position = expected.position();
+                assertEquals(target.y, position.y, 1.0e-9, message + " landing height");
+                assertTrue(position.x + PLAYER_HALF_WIDTH > target.x && position.x - PLAYER_HALF_WIDTH < target.x + 1
+                        && position.z + PLAYER_HALF_WIDTH > target.z && position.z - PLAYER_HALF_WIDTH < target.z + 1,
+                        message + " must land on the planned target");
+                landed = true;
+                break;
             }
-
-            @Override
-            public boolean isBoxColliding(double minX, double minY, double minZ,
-                    double maxX, double maxY, double maxZ) {
-                return false;
-            }
-
-            @Override
-            public boolean isBoxCollidingExcluding(double minX, double minY, double minZ,
-                    double maxX, double maxY, double maxZ, Set<Vector3i> excluded) {
-                simulatedHeights.add(minY);
-                return false;
-            }
-
-            @Override
-            public OptionalDouble findHighestCollisionTopExcluding(
-                    double minX, double minY, double minZ, double maxX, double maxY,
-                    double maxZ, Set<Vector3i> excluded) {
-                if (maxY > 1.0e-6) simulatedHeights.add(Math.max(0.0, minY));
-                return minY <= 0 && maxY >= 0
-                    ? OptionalDouble.of(0) : OptionalDouble.empty();
-            }
-        };
-        Method simulate = StandablePositionResolver.class.getDeclaredMethod(
-            "canCompleteJumpTrajectory", World.class, Node.class,
-            Node.class, double.class, double.class, double.class);
-        simulate.setAccessible(true);
-        assertTrue((boolean) simulate.invoke(null, world,
-            new Node(0, 0, 0), new Node(0, 0, 0),
-            0.0, 0.0, 1.0));
-        List<Double> expectedHeights = List.copyOf(simulatedHeights);
-        setWorld(world);
-        movementSync.position.set(new Vector3d(0.5, 0, 0.5));
-        movementSync.velocity.set(new Vector3d());
-        movementSync.onGround.set(true);
-        movementSync.jump();
-        for (int tick = 0; tick < expectedHeights.size(); tick++) {
-            task.run();
-            assertEquals(movementSync.position.get().y, expectedHeights.get(tick), 1.0e-9,
-                "planner and physics height at tick " + tick);
+            assertTrue(landed, "must finish the planned jump: " + target);
+            assertEquals(1.2522, maximumRise, 1.0e-4, "jump apex: " + target);
         }
-        assertEquals(0.42, expectedHeights.get(0), 1.0e-9);
-        assertEquals(1.2522, Collections.max(expectedHeights), 1.0e-4);
     }
 
     @Test
@@ -495,13 +540,14 @@ final class UpdateMotionCollisionShapeTest {
         movementSync.position.set(new Vector3d(0.5, 1.0 / 16.0, 0.5));
         movementSync.velocity.set(new Vector3d());
         movementSync.onGround.set(true);
+        // Exercise real acceleration from rest, not a terminal-speed override each tick.
+        movementSync.yaw.set(-90.0f);
+        movementSync.setInput(new PlayerInput(true, false, false, false, false, false, false));
         movementSync.jump();
         boolean hitCeiling = false;
         boolean landed = false;
 
         for (int tick = 0; tick < 20; tick++) {
-            movementSync.velocity.updateAndGet(velocity ->
-                new Vector3d(MovementSync.movementSpeed, velocity.y, 0));
             task.run();
             Vector3d position = movementSync.position.get();
             if (!movementSync.onGround.get()
@@ -544,12 +590,13 @@ final class UpdateMotionCollisionShapeTest {
         movementSync.position.set(new Vector3d(0.5, 1.0 / 16.0, 0.5));
         movementSync.velocity.set(new Vector3d());
         movementSync.onGround.set(true);
+        // Exercise real acceleration from rest, not a terminal-speed override each tick.
+        movementSync.yaw.set(-90.0f);
+        movementSync.setInput(new PlayerInput(true, false, false, false, false, false, false));
         movementSync.jump();
         Vector3d landing = null;
 
         for (int tick = 0; tick < 20; tick++) {
-            movementSync.velocity.updateAndGet(velocity ->
-                new Vector3d(MovementSync.movementSpeed, velocity.y, 0));
             task.run();
             Vector3d position = movementSync.position.get();
             if (movementSync.onGround.get()
@@ -560,7 +607,7 @@ final class UpdateMotionCollisionShapeTest {
         }
 
         assertTrue(landing != null, "the exact downward sweep must land on the raised carpet");
-        assertTrue(landing.x + 0.299 > 1.0,
+        assertTrue(landing.x + PLAYER_HALF_WIDTH > 1.0,
             "the player's footprint must overlap the target support at landing: " + landing);
         assertTrue(landing.x < 1.2,
             "the landing should occur before the center enters the old 0.3 tolerance: " + landing);

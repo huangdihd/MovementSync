@@ -85,7 +85,7 @@ public class World {
         Vector3i chunk = getChunk(position);
         if (!chunkLoaded(chunk.x, chunk.z)) return false;
 
-        double halfWidth = 0.299;
+        double halfWidth = (double) 0.6f / 2;
         double tolerance = 1.0e-4;
         return findHighestCollisionTop(
             position.x - halfWidth, position.y - tolerance, position.z - halfWidth,

@@ -57,12 +57,14 @@ public final class PillarMovement extends Movement implements NavigationBoundMov
 
     @Override
     public void onTick() {
+        if (isFinished()) return;
         if (navigationGeneration == null) {
             onAuthorizedTick();
             return;
         }
         if (!MovementSync.INSTANCE.runIfNavigationRequestCurrent(
                 navigationGeneration, this::onAuthorizedTick)) {
+            onStop();
             setFinished(true);
         }
     }
@@ -91,6 +93,7 @@ public final class PillarMovement extends Movement implements NavigationBoundMov
             Bot.INSTANCE.getAndIncreaseSequence()
         ));
         Bot.INSTANCE.getSession().send(new ServerboundSwingPacket(Hand.MAIN_HAND));
+        onStop();
         setFinished(true);
     }
 
@@ -101,9 +104,12 @@ public final class PillarMovement extends Movement implements NavigationBoundMov
 
     @Override
     public void onStop() {
-        Vector3d velocity = MovementSync.INSTANCE.velocity.get();
-        if (velocity != null) {
-            MovementSync.INSTANCE.velocity.set(new Vector3d(0, velocity.y, 0));
-        }
+        MovementSync.INSTANCE.clearInput();
+    }
+
+    @Override
+    public void onPause() {
+        onStop();
+        jumped = false;
     }
 }

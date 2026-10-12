@@ -25,6 +25,7 @@ import xin.bbtt.physics.WalkingPhysics;
 import xin.bbtt.world.World;
 
 final class PillarMovementTest {
+    private static final double PLAYER_HALF_WIDTH = (double) 0.6f / 2;
     @AfterEach
     void reset() throws Exception {
         setBotField("session", null);
@@ -84,7 +85,7 @@ final class PillarMovementTest {
         for (int tick = 0; tick < 3; tick++) {
             PhysicsResult result = new WalkingPhysics(input, movementSync.yaw.get()).step(
                     world, new PhysicsState(movementSync.position.get(), movementSync.velocity.get(),
-                            movementSync.onGround.get()), 0.299, 1.8);
+                            movementSync.onGround.get()), PLAYER_HALF_WIDTH, 1.8);
             movementSync.position.set(result.position());
             movementSync.velocity.set(result.velocity());
             movementSync.onGround.set(result.onGround());

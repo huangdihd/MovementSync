@@ -9,7 +9,7 @@ import static xin.bbtt.MovementSync.gravitationalAcceleration;
 import static xin.bbtt.MovementSync.terminalVelocity;
 
 public final class WalkingPhysics implements PhysicsStepper {
-    private static final double PLAYER_HALF_WIDTH = 0.299;
+    private static final double PLAYER_HALF_WIDTH = (double) 0.6f / 2;
     private static final double MAX_STEP_HEIGHT =
         xin.bbtt.pathfinding.StandablePositionResolver.MAX_STEP_RISE;
     private static final double STEP_EPSILON = 1.0e-7;
@@ -39,7 +39,12 @@ public final class WalkingPhysics implements PhysicsStepper {
         Vector3d position = state.position();
         Vector3d velocity = state.velocity();
         Vector3d displacement = new Vector3d();
-        velocity.set(snapToZero(velocity.x), snapToZero(velocity.y), snapToZero(velocity.z));
+        // Since 1.21.5 the horizontal threshold applies to the vector, not each axis.
+        if (velocity.x * velocity.x + velocity.z * velocity.z < MIN_MOVEMENT * MIN_MOVEMENT) {
+            velocity.x = 0;
+            velocity.z = 0;
+        }
+        velocity.y = snapToZero(velocity.y);
 
         final double tickStartY = position.y;
         boolean groundedAtTickStart = state.onGround();
@@ -64,6 +69,10 @@ public final class WalkingPhysics implements PhysicsStepper {
         displacement.z = velocity.z;
         displacement.y = velocity.y;
 
+        if (input.sneak() && groundedAtTickStart && displacement.y <= 0) {
+            protectSneakingEdge(world, position, displacement, halfWidth, height);
+        }
+
         // Vanilla clips downward travel before horizontal travel. At an edge the
         // last supported tick therefore stays grounded even after moving past it.
         boolean downwardCollision = false;
@@ -77,51 +86,28 @@ public final class WalkingPhysics implements PhysicsStepper {
             displacement.y = 0;
         }
 
-        boolean collidedX = false;
-        boolean collidedZ = false;
-
-        if (displacement.x != 0) {
-            Vector3d testPosX = new Vector3d(position.x + displacement.x, position.y, position.z);
-            if (isBoxColliding(world, testPosX, halfWidth, height)) {
-                if (!tryStepUp(world, state.onGround(), halfWidth, height, position, testPosX.x, testPosX.z, tickStartY)) {
-                    displacement.x = 0;
-                    velocity.x = 0;
-                    collidedX = true;
-                }
-            } else {
-                position.x += displacement.x;
-            }
-        }
-
-        if (displacement.z != 0) {
-            Vector3d testPosZ = new Vector3d(position.x, position.y, position.z + displacement.z);
-            if (isBoxColliding(world, testPosZ, halfWidth, height)) {
-                if (!tryStepUp(world, state.onGround(), halfWidth, height, position, testPosZ.x, testPosZ.z, tickStartY)) {
-                    displacement.z = 0;
-                    velocity.z = 0;
-                    collidedZ = true;
-                }
-            } else {
-                position.z += displacement.z;
-            }
-        }
-
+        // Resolve upward travel before horizontal motion too: jumping onto a full
+        // block must test the raised body, and a ceiling clips to its actual face.
         if (displacement.y > 0) {
-            Vector3d testPosY = new Vector3d(position.x, position.y + displacement.y, position.z);
-            if (isBoxColliding(world, testPosY, halfWidth, height)) {
-                displacement.y = 0;
-                velocity.y = 0;
-            }
+            double resolvedY = clipMovement(world, position, halfWidth, height, 1, displacement.y);
+            position.y += resolvedY;
+            if (resolvedY != displacement.y) velocity.y = 0;
         }
 
-        if (displacement.y < 0) {
-            double desiredY = position.y + displacement.y;
-            double resolvedY = VerticalCollisionResolver.resolveDownwardY(
-                world, position, 0.299, displacement.y);
-            position.y = resolvedY;
-            if (resolvedY > desiredY + 1.0e-9) velocity.y = 0;
+        boolean zFirst = Math.abs(displacement.x) < Math.abs(displacement.z);
+        boolean collidedX;
+        boolean collidedZ;
+        boolean canStep = groundedAtTickStart || downwardCollision;
+        if (zFirst) {
+            collidedZ = moveHorizontal(world, position, velocity, halfWidth, height,
+                2, displacement.z, canStep, tickStartY);
+            collidedX = moveHorizontal(world, position, velocity, halfWidth, height,
+                0, displacement.x, canStep, tickStartY);
         } else {
-            position.y += displacement.y;
+            collidedX = moveHorizontal(world, position, velocity, halfWidth, height,
+                0, displacement.x, canStep, tickStartY);
+            collidedZ = moveHorizontal(world, position, velocity, halfWidth, height,
+                2, displacement.z, canStep, tickStartY);
         }
 
         // Ground contact cancels downward movement, not next tick's gravity.
@@ -137,6 +123,89 @@ public final class WalkingPhysics implements PhysicsStepper {
                         && !input.jump() && world.isOnGround(position)));
     }
 
+    private static boolean moveHorizontal(
+            World world, Vector3d position, Vector3d velocity, double halfWidth, double height,
+            int axis, double movement, boolean canStep, double tickStartY) {
+        if (movement == 0) return false;
+        double clipped = clipMovement(world, position, halfWidth, height, axis, movement);
+        if (clipped == movement) {
+            position.setComponent(axis, position.get(axis) + movement);
+            return false;
+        }
+        double candidateX = position.x + (axis == 0 ? movement : 0);
+        double candidateZ = position.z + (axis == 2 ? movement : 0);
+        if (tryStepUp(world, canStep, halfWidth, height, position, candidateX, candidateZ, tickStartY)) {
+            return false;
+        }
+        position.setComponent(axis, position.get(axis) + clipped);
+        velocity.setComponent(axis, 0);
+        return true;
+    }
+
+    private static double clipMovement(
+            World world, Vector3d position, double halfWidth, double height, int axis, double movement) {
+        if (!isSweepColliding(world, position, halfWidth, height, axis, movement)) return movement;
+        // World exposes overlap queries rather than collision boxes. A swept AABB
+        // gives a monotonic predicate, including when the endpoint passed a thin wall.
+        double clear = 0;
+        double blocked = movement;
+        for (int iteration = 0; iteration < 52; iteration++) {
+            double middle = (clear + blocked) * 0.5;
+            if (middle == clear || middle == blocked) break;
+            if (isSweepColliding(world, position, halfWidth, height, axis, middle)) blocked = middle;
+            else clear = middle;
+        }
+        return clear;
+    }
+
+    private static boolean isSweepColliding(
+            World world, Vector3d position, double halfWidth, double height, int axis, double movement) {
+        double deltaX = axis == 0 ? movement : 0;
+        double deltaY = axis == 1 ? movement : 0;
+        double deltaZ = axis == 2 ? movement : 0;
+        // Form the endpoint center before its bounds, just as moveHorizontal does.
+        // Different addition order can round a touching face into the wall and
+        // make the next upward sweep start inside an obstacle.
+        return world.isBoxColliding(
+            (position.x + Math.min(0, deltaX)) - halfWidth, position.y + Math.min(0, deltaY),
+            (position.z + Math.min(0, deltaZ)) - halfWidth,
+            (position.x + Math.max(0, deltaX)) + halfWidth,
+            (position.y + Math.max(0, deltaY)) + height,
+            (position.z + Math.max(0, deltaZ)) + halfWidth);
+    }
+
+    private static void protectSneakingEdge(
+            World world, Vector3d position, Vector3d displacement, double halfWidth, double height) {
+        // Vanilla backs off each axis, then the diagonal, in 0.05-block increments.
+        // This adjusts travel, not momentum: edge protection is not a wall collision.
+        while (displacement.x != 0 && !hasSneakingSupport(
+                world, position, displacement.x, 0, halfWidth, height)) {
+            displacement.x = backOffEdge(displacement.x);
+        }
+        while (displacement.z != 0 && !hasSneakingSupport(
+                world, position, 0, displacement.z, halfWidth, height)) {
+            displacement.z = backOffEdge(displacement.z);
+        }
+        while (displacement.x != 0 && displacement.z != 0 && !hasSneakingSupport(
+                world, position, displacement.x, displacement.z, halfWidth, height)) {
+            displacement.x = backOffEdge(displacement.x);
+            displacement.z = backOffEdge(displacement.z);
+        }
+    }
+
+    private static boolean hasSneakingSupport(
+            World world, Vector3d position, double deltaX, double deltaZ,
+            double halfWidth, double height) {
+        return isBoxColliding(world,
+            new Vector3d(position.x + deltaX, position.y - MAX_STEP_HEIGHT, position.z + deltaZ),
+            halfWidth, height);
+    }
+
+    private static double backOffEdge(double movement) {
+        if (Math.abs(movement) <= 0.05) return 0;
+        return movement - Math.copySign(0.05, movement);
+    }
+
     private static double snapToZero(double component) {
         return Math.abs(component) < MIN_MOVEMENT ? 0 : component;
     }
@@ -147,7 +216,11 @@ public final class WalkingPhysics implements PhysicsStepper {
         double length = Math.hypot(forward, strafe);
         if (length == 0) return;
 
-        double keyScale = 0.98 * (input.sneak() ? 0.3 : 1) / Math.max(1, length);
+        forward /= length;
+        strafe /= length;
+        // Since 1.21.5, scaled input expands to the unit square, capped at unit length.
+        double distanceToUnitSquare = 1 / Math.max(Math.abs(forward), Math.abs(strafe));
+        double keyScale = Math.min(0.98 * (input.sneak() ? 0.3 : 1) * distanceToUnitSquare, 1);
         forward *= keyScale;
         strafe *= keyScale;
         double acceleration = onGround

@@ -22,7 +22,7 @@ import xin.bbtt.physics.PhysicsStepper;
 import xin.bbtt.physics.WalkingPhysics;
 
 public class updateMotionTask implements Runnable {
-    private static final double PLAYER_HALF_WIDTH = 0.299;
+    private static final double PLAYER_HALF_WIDTH = (double) 0.6f / 2;
     private PlayerInput lastInput = PlayerInput.NONE;
     private boolean lastSprinting;
     private int jumpCooldown;
@@ -36,10 +36,15 @@ public class updateMotionTask implements Runnable {
 
     public void syncPositionToServer(
             boolean horizontalCollision, boolean positionChanged, boolean rotationChanged) {
+        syncPositionToServer(horizontalCollision, positionChanged, rotationChanged,
+                MovementSync.INSTANCE.yaw.get(), MovementSync.INSTANCE.pitch.get());
+    }
+
+    private void syncPositionToServer(
+            boolean horizontalCollision, boolean positionChanged, boolean rotationChanged,
+            float yaw, float pitch) {
         boolean onGround = MovementSync.INSTANCE.onGround.get();
         Vector3d position = MovementSync.INSTANCE.position.get();
-        float yaw = MovementSync.INSTANCE.yaw.get();
-        float pitch = MovementSync.INSTANCE.pitch.get();
 
         if (positionChanged && rotationChanged) {
             Bot.INSTANCE.getSession().send(new ServerboundMovePlayerPosRotPacket(
@@ -66,7 +71,7 @@ public class updateMotionTask implements Runnable {
     }
 
     private BodyDimensions getBodyDimensions() {
-        double halfWidth = PLAYER_HALF_WIDTH; // Player width is 0.6 blocks.
+        double halfWidth = 0.299; // Preserve riding fallback and gliding dimensions.
         double height = 1.8;
 
         if (MovementSync.INSTANCE.isRiding()) {
@@ -78,6 +83,7 @@ public class updateMotionTask implements Runnable {
         } else if (MovementSync.INSTANCE.isGliding()) {
             height = 0.6;
         } else {
+            halfWidth = PLAYER_HALF_WIDTH;
             Object pose = MovementSync.INSTANCE.getSelfMetadata().get("pose");
             if (pose != null) {
                 String poseName = pose.toString();
@@ -149,6 +155,7 @@ public class updateMotionTask implements Runnable {
 
         PlayerInput input = MovementSync.INSTANCE.snapshotInput();
         float tickYaw = MovementSync.INSTANCE.yaw.get();
+        float tickPitch = MovementSync.INSTANCE.pitch.get();
         if (!input.equals(lastInput)) {
             Bot.INSTANCE.getSession().send(new ServerboundPlayerInputPacket(
                     input.forward(), input.backward(), input.left(), input.right(), input.jump(), input.sneak(), input.sprint()));
@@ -203,14 +210,16 @@ public class updateMotionTask implements Runnable {
 
         boolean horizontalCollision = collidedX || collidedZ;
         boolean positionChanged = !lastPos.equals(position);
-        boolean rotationChanged = lastPitch != MovementSync.INSTANCE.pitch.get()
-                || lastYaw != MovementSync.INSTANCE.yaw.get();
+        // Report the rotation used for acceleration, not concurrent next-tick steering.
+        float packetYaw = gliding ? MovementSync.INSTANCE.yaw.get() : tickYaw;
+        float packetPitch = gliding ? MovementSync.INSTANCE.pitch.get() : tickPitch;
+        boolean rotationChanged = lastPitch != packetPitch || lastYaw != packetYaw;
         if (positionChanged || rotationChanged || lastHorizontalCollision != horizontalCollision
                 || lastOnGround != MovementSync.INSTANCE.onGround.get()) {
-            syncPositionToServer(horizontalCollision, positionChanged, rotationChanged);
+            syncPositionToServer(horizontalCollision, positionChanged, rotationChanged, packetYaw, packetPitch);
             lastPos.set(position);
-            lastPitch = MovementSync.INSTANCE.pitch.get();
-            lastYaw = MovementSync.INSTANCE.yaw.get();
+            lastPitch = packetPitch;
+            lastYaw = packetYaw;
             lastHorizontalCollision = horizontalCollision;
             lastOnGround = MovementSync.INSTANCE.onGround.get();
         }
