@@ -4,6 +4,7 @@ import org.geysermc.mcprotocollib.network.Session;
 import org.geysermc.mcprotocollib.network.event.session.SessionAdapter;
 import org.geysermc.mcprotocollib.network.packet.Packet;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.entity.ClientboundSetEntityMotionPacket;
+import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.level.ClientboundExplodePacket;
 import org.joml.Vector3d;
 import xin.bbtt.MovementSync;
 
@@ -15,15 +16,26 @@ import xin.bbtt.MovementSync;
 public class VelocityPacketListener extends SessionAdapter {
     @Override
     public void packetReceived(Session session, Packet packet) {
-        if (!(packet instanceof ClientboundSetEntityMotionPacket motionPacket)) return;
         MovementSync movementSync = MovementSync.INSTANCE;
-        if (movementSync == null || motionPacket.getEntityId() != movementSync.entityId) return;
-        // Never replace the velocity halfway through a physics tick.
+        if (movementSync == null) return;
+        if (packet instanceof ClientboundSetEntityMotionPacket motionPacket) {
+            if (motionPacket.getEntityId() != movementSync.entityId) return;
+            // Share the tick/Pong boundary: neither physics writeback may erase this packet.
+            synchronized (movementSync) {
+                movementSync.velocity.set(new Vector3d(
+                        motionPacket.getMovement().getX(),
+                        motionPacket.getMovement().getY(),
+                        motionPacket.getMovement().getZ()));
+            }
+            return;
+        }
+        if (!(packet instanceof ClientboundExplodePacket explosionPacket)) return;
+        var knockback = explosionPacket.getPlayerKnockback();
+        if (knockback == null) return;
         synchronized (movementSync) {
-            movementSync.velocity.set(new Vector3d(
-                    motionPacket.getMovement().getX(),
-                    motionPacket.getMovement().getY(),
-                    motionPacket.getMovement().getZ()));
+            // Vanilla adds explosion impulse; retain current motion and never mutate its snapshot.
+            movementSync.velocity.updateAndGet(velocity -> new Vector3d(velocity)
+                    .add(knockback.getX(), knockback.getY(), knockback.getZ()));
         }
     }
 }
