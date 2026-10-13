@@ -17,11 +17,15 @@ public class ChunkDataListener extends SessionAdapter {
         }
         if (packet instanceof ClientboundSectionBlocksUpdatePacket sectionBlocksUpdatePacket) {
             MovementSync.INSTANCE.getWorld().handleSectionBlocksUpdatePacket(sectionBlocksUpdatePacket);
-            MovementSync.INSTANCE.requestRepath();
+            for (var entry : sectionBlocksUpdatePacket.getEntries()) {
+                MovementSync.INSTANCE.requestRepath(
+                        entry.getPosition().getX(), entry.getPosition().getY(), entry.getPosition().getZ());
+            }
         }
         if (packet instanceof ClientboundBlockUpdatePacket blockUpdatePacket) {
             MovementSync.INSTANCE.getWorld().handleBlockUpdatePacket(blockUpdatePacket);
-            MovementSync.INSTANCE.requestRepath();
+            var changed = blockUpdatePacket.getEntry().getPosition();
+            MovementSync.INSTANCE.requestRepath(changed.getX(), changed.getY(), changed.getZ());
         }
         if (packet instanceof ClientboundForgetLevelChunkPacket forgetLevelChunkPacket) {
             // Unloading a distant chunk doesn't invalidate the path the bot is

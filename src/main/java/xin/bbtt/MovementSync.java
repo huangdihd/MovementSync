@@ -531,6 +531,16 @@ public class MovementSync implements Plugin {
         }
     }
 
+    /** A block changed at the given position; replan only if it lies along the current route. */
+    public void requestRepath(int x, int y, int z) {
+        xin.bbtt.movement.Movement current = movementController.getCurrentMovement();
+        if (current instanceof xin.bbtt.movements.PathMovement pathMovement) {
+            pathMovement.requestRepath(x, y, z);
+        } else if (current instanceof xin.bbtt.movements.TravelMovement travelMovement) {
+            travelMovement.requestRepath(x, y, z);
+        }
+    }
+
     public Vector3d getHeadPosition() {
         return new Vector3d(MovementSync.INSTANCE.position.get()).add(Direction.UP.getVector(1.62));
     }

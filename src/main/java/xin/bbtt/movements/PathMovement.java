@@ -95,6 +95,25 @@ public class PathMovement extends Movement {
         this.repathRequested = true;
     }
 
+    /**
+     * Requests a replan only when the changed block can affect the route still ahead.
+     * Loaded worlds change constantly (grass spreading, crops, other players); replanning
+     * a long route for every one of those keeps the bot planning instead of walking.
+     */
+    public void requestRepath(int x, int y, int z) {
+        List<PathStep> route = this.path;
+        if (route == null) return;
+        for (int index = Math.max(0, currentIndex - 1); index < route.size(); index++) {
+            Node node = route.get(index).getNode();
+            // Floor, body and jump headroom of the node and of the blocks beside it.
+            if (Math.abs(x - node.x) <= 1 && Math.abs(z - node.z) <= 1
+                    && y >= node.y - 2 && y <= node.y + 3) {
+                this.repathRequested = true;
+                return;
+            }
+        }
+    }
+
     @Override
     public void init() {
         if (path == null || path.isEmpty()) {

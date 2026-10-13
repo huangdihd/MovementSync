@@ -178,7 +178,10 @@ public class MovementController {
             try {
                 currentMovement.init();
                 MovementTask task = new MovementTask(currentMovement, this, currentActivationId);
-                currentTaskFuture = MovementSync.INSTANCE.movementService.scheduleAtFixedRate(task, 0L, 50L, TimeUnit.MILLISECONDS);
+                // Fixed delay, not fixed rate: after a slow tick (synchronous path planning) a
+                // fixed-rate task replays every missed tick in a burst, which makes tick-counted
+                // throttles and stuck detection fire again before the bot has moved at all.
+                currentTaskFuture = MovementSync.INSTANCE.movementService.scheduleWithFixedDelay(task, 0L, 50L, TimeUnit.MILLISECONDS);
             } catch (Exception e) {
                 MovementSync.getLogger().error(LangManager.get("movementsync.movement.error.run"), e);
                 isExecuting.set(false);

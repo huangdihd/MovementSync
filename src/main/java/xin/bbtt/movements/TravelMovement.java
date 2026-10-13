@@ -193,6 +193,10 @@ public final class TravelMovement extends Movement {
         if (child instanceof PathMovement path) path.requestRepath();
     }
 
+    public void requestRepath(int x, int y, int z) {
+        if (child instanceof PathMovement path) path.requestRepath(x, y, z);
+    }
+
     @Override
     public long getTime() { return -1; }
 
