@@ -37,6 +37,57 @@ final class ElytraFlightControllerTest {
         return new PhysicsState(new Vector3d(0, 20, 0), new Vector3d(0, 0, 0.8), false);
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void exhaustedFlightControlsTouchdownOutsideTarget(boolean uneven) {
+        Terrain world = new Terrain() {
+            private double top(double minZ, double maxZ) {
+                return uneven && maxZ > 4 && minZ < 8 ? 2 : 0;
+            }
+            @Override public boolean isBoxColliding(double minX, double minY, double minZ,
+                    double maxX, double maxY, double maxZ) {
+                return minY < top(minZ, maxZ);
+            }
+            @Override public OptionalDouble findHighestCollisionTopExcluding(
+                    double minX, double minY, double minZ, double maxX, double maxY, double maxZ,
+                    Set<Vector3i> excluded) {
+                double top = top(minZ, maxZ);
+                if (minY <= top && maxY >= top) return OptionalDouble.of(top);
+                return super.findHighestCollisionTopExcluding(minX, minY, minZ, maxX, maxY, maxZ, excluded);
+            }
+        };
+        PhysicsState state = new PhysicsState(new Vector3d(0, 1, 0), new Vector3d(0, -0.2, 0.3), false);
+        Vector3d target = new Vector3d(0, 0, 800);
+        boolean forced = false;
+        float yaw = 0;
+        float pitch = 0;
+        for (int tick = 0; tick < 200 && !state.onGround(); tick++) {
+            var decision = controller.decide(world, state, yaw, pitch, false, target, 0, 16);
+            forced |= decision.phase() == ElytraFlightController.Phase.FORCED_LANDING;
+            yaw = decision.yaw();
+            pitch = decision.pitch();
+            PhysicsResult result = new GlidingPhysics(yaw, pitch, false).step(world, state, 0.299, 0.6);
+            assertFalse(result.collidedX() || result.collidedZ());
+            if (result.onGround()) {
+                assertTrue(Math.abs(state.velocity().y) <= 0.5);
+                assertTrue(Math.hypot(state.velocity().x, state.velocity().z) <= 0.8);
+            }
+            state = new PhysicsState(result.position(), result.velocity(), result.onGround());
+        }
+        assertTrue(forced);
+        assertTrue(state.onGround());
+        assertTrue(state.position().distance(target) > 16);
+    }
+
+    @Test
+    void availableRocketPreventsForcedLanding() {
+        var decision = controller.decide(new Terrain(),
+                new PhysicsState(new Vector3d(0, 1, 0), new Vector3d(0, -0.2, 0.3), false),
+                0, 0, false, new Vector3d(0, 0, 800), 1, 16);
+        assertNotEquals(ElytraFlightController.Phase.FORCED_LANDING, decision.phase());
+        assertTrue(decision.firework());
+    }
+
     @Test
     void deterministicAndDoesNotMutateInputs() {
         Terrain world = new Terrain();

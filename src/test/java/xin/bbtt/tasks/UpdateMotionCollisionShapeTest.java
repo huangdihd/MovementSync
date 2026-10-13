@@ -310,7 +310,7 @@ final class UpdateMotionCollisionShapeTest {
     }
 
     @Test
-    void unloadedChunkLeavesStateAndPacketsUntouched() throws Exception {
+    void unloadedChunkStillMovesAndSendsPositionAndTickEnd() throws Exception {
         setWorld(new World() {
             @Override
             public boolean chunkLoaded(int chunkX, int chunkZ) { return false; }
@@ -318,9 +318,38 @@ final class UpdateMotionCollisionShapeTest {
         movementSync.position.set(new Vector3d(0.5, 4, 0.5));
         movementSync.velocity.set(new Vector3d(0.2, -0.3, 0.4));
         movementSync.onGround.set(true);
-        for (int tick = 0; tick < 3; tick++) {
-            assertTick(0.5, 4, 0.5, 0.2, -0.3, 0.4, true, false, false);
-        }
+        double falling = -0.1 * MovementSync.verticalDrag;
+        assertTick(0.7, 3.7, 0.9, 0.2 * 0.546, falling, 0.4 * 0.546, false, false, true);
+        assertTick(0.7 + 0.2 * 0.546, 3.7 + falling, 0.9 + 0.4 * 0.546,
+                0.2 * 0.546 * 0.91, falling, 0.4 * 0.546 * 0.91, false, false, true);
+        assertEquals(2, tickEndPackets);
+    }
+
+    @Test
+    void unloadedChunkBelowWorldStopsVerticalAcceleration() throws Exception {
+        setWorld(new World());
+        movementSync.position.set(new Vector3d(0.5, World.getMinWorldY() - 1, 0.5));
+        movementSync.velocity.set(new Vector3d(0, -0.3, 0));
+        movementSync.onGround.set(false);
+        assertTick(0.5, World.getMinWorldY() - 1.3, 0.5, 0, 0, 0, false, false, true);
+        assertEquals(1, tickEndPackets);
+    }
+
+    @Test
+    void chunkArrivalResumesGravityWithoutResettingMomentum() throws Exception {
+        boolean[] loaded = {false};
+        setWorld(new World() {
+            @Override public boolean chunkLoaded(int chunkX, int chunkZ) { return loaded[0]; }
+        });
+        movementSync.position.set(new Vector3d(0.5, 4, 0.5));
+        movementSync.velocity.set(new Vector3d());
+        movementSync.onGround.set(false);
+        double falling = -0.1 * MovementSync.verticalDrag;
+        assertTick(0.5, 4, 0.5, 0, falling, 0, false, false, true);
+        loaded[0] = true;
+        assertTick(0.5, 4 + falling, 0.5, 0, (falling - 0.08) * MovementSync.verticalDrag,
+                0, false, false, true);
+        assertEquals(2, tickEndPackets);
     }
 
     @Test

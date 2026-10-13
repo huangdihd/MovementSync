@@ -157,6 +157,7 @@ public class MovementSync implements Plugin {
 
         Bot.INSTANCE.addPacketListener(new TeleportPacketListener(), this);
         Bot.INSTANCE.addPacketListener(new PingPacketListener(), this);
+        Bot.INSTANCE.addPacketListener(new VelocityPacketListener(), this);
         Bot.INSTANCE.addPacketListener(new LoginPacketListener(), this);
         Bot.INSTANCE.addPacketListener(new EntityIdRecorder(), this);
         Bot.INSTANCE.addPacketListener(new RespawnPacketListener(), this);

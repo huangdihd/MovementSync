@@ -76,6 +76,7 @@ final class PillarMovementTest {
         assertFalse(movement.isFinished());
 
         World world = new World() {
+            @Override public boolean chunkLoaded(int chunkX, int chunkZ) { return true; }
             @Override
             public boolean isBoxColliding(double minX, double minY, double minZ,
                     double maxX, double maxY, double maxZ) {

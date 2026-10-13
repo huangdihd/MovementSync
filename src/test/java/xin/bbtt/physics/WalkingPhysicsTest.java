@@ -13,6 +13,7 @@ final class WalkingPhysicsTest {
     private static final double GROUND_ACCELERATION = 0.098 * 0.21600002 / (0.6 * 0.6 * 0.6);
     private static final double GROUND_DRAG = 0.6 * 0.91;
     private static final World EMPTY_WORLD = new World() {
+            @Override public boolean chunkLoaded(int chunkX, int chunkZ) { return true; }
         @Override
         public boolean isBoxColliding(double minX, double minY, double minZ,
                 double maxX, double maxY, double maxZ) {
@@ -39,6 +40,7 @@ final class WalkingPhysicsTest {
     void walkingOffSingleBlockStaysGroundedForSupportedTickThenFalls() {
         double gravityVelocity = -0.08 * 0.9800000190734863D;
         World world = new World() {
+            @Override public boolean chunkLoaded(int chunkX, int chunkZ) { return true; }
             @Override
             public java.util.OptionalDouble findHighestCollisionTopExcluding(
                     double minX, double minY, double minZ,
@@ -255,6 +257,7 @@ final class WalkingPhysicsTest {
     @Test
     void repeatedStepsUseOnlySuppliedStateAndLeaveItUnchanged() {
         World world = new World() {
+            @Override public boolean chunkLoaded(int chunkX, int chunkZ) { return true; }
             @Override
             public boolean isBoxColliding(double minX, double minY, double minZ,
                     double maxX, double maxY, double maxZ) {
@@ -279,6 +282,7 @@ final class WalkingPhysicsTest {
     @Test
     void suppliedBodyHeightControlsHeadCollision() {
         World world = new World() {
+            @Override public boolean chunkLoaded(int chunkX, int chunkZ) { return true; }
             @Override
             public boolean isBoxColliding(double minX, double minY, double minZ,
                     double maxX, double maxY, double maxZ) {
@@ -325,6 +329,7 @@ final class WalkingPhysicsTest {
     @Test
     void sneakingClipsDiagonalWhenEachAxisAloneHasSupport() {
         World world = new World() {
+            @Override public boolean chunkLoaded(int chunkX, int chunkZ) { return true; }
             @Override
             public boolean isBoxColliding(double minX, double minY, double minZ,
                     double maxX, double maxY, double maxZ) {
@@ -441,6 +446,7 @@ final class WalkingPhysicsTest {
 
     private static World supportWorld(double left, double right, double near, double far, double top) {
         return new World() {
+            @Override public boolean chunkLoaded(int chunkX, int chunkZ) { return true; }
             @Override
             public boolean isBoxColliding(double minX, double minY, double minZ,
                     double maxX, double maxY, double maxZ) {

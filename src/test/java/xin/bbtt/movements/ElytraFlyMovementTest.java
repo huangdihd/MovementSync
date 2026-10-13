@@ -39,6 +39,45 @@ final class ElytraFlyMovementTest extends ElytraCommandTestSupport {
     }
 
     @Test
+    void forcedLandingFinishesAsFailureWithoutPredictionFailure() throws Exception {
+        xin.bbtt.world.World world = new xin.bbtt.world.World() {
+            @Override public boolean chunkLoaded(int chunkX, int chunkZ) { return true; }
+            @Override public boolean isBoxColliding(double minX, double minY, double minZ,
+                    double maxX, double maxY, double maxZ) { return minY < 0; }
+            @Override public java.util.OptionalDouble findHighestCollisionTopExcluding(
+                    double minX, double minY, double minZ, double maxX, double maxY, double maxZ,
+                    java.util.Set<org.joml.Vector3i> exclusions) {
+                return minY <= 0 && maxY >= 0 ? java.util.OptionalDouble.of(0) : java.util.OptionalDouble.empty();
+            }
+        };
+        var field = MovementSync.class.getDeclaredField("world");
+        field.setAccessible(true);
+        field.set(movementSync, world);
+        movementSync.position.set(new Vector3d(0, 1, 0));
+        movementSync.velocity.set(new Vector3d(0, -0.2, 0.3));
+        movementSync.onGround.set(false);
+        movementSync.setGliding(true);
+        ElytraFlyMovement flight = new ElytraFlyMovement(new Vector3d(0, 0, 800));
+        flight.init();
+        for (int tick = 0; tick < 200 && !movementSync.onGround.get(); tick++) {
+            flight.onTick();
+            assertFalse(flight.isFinished(), "steering must continue until touchdown");
+            var result = new xin.bbtt.physics.GlidingPhysics(movementSync.yaw.get(), movementSync.pitch.get(), false)
+                    .step(world, new xin.bbtt.physics.PhysicsState(movementSync.position.get(),
+                            movementSync.velocity.get(), false), 0.299, 0.6);
+            movementSync.position.set(result.position());
+            movementSync.velocity.set(result.velocity());
+            movementSync.onGround.set(result.onGround());
+        }
+        assertTrue(movementSync.onGround.get());
+        flight.onTick();
+        assertTrue(flight.isFinished());
+        assertTrue(messages.list.stream().anyMatch(message -> message.getFormattedMessage().equals(
+                LangManager.get("movementsync.command.elytra.fly.failed"))));
+        assertFalse(messages.list.stream().anyMatch(message -> message.getFormattedMessage().contains("Flight prediction failed")));
+    }
+
+    @Test
     void replacementAndStopPreserveFlightAndAttitude() {
         movementSync.setGliding(true);
         movementSync.onGround.set(false);

@@ -10,7 +10,6 @@ import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.Serv
 import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundMovePlayerPosRotPacket;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundMovePlayerRotPacket;
 import org.joml.Vector3d;
-import org.joml.Vector3i;
 import xin.bbtt.MovementSync;
 import xin.bbtt.mcbot.Bot;
 import xin.bbtt.mcbot.Server;
@@ -33,6 +32,7 @@ public class updateMotionTask implements Runnable {
     float lastYaw = 0;
     boolean lastHorizontalCollision = false;
     boolean lastOnGround;
+    private int ticksSincePositionPacket;
 
     public void syncPositionToServer(
             boolean horizontalCollision, boolean positionChanged, boolean rotationChanged) {
@@ -115,6 +115,9 @@ public class updateMotionTask implements Runnable {
         synchronized (MovementSync.INSTANCE) {
             try {
                 tick();
+            } catch (RuntimeException error) {
+                // scheduleAtFixedRate silently cancels a task that throws; keep ticking.
+                MovementSync.getLogger().error("Physics tick failed", error);
             } finally {
                 // Close the same atomic packet batch, including on failure.
                 Bot.INSTANCE.getSession().send(
@@ -153,8 +156,6 @@ public class updateMotionTask implements Runnable {
         }
 
         Vector3d position = new Vector3d(MovementSync.INSTANCE.position.get());
-        Vector3i currentChunk = MovementSync.INSTANCE.getWorld().getChunk(position);
-        if (!MovementSync.INSTANCE.getWorld().chunkLoaded(currentChunk.x, currentChunk.z)) return;
 
         PlayerInput input = MovementSync.INSTANCE.snapshotInput();
         float tickYaw = MovementSync.INSTANCE.yaw.get();
@@ -245,7 +246,10 @@ public class updateMotionTask implements Runnable {
         MovementSync.INSTANCE.applyPersistentGazeIfIdle();
 
         boolean horizontalCollision = collidedX || collidedZ;
-        boolean positionChanged = !lastPos.equals(position);
+        // ClientPlayerEntity.sendMovementPackets repeats the position every 20 ticks while
+        // standing still; servers and anti-cheats use it to resolve pending corrections.
+        boolean positionChanged = !lastPos.equals(position) || ++ticksSincePositionPacket >= 20;
+        if (positionChanged) ticksSincePositionPacket = 0;
         // Report the rotation used for acceleration, not concurrent next-tick steering.
         float packetYaw = tickYaw;
         float packetPitch = tickPitch;

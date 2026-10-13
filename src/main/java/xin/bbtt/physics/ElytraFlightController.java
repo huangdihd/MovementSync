@@ -14,7 +14,7 @@ public final class ElytraFlightController {
     // exceeds limitFallDistance's -0.5 threshold; descend by a shallow glide instead.
     private static final float[] PITCHES = {-55, -30, -10, 0, 10};
 
-    public enum Phase { CLIMB, CRUISE, DESCENT, AVOIDANCE, LANDING, LANDED }
+    public enum Phase { CLIMB, CRUISE, DESCENT, AVOIDANCE, LANDING, FORCED_LANDING, LANDED }
 
     public record Decision(float yaw, float pitch, boolean firework, Phase phase) {}
 
@@ -60,7 +60,7 @@ public final class ElytraFlightController {
                 for (int boost = 0; boost < boostOptions; boost++) {
                     boolean firework = boost == 1;
                     double score = evaluate(world, state, target, radius, desiredAltitude,
-                            candidateYaw, candidatePitch, attached || firework, landing);
+                            candidateYaw, candidatePitch, attached || firework, landing, false);
                     if (!Double.isFinite(score)) continue;
                     score += Math.abs(normalize(candidateYaw - yaw)) * 0.015
                             + Math.abs(candidatePitch - pitch) * 0.01 + (firework ? 6 : 0);
@@ -70,13 +70,27 @@ public final class ElytraFlightController {
                 }
             }
         }
+        // Preserve normal decisions. Only exhausted, unpowered flight may accept
+        // a safe touchdown outside the destination instead of abandoning steering.
+        if (best == null && fireworks == 0 && !attached) {
+            for (float offset : YAW_OFFSETS) {
+                float candidateYaw = yaw + normalize(heading + offset - yaw);
+                for (float candidatePitch : PITCHES) {
+                    double score = evaluate(world, state, target, radius, desiredAltitude,
+                            candidateYaw, candidatePitch, false, false, true);
+                    if (score >= bestScore) continue;
+                    bestScore = score;
+                    best = new Decision(candidateYaw, candidatePitch, false, Phase.FORCED_LANDING);
+                }
+            }
+        }
         if (best == null) throw new IllegalStateException("No collision-free flight trajectory");
         return best;
     }
 
     private static double evaluate(World world, PhysicsState initial, Vector3d target,
             double radius, double cruiseAltitude, float yaw, float pitch,
-            boolean boosted, boolean landing) {
+            boolean boosted, boolean landing, boolean forcedLanding) {
         PhysicsState state = initial;
         GlidingPhysics physics = new GlidingPhysics(yaw, pitch, boosted);
         double score = 0;
@@ -106,6 +120,11 @@ public final class ElytraFlightController {
             }
             if (result.onGround()) {
                 double impact = Math.abs(state.velocity().y) + Math.hypot(state.velocity().x, state.velocity().z);
+                if (forcedLanding) {
+                    return Math.abs(state.velocity().y) <= 0.5
+                            && Math.hypot(state.velocity().x, state.velocity().z) <= 0.8
+                            ? impact * 1000 + distance : Double.POSITIVE_INFINITY;
+                }
                 return landing && distance <= radius && Math.abs(position.y - target.y) <= 0.5
                         && Math.abs(state.velocity().y) <= 0.5
                         && Math.hypot(state.velocity().x, state.velocity().z) <= 0.8
@@ -123,6 +142,7 @@ public final class ElytraFlightController {
                     : Math.abs(position.y - cruiseAltitude) * 0.12;
             state = new PhysicsState(position, result.velocity(), false);
         }
+        if (forcedLanding) return Double.POSITIVE_INFINITY;
         Vector3d position = state.position();
         if (!landing) return score + horizontalDistance(position, target) * 3;
         return score + horizontalDistance(position, target) * 4

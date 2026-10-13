@@ -112,9 +112,14 @@ public final class WalkingPhysics implements PhysicsStepper {
 
         // Ground contact cancels downward movement, not next tick's gravity.
         // Retain the falling velocity so leaving an edge does not hover for a tick.
-        velocity.y = Math.max(
-            (velocity.y + gravitationalAcceleration.y) * MovementSync.verticalDrag,
-            terminalVelocity);
+        // LivingEntity.travelMidAir: missing client chunks replace gravity, after movement.
+        if (world.chunkLoaded((int) Math.floor(position.x) >> 4, (int) Math.floor(position.z) >> 4)) {
+            velocity.y = Math.max(
+                (velocity.y + gravitationalAcceleration.y) * MovementSync.verticalDrag,
+                terminalVelocity);
+        } else {
+            velocity.y = (position.y > World.getMinWorldY() ? -0.1 : 0) * MovementSync.verticalDrag;
+        }
         double horizontalDrag = groundedAtTickStart ? BLOCK_FRICTION * 0.91 : 0.91;
         velocity.x *= horizontalDrag;
         velocity.z *= horizontalDrag;
