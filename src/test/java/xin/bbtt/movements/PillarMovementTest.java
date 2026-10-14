@@ -92,8 +92,8 @@ final class PillarMovementTest {
             movementSync.onGround.set(result.onGround());
             assertFalse(movementSync.onGround.get());
             if (tick == 0) {
-                assertEquals(64.42, result.position().y, 1.0e-9);
-                assertEquals((0.42 - 0.08) * 0.9800000190734863D, result.velocity().y, 1.0e-9);
+                assertEquals(64 + (double) 0.42F, result.position().y, 1.0e-9);
+                assertEquals(((double) 0.42F - 0.08) * 0.9800000190734863D, result.velocity().y, 1.0e-9);
             }
             movement.onTick();
             if (tick < 2) {

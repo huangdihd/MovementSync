@@ -347,13 +347,32 @@ public class PathMovement extends Movement {
         double horizontalTolerance = isLastNode ? 0.3 : 0.35;
         double verticalTolerance = xin.bbtt.pathfinding.EnvironmentalTraversal.isEnvironmental(
                 path.get(currentIndex).getType()) ? 0.18 : 0.5;
-        return dx < horizontalTolerance && dz < horizontalTolerance && dy < verticalTolerance;
+        boolean settled = !isLastNode || groundSlipperiness(currentPos) <= 0.6
+                || Math.hypot(MovementSync.INSTANCE.velocity.get().x,
+                    MovementSync.INSTANCE.velocity.get().z) < 0.025;
+        return settled && dx < horizontalTolerance && dz < horizontalTolerance && dy < verticalTolerance;
+    }
+
+    private double groundSlipperiness(Vector3d position) {
+        var support = MovementSync.INSTANCE.getWorld().getBlockStateAt(
+                new Vector3d(position.x, position.y - 0.500001, position.z));
+        return xin.bbtt.physics.BlockMovementProperties.of(support).slipperiness();
     }
 
     private void applyPreciseMovement(Vector3d currentPos, Vector3d targetPos,
             boolean isGapJump, boolean isJumpEdge) {
-        // Keep the preview's controller in charge for the entire jump, including
-        // coasting over the target centre before touchdown.
+        if (currentIndex == path.size() - 1 && !MovementSync.INSTANCE.isRiding()
+                && MovementSync.INSTANCE.onGround.get() && groundSlipperiness(currentPos) > 0.6
+                && Math.abs(targetPos.y - currentPos.y) < 0.5) {
+            var command = JumpInputController.groundArrival(currentPos, targetPos,
+                    MovementSync.INSTANCE.velocity.get(), groundSlipperiness(currentPos));
+            MovementSync.INSTANCE.setYawToward(command.yaw());
+            issuedInput = command.input();
+            MovementSync.INSTANCE.setInput(issuedInput);
+            return;
+        }
+        // Keep the preview's controller in charge until touchdown; slippery
+        // final landings then use the same ground-arrival brake as walking.
         if (isJumpEdge && !MovementSync.INSTANCE.isRiding()) {
             applyJumpInput(currentPos, targetPos, isGapJump);
             return;
@@ -579,7 +598,13 @@ public class PathMovement extends Movement {
 
     private boolean isPathDeviated(Vector3d currentPos, Node targetNode) {
         if (MovementSync.INSTANCE.isRiding()) return false;
-        if (currentPos.y >= targetNode.y - 1.2) return false;
+        double expectedFloor = targetNode.y;
+        if (currentIndex > 0 && path.get(currentIndex).getType() == BuiltinMovementType.JUMP) {
+            // A planned boosted ascent starts below its landing node; deviation is
+            // measured against the takeoff floor, not the old vanilla jump height.
+            expectedFloor = Math.min(expectedFloor, path.get(currentIndex - 1).getNode().y);
+        }
+        if (currentPos.y >= expectedFloor - 1.2) return false;
         finishPath();
         return true;
     }

@@ -40,6 +40,14 @@ public class MovementSync implements Plugin {
     private static final Logger logger = LoggerFactory.getLogger(MovementSync.class.getSimpleName());
     public static MovementSync INSTANCE;
 
+    @Getter
+    private final xin.bbtt.physics.MovementParameterState movementParameterState =
+            new xin.bbtt.physics.MovementParameterState();
+
+    public xin.bbtt.physics.MovementParameters getMovementParameters() {
+        return movementParameterState.snapshot();
+    }
+
     public int entityId = -1;
     public AtomicReference<Vector3d> position = new AtomicReference<>(new Vector3d(0, 0, 0));
     public AtomicReference<Vector3d> velocity = new AtomicReference<>(new Vector3d(0, 0, 0));
@@ -85,6 +93,7 @@ public class MovementSync implements Plugin {
     public static final double jumpVelocity = 0.42;
     public static final double verticalDrag = 0.9800000190734863D;
     public AtomicBoolean onGround = new AtomicBoolean(true);
+    public final AtomicReference<Double> fallDistance = new AtomicReference<>(0.0);
     private final AtomicBoolean gliding = new AtomicBoolean();
     private ScheduledExecutorService physicalSimulationService;
     public ScheduledExecutorService movementService;
@@ -150,6 +159,7 @@ public class MovementSync implements Plugin {
     @Override
     public void onEnable() {
         getLogger().info(LangManager.get("movementsync.plugin.enabling"));
+        movementParameterState.reset();
         position.set(new Vector3d(0, 0, 0));
         velocity.set(new Vector3d(0, 0, 0));
         pitch.set(0f);
@@ -160,6 +170,7 @@ public class MovementSync implements Plugin {
         Bot.INSTANCE.addPacketListener(new VelocityPacketListener(), this);
         Bot.INSTANCE.addPacketListener(new LoginPacketListener(), this);
         Bot.INSTANCE.addPacketListener(new EntityIdRecorder(), this);
+        Bot.INSTANCE.addPacketListener(new MovementParametersPacketListener(), this);
         Bot.INSTANCE.addPacketListener(new RespawnPacketListener(), this);
         Bot.INSTANCE.addPacketListener(new ChunkDataListener(), this);
         Bot.INSTANCE.addPacketListener(new RegistryDataListener(), this);
@@ -176,6 +187,7 @@ public class MovementSync implements Plugin {
     @Override
     public void onDisable() {
         getLogger().info(LangManager.get("movementsync.plugin.disabling"));
+        movementParameterState.reset();
         physicalSimulationService.shutdown();
         movementService.shutdown();
     }

@@ -10,7 +10,7 @@ import xin.bbtt.world.World;
 
 final class WalkingPhysicsTest {
     private static final double PLAYER_HALF_WIDTH = (double) 0.6f / 2;
-    private static final double GROUND_ACCELERATION = 0.098 * 0.21600002 / (0.6 * 0.6 * 0.6);
+    private static final double GROUND_ACCELERATION = ((double) 0.1F * 0.98) * 0.21600002 / (0.6 * 0.6 * 0.6);
     private static final double GROUND_DRAG = 0.6 * 0.91;
     private static final World EMPTY_WORLD = new World() {
             @Override public boolean chunkLoaded(int chunkX, int chunkZ) { return true; }
@@ -148,7 +148,7 @@ final class WalkingPhysicsTest {
             for (boolean sneak : new boolean[]{false, true}) {
                 for (boolean sprint : new boolean[]{false, true}) {
                     double acceleration = onGround
-                        ? GROUND_ACCELERATION / 0.98 * (sprint ? 1.3 : 1)
+                        ? GROUND_ACCELERATION / 0.98 * (sprint ? 1 + (double) 0.3F : 1)
                         : (sprint ? 0.026 : 0.02);
                     double expectedAxis = acceleration * (sneak ? 0.294 : 1 / Math.sqrt(2));
                     double drag = onGround ? GROUND_DRAG : 0.91;
@@ -176,7 +176,7 @@ final class WalkingPhysicsTest {
         PhysicsResult sprint = new WalkingPhysics(input(true, false, false, false, true), 0)
             .step(EMPTY_WORLD, state, PLAYER_HALF_WIDTH, 1.8);
         assertEquals(GROUND_ACCELERATION * 0.3, sneak.position().z, 1.0e-12);
-        assertEquals(GROUND_ACCELERATION * 1.3, sprint.position().z, 1.0e-12);
+        assertEquals(GROUND_ACCELERATION * (1 + (double) 0.3F), sprint.position().z, 1.0e-12);
     }
 
     @Test
@@ -184,19 +184,19 @@ final class WalkingPhysicsTest {
         PlayerInput input = input(true, false, true, false, true);
         PhysicsState state = state(new Vector3d(), true);
         PhysicsResult jump = new WalkingPhysics(input, 90).step(EMPTY_WORLD, state, PLAYER_HALF_WIDTH, 1.8);
-        assertEquals(0.42, jump.position().y);
-        assertEquals(-(0.2 + GROUND_ACCELERATION * 1.3), jump.position().x, 1.0e-12);
+        assertEquals((double) 0.42F, jump.position().y);
+        assertEquals(-(0.2 + GROUND_ACCELERATION * (1 + (double) 0.3F)), jump.position().x, 1.0e-12);
         assertEquals(jump.position().x * GROUND_DRAG, jump.velocity().x, 1.0e-12);
-        assertEquals((0.42 - 0.08) * 0.9800000190734863D, jump.velocity().y);
+        assertEquals(((double) 0.42F - 0.08) * 0.9800000190734863D, jump.velocity().y);
         PhysicsResult blocked = new WalkingPhysics(input, 90, false).step(EMPTY_WORLD, state, PLAYER_HALF_WIDTH, 1.8);
         assertEquals(0, blocked.position().y);
-        assertEquals(-GROUND_ACCELERATION * 1.3, blocked.position().x, 1.0e-12);
+        assertEquals(-GROUND_ACCELERATION * (1 + (double) 0.3F), blocked.position().x, 1.0e-12);
         PhysicsResult airborne = new WalkingPhysics(input, 90).step(EMPTY_WORLD, state(new Vector3d(), false), PLAYER_HALF_WIDTH, 1.8);
         assertEquals(0, airborne.position().y);
         assertEquals(-0.026 * 0.98, airborne.position().x, 1.0e-12);
         PhysicsResult standing = new WalkingPhysics(input(false, false, true, false, false), 0)
             .step(EMPTY_WORLD, state, PLAYER_HALF_WIDTH, 1.8);
-        assertEquals(new Vector3d(0, 0.42, 0), standing.position());
+        assertEquals(new Vector3d(0, (double) 0.42F, 0), standing.position());
     }
 
     @Test

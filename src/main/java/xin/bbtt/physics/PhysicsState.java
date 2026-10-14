@@ -3,7 +3,11 @@ package xin.bbtt.physics;
 import org.joml.Vector3d;
 
 /** Tick-start state; mutable vectors are copied on both input and output. */
-public record PhysicsState(Vector3d position, Vector3d velocity, boolean onGround) {
+public record PhysicsState(Vector3d position, Vector3d velocity, boolean onGround, double fallDistance) {
+    public PhysicsState(Vector3d position, Vector3d velocity, boolean onGround) {
+        this(position, velocity, onGround, 0);
+    }
+
     public PhysicsState {
         position = new Vector3d(position);
         velocity = new Vector3d(velocity);

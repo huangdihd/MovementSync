@@ -102,24 +102,26 @@ public final class EnvironmentalTraversal {
         Optional<Vector3d> end = destination(world, target);
         if (start.isEmpty() || end.isEmpty()) return false;
         PhysicsState state = new PhysicsState(start.get(), new Vector3d(), world.isOnGround(start.get()));
+        var parameters = StandablePositionResolver.movementParameters();
         for (int tick = 0; tick < 100; tick++) {
             Command command = toward(world, state.position(), end.get(), state.velocity(), state.onGround());
-            PhysicsResult result = new WalkingPhysics(command.input(), command.yaw())
+            PhysicsResult result = new WalkingPhysics(command.input(), command.yaw(), true, parameters)
                     .step(world, state, HALF_WIDTH, HEIGHT);
             Vector3d position = result.position();
             if (!world.chunkLoaded((int) Math.floor(position.x) >> 4, (int) Math.floor(position.z) >> 4)) return false;
-            if (EnvironmentalPhysics.sample(world, position, HALF_WIDTH, HEIGHT).lavaHeight() > 0) return false;
+            if (!TraversalSafety.isSafeSegment(world, state.position(), position)) return false;
             if (Math.abs(position.x - end.get().x) < 0.25
                     && Math.abs(position.z - end.get().z) < 0.25
                     && Math.abs(position.y - end.get().y) < 0.18) return true;
             if (position.y < Math.min(start.get().y, end.get().y) - 1.5) return false;
-            state = new PhysicsState(position, result.velocity(), result.onGround());
+            state = new PhysicsState(position, result.velocity(), result.onGround(), result.fallDistance());
         }
         return false;
     }
 
     private static boolean clear(World world, Vector3d position) {
-        return !world.isBoxColliding(position.x - HALF_WIDTH, position.y + 1.0e-7,
+        return TraversalSafety.isSafe(world, position)
+                && !world.isBoxColliding(position.x - HALF_WIDTH, position.y + 1.0e-7,
                 position.z - HALF_WIDTH, position.x + HALF_WIDTH, position.y + HEIGHT,
                 position.z + HALF_WIDTH);
     }

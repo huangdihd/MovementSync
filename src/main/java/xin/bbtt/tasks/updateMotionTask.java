@@ -158,6 +158,11 @@ public class updateMotionTask implements Runnable {
         Vector3d position = new Vector3d(MovementSync.INSTANCE.position.get());
 
         PlayerInput input = MovementSync.INSTANCE.snapshotInput();
+        xin.bbtt.physics.MovementParameters parameters = MovementSync.INSTANCE.getMovementParameters();
+        if (input.sprint() && !parameters.canSprint()) {
+            input = new PlayerInput(input.forward(), input.backward(), input.left(), input.right(),
+                    input.jump(), input.sneak(), false);
+        }
         // Never start swimming: normalize the request before both input/action packets
         // and travel, rather than predicting a standing body with a sprinting server state.
         BodyDimensions inputDimensions = getBodyDimensions();
@@ -230,12 +235,15 @@ public class updateMotionTask implements Runnable {
         }
         PhysicsStepper physics = gliding
                 ? new GlidingPhysics(tickYaw, tickPitch,
-                        MovementSync.INSTANCE.hasAttachedFirework())
-                : new WalkingPhysics(input, tickYaw, jumpAllowed);
+                        MovementSync.INSTANCE.hasAttachedFirework(), parameters.gravity(), parameters.slowFalling())
+                : new WalkingPhysics(input, tickYaw, jumpAllowed, parameters);
         PhysicsResult result = physics.step(
             MovementSync.INSTANCE.getWorld(),
-            new PhysicsState(position, velocity, MovementSync.INSTANCE.onGround.get()),
+            new PhysicsState(position, velocity, MovementSync.INSTANCE.onGround.get(),
+                    parameters.slowFalling() || parameters.levitationAmplifier() >= 0
+                            ? 0 : MovementSync.INSTANCE.fallDistance.get()),
             dimensions.halfWidth(), dimensions.height());
+        MovementSync.INSTANCE.fallDistance.set(result.fallDistance());
         position = result.position();
         velocity = result.velocity();
         boolean collidedX = result.collidedX();

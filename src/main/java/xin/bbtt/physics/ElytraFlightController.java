@@ -7,6 +7,17 @@ import xin.bbtt.world.World;
 /** Stateless, bounded trajectory steering. The caller owns rocket lifetime and flight lifecycle. */
 public final class ElytraFlightController {
     private static final int HORIZON = 24;
+    private final double gravity;
+    private final boolean slowFalling;
+
+    public ElytraFlightController() {
+        this(0.08, false);
+    }
+
+    public ElytraFlightController(double gravity, boolean slowFalling) {
+        this.gravity = gravity;
+        this.slowFalling = slowFalling;
+    }
     private static final double HALF_WIDTH = 0.299;
     private static final double HEIGHT = 0.6;
     private static final float[] YAW_OFFSETS = {0, -30, 30, -60, 60, -100, 100, 180};
@@ -88,11 +99,11 @@ public final class ElytraFlightController {
         return best;
     }
 
-    private static double evaluate(World world, PhysicsState initial, Vector3d target,
+    private double evaluate(World world, PhysicsState initial, Vector3d target,
             double radius, double cruiseAltitude, float yaw, float pitch,
             boolean boosted, boolean landing, boolean forcedLanding) {
         PhysicsState state = initial;
-        GlidingPhysics physics = new GlidingPhysics(yaw, pitch, boosted);
+        GlidingPhysics physics = new GlidingPhysics(yaw, pitch, boosted, gravity, slowFalling);
         double score = 0;
         for (int tick = 0; tick < HORIZON; tick++) {
             PhysicsResult result = physics.step(world, state, HALF_WIDTH, HEIGHT);
@@ -140,7 +151,7 @@ public final class ElytraFlightController {
                     position.z + HALF_WIDTH + 1)) score += 100;
             score += landing ? (distance + Math.abs(position.y - target.y) * 1.5) / HORIZON
                     : Math.abs(position.y - cruiseAltitude) * 0.12;
-            state = new PhysicsState(position, result.velocity(), false);
+            state = new PhysicsState(position, result.velocity(), false, result.fallDistance());
         }
         if (forcedLanding) return Double.POSITIVE_INFINITY;
         Vector3d position = state.position();

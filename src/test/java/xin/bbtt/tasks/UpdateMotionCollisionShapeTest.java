@@ -123,6 +123,35 @@ final class UpdateMotionCollisionShapeTest {
         worldField.set(movementSync, world);
     }
 
+    @Test
+    void powderSnowFallDistanceSurvivesLiveTaskTicks() throws Exception {
+        int snow = -1;
+        for (int id = 0; id < xin.bbtt.Block.BlockStateParser.getBlockStateRegistrySize(); id++) {
+            if (xin.bbtt.Block.BlockStateParser.Instance.parseStateId(id).blockName().equals("powder_snow")) {
+                snow = id;
+                break;
+            }
+        }
+        assertTrue(snow >= 0);
+        final int powderSnow = snow;
+        useTerrain(position -> Math.floor(position.x) == 0 && Math.floor(position.y) == -59
+                && Math.floor(position.z) == 0 ? powderSnow : AIR);
+        movementSync.position.set(new Vector3d(0.5, -55, 0.5));
+        movementSync.velocity.set(new Vector3d());
+        movementSync.onGround.set(false);
+        for (int tick = 0; tick < 30; tick++) {
+            task.run();
+            if (!movementSync.onGround.get()) continue;
+            assertEquals(-59 + (double) 0.9F, movementSync.position.get().y);
+            assertEquals(0.0, movementSync.fallDistance.get());
+            task.run();
+            assertFalse(movementSync.onGround.get());
+            assertTrue(movementSync.position.get().y < -59 + (double) 0.9F);
+            return;
+        }
+        throw new AssertionError("Live motion task lost accumulated fall distance before snow impact");
+    }
+
     private boolean collides(Vector3d feetPosition) throws Exception {
         return (boolean) isPlayerBoxColliding.invoke(task, feetPosition);
     }
@@ -213,7 +242,7 @@ final class UpdateMotionCollisionShapeTest {
         useTerrain(position -> Math.floor(position.y) == 0 ? STONE : AIR);
         movementSync.jump();
         double height = 1;
-        double speed = 0.42;
+        double speed = (double) 0.42F;
         for (int tick = 0; tick < 12; tick++) {
             height += speed;
             speed = (speed - 0.08) * 0.9800000190734863D;
@@ -474,7 +503,7 @@ final class UpdateMotionCollisionShapeTest {
                 assertEquals(expected.velocity().y, movementSync.velocity.get().y, 1.0e-9, message + " velocity y");
                 assertEquals(expected.velocity().z, movementSync.velocity.get().z, 1.0e-9, message + " velocity z");
                 assertEquals(expected.onGround(), movementSync.onGround.get(), message + " grounded");
-                if (tick == 0) assertEquals(0.42, expected.position().y - source.y, 1.0e-9);
+                if (tick == 0) assertEquals((double) 0.42F, expected.position().y - source.y, 1.0e-9);
                 maximumRise = Math.max(maximumRise, expected.position().y - source.y);
                 assertEquals(tick == previewResults.size() - 1, expected.onGround(),
                         message + " preview must run through landing");
@@ -512,9 +541,9 @@ final class UpdateMotionCollisionShapeTest {
 
         task.run();
 
-        assertEquals(0.42, movementSync.position.get().y, 1.0e-9,
+        assertEquals((double) 0.42F, movementSync.position.get().y, 1.0e-9,
             "the jump impulse must be used for the first client tick");
-        assertEquals((0.42 - 0.08) * MovementSync.verticalDrag,
+        assertEquals(((double) 0.42F - 0.08) * MovementSync.verticalDrag,
             movementSync.velocity.get().y, 1.0e-9,
             "gravity and drag must be retained for the following tick");
     }

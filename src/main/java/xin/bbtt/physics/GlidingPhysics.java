@@ -19,11 +19,19 @@ public final class GlidingPhysics implements PhysicsStepper {
     private final float yaw;
     private final float pitch;
     private final boolean firework;
+    private final double gravity;
+    private final boolean slowFalling;
 
     public GlidingPhysics(float yaw, float pitch, boolean firework) {
+        this(yaw, pitch, firework, 0.08, false);
+    }
+
+    public GlidingPhysics(float yaw, float pitch, boolean firework, double gravity, boolean slowFalling) {
         this.yaw = yaw;
         this.pitch = pitch;
         this.firework = firework;
+        this.gravity = gravity;
+        this.slowFalling = slowFalling;
     }
 
     private static float sin(float angle) {
@@ -56,7 +64,9 @@ public final class GlidingPhysics implements PhysicsStepper {
         double pitchCosine = Math.cos(pitchRadians);
         double lift = pitchCosine * pitchCosine;
 
-        velocity.y += 0.08 * (-1.0 + lift * 0.75);
+        // LivingEntity.calcGlidingVelocity uses getEffectiveGravity, including slow falling.
+        double effectiveGravity = slowFalling && velocity.y <= 0 ? Math.min(gravity, 0.01) : gravity;
+        velocity.y += effectiveGravity * (-1.0 + lift * 0.75);
         if (velocity.y < 0 && lookHorizontal > 0) {
             double amount = velocity.y * -0.1 * lift;
             velocity.add(look.x * amount / lookHorizontal, amount, look.z * amount / lookHorizontal);
@@ -72,6 +82,9 @@ public final class GlidingPhysics implements PhysicsStepper {
         }
         velocity.mul((double) 0.99f, (double) 0.98f, (double) 0.99f);
 
+        double fallDistance = slowFalling ? 0 : state.fallDistance();
+        // Gliding limits accumulated fall damage while descending slowly.
+        if (state.velocity().y > -0.5 && fallDistance > 1) fallDistance = 1;
         boolean collidedX = false;
         boolean collidedZ = false;
         if (velocity.x != 0) {
@@ -95,7 +108,7 @@ public final class GlidingPhysics implements PhysicsStepper {
         boolean onGround = false;
         if (velocity.y < 0) {
             double desiredY = position.y + velocity.y;
-            double resolvedY = VerticalCollisionResolver.resolveDownwardY(world, position, halfWidth, velocity.y);
+            double resolvedY = VerticalCollisionResolver.resolveDownwardY(world, position, halfWidth, velocity.y, fallDistance);
             // Include exact contact, not just motion clipped short of the destination.
             onGround = resolvedY > desiredY + 1.0e-9
                     || world.findHighestCollisionTop(position.x - halfWidth, desiredY - 1.0e-9,
@@ -119,7 +132,8 @@ public final class GlidingPhysics implements PhysicsStepper {
                     look.y * 0.1 + (look.y * 1.5 - velocity.y) * 0.5,
                     look.z * 0.1 + (look.z * 1.5 - velocity.z) * 0.5);
         }
-        return new PhysicsResult(position, velocity, collidedX, collidedZ, onGround);
+        fallDistance = onGround ? 0 : fallDistance + Math.max(0, state.position().y - position.y);
+        return new PhysicsResult(position, velocity, collidedX, collidedZ, onGround, fallDistance);
     }
 
     private static boolean collides(World world, Vector3d position, double halfWidth, double height) {

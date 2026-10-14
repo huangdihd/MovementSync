@@ -5,7 +5,6 @@ import xin.bbtt.MovementSync;
 import xin.bbtt.tasks.VerticalCollisionResolver;
 import xin.bbtt.world.World;
 
-import static xin.bbtt.MovementSync.gravitationalAcceleration;
 import static xin.bbtt.MovementSync.terminalVelocity;
 
 public final class WalkingPhysics implements PhysicsStepper {
@@ -14,11 +13,10 @@ public final class WalkingPhysics implements PhysicsStepper {
         xin.bbtt.pathfinding.StandablePositionResolver.MAX_STEP_RISE;
     private static final double STEP_EPSILON = 1.0e-7;
     private static final double MIN_MOVEMENT = 0.003;
-    // BlockEntry/BlockState currently expose no friction; use vanilla's default.
-    private static final double BLOCK_FRICTION = 0.6;
     private final PlayerInput input;
     private final float yaw;
     private final boolean jumpAllowed;
+    private final MovementParameters parameters;
 
     public WalkingPhysics() {
         this(PlayerInput.NONE, 0, true);
@@ -29,6 +27,11 @@ public final class WalkingPhysics implements PhysicsStepper {
     }
 
     public WalkingPhysics(PlayerInput input, float yaw, boolean jumpAllowed) {
+        this(input, yaw, jumpAllowed, MovementParameters.DEFAULT);
+    }
+
+    public WalkingPhysics(PlayerInput input, float yaw, boolean jumpAllowed, MovementParameters parameters) {
+        this.parameters = java.util.Objects.requireNonNull(parameters, "parameters");
         this.input = java.util.Objects.requireNonNull(input, "input");
         this.yaw = yaw;
         this.jumpAllowed = jumpAllowed;
@@ -38,8 +41,10 @@ public final class WalkingPhysics implements PhysicsStepper {
     public PhysicsResult step(World world, PhysicsState state, double halfWidth, double height) {
         Vector3d position = state.position();
         Vector3d velocity = state.velocity();
+        double fallDistance = parameters.slowFalling() || parameters.levitationAmplifier() >= 0 ? 0 : state.fallDistance();
         Vector3d displacement = new Vector3d();
         EnvironmentalPhysics.Environment environment = EnvironmentalPhysics.sample(world, position, halfWidth, height);
+        double slipperiness = EnvironmentalPhysics.supportProperties(world, position).slipperiness();
         boolean water = environment.waterHeight() > 0;
         boolean lava = !water && environment.lavaHeight() > 0;
         boolean fluid = water || lava;
@@ -60,14 +65,15 @@ public final class WalkingPhysics implements PhysicsStepper {
         boolean swimJump = fluid && (!groundedAtTickStart || fluidDepth > 0.4);
         if (input.jump() && swimJump) velocity.y += (double) 0.04f;
         if (groundedAtTickStart && input.jump() && jumpAllowed && !swimJump) {
-            velocity.y = MovementSync.jumpVelocity;
+            velocity.y = parameters.jumpVelocity(EnvironmentalPhysics.jumpMultiplier(world, position));
             if (input.sprint() && !fluid) {
                 velocity.x -= Math.sin(yawRadians) * 0.2;
                 velocity.z += Math.cos(yawRadians) * 0.2;
             }
         }
-        accelerate(velocity, groundedAtTickStart, yawRadians, fluid);
+        accelerate(velocity, groundedAtTickStart, yawRadians, fluid, slipperiness);
         if (!fluid && environment.climbing()) {
+            fallDistance = 0;
             velocity.x = Math.max(-(double) 0.15f, Math.min((double) 0.15f, velocity.x));
             velocity.z = Math.max(-(double) 0.15f, Math.min((double) 0.15f, velocity.z));
             velocity.y = Math.max(-(double) 0.15f, velocity.y);
@@ -84,6 +90,12 @@ public final class WalkingPhysics implements PhysicsStepper {
         displacement.x = velocity.x;
         displacement.z = velocity.z;
         displacement.y = velocity.y;
+        Vector3d stuckMultiplier = EnvironmentalPhysics.stuckMultiplier(world, position, halfWidth, height);
+        if (stuckMultiplier.x != 1 || stuckMultiplier.y != 1 || stuckMultiplier.z != 1) {
+            fallDistance = 0;
+            displacement.mul(stuckMultiplier);
+            velocity.zero();
+        }
 
         if (input.sneak() && groundedAtTickStart && displacement.y <= 0) {
             protectSneakingEdge(world, position, displacement, halfWidth, height);
@@ -95,10 +107,13 @@ public final class WalkingPhysics implements PhysicsStepper {
         if (displacement.y < 0) {
             double desiredY = position.y + displacement.y;
             double resolvedY = VerticalCollisionResolver.resolveDownwardY(
-                    world, position, halfWidth, displacement.y);
+                    world, position, halfWidth, displacement.y, fallDistance);
             downwardCollision = resolvedY > desiredY + 1.0e-9;
             position.y = resolvedY;
-            if (downwardCollision) velocity.y = 0;
+            if (downwardCollision) {
+                double bounce = EnvironmentalPhysics.landingProperties(world, position).bounce();
+                velocity.y = input.sneak() ? 0 : -velocity.y * bounce;
+            }
             displacement.y = 0;
         }
 
@@ -126,20 +141,35 @@ public final class WalkingPhysics implements PhysicsStepper {
                 2, displacement.z, canStep, tickStartY);
         }
 
+        fallDistance = downwardCollision ? 0 : fallDistance + Math.max(0, tickStartY - position.y);
+        // makeStuckInBlock resets accumulated fall distance at the contact callback.
+        Vector3d contactMultiplier = EnvironmentalPhysics.stuckMultiplier(world, position, halfWidth, height);
+        if (contactMultiplier.x != 1 || contactMultiplier.y != 1 || contactMultiplier.z != 1
+                || water) fallDistance = 0;
+
         boolean climbingAfterMove = EnvironmentalPhysics.sample(world, position, halfWidth, height).climbing();
+        double velocityMultiplier = EnvironmentalPhysics.velocityMultiplier(world, position);
+        velocity.x *= velocityMultiplier;
+        velocity.z *= velocityMultiplier;
+        BlockMovementProperties landing = EnvironmentalPhysics.landingProperties(world, position);
+        if (downwardCollision && landing.stickyStepping() && !input.sneak() && Math.abs(velocity.y) < 0.1) {
+            double scale = 0.4 + Math.abs(velocity.y) * 0.2;
+            velocity.x *= scale;
+            velocity.z *= scale;
+        }
         if (fluid) {
             if (water) {
                 if ((collidedX || collidedZ) && climbingAfterMove) velocity.y = 0.2;
                 velocity.mul((double) 0.8f);
-                velocity.y = fluidGravity(velocity.y);
+                velocity.y = fluidGravity(velocity.y, parameters.effectiveGravity(state.velocity().y), state.velocity().y <= 0);
             } else {
                 if (environment.lavaHeight() <= 0.4) {
                     velocity.mul(0.5, (double) 0.8f, 0.5);
-                    velocity.y = fluidGravity(velocity.y);
+                    velocity.y = fluidGravity(velocity.y, parameters.effectiveGravity(state.velocity().y), state.velocity().y <= 0);
                 } else {
                     velocity.mul(0.5);
                 }
-                velocity.y -= 0.02;
+                velocity.y -= parameters.effectiveGravity(state.velocity().y) / 4;
             }
             if (collidedX || collidedZ) {
                 Vector3d exit = new Vector3d(position).add(velocity.x,
@@ -150,29 +180,32 @@ public final class WalkingPhysics implements PhysicsStepper {
                     velocity.y = (double) 0.3f;
                 }
             }
-            return new PhysicsResult(position, velocity, collidedX, collidedZ, downwardCollision);
+            EnvironmentalPhysics.applyContactVelocity(world, position, velocity, halfWidth, height, downwardCollision);
+            return new PhysicsResult(position, velocity, collidedX, collidedZ, downwardCollision, fallDistance);
         }
         if ((collidedX || collidedZ || input.jump()) && climbingAfterMove) velocity.y = 0.2;
 
         // Ground contact cancels downward movement, not next tick's gravity.
         // Retain the falling velocity so leaving an edge does not hover for a tick.
         // LivingEntity.travelMidAir: missing client chunks replace gravity, after movement.
-        if (world.chunkLoaded((int) Math.floor(position.x) >> 4, (int) Math.floor(position.z) >> 4)) {
+        if (parameters.levitationAmplifier() >= 0
+                || world.chunkLoaded((int) Math.floor(position.x) >> 4, (int) Math.floor(position.z) >> 4)) {
             velocity.y = Math.max(
-                (velocity.y + gravitationalAcceleration.y) * MovementSync.verticalDrag,
+                parameters.verticalVelocityAfterForces(velocity.y) * MovementSync.verticalDrag,
                 terminalVelocity);
         } else {
             velocity.y = (position.y > World.getMinWorldY() ? -0.1 : 0) * MovementSync.verticalDrag;
         }
-        double horizontalDrag = groundedAtTickStart ? BLOCK_FRICTION * 0.91 : 0.91;
+        double horizontalDrag = groundedAtTickStart ? slipperiness * 0.91 : 0.91;
         velocity.x *= horizontalDrag;
         velocity.z *= horizontalDrag;
+        EnvironmentalPhysics.applyContactVelocity(world, position, velocity, halfWidth, height, downwardCollision);
         return new PhysicsResult(position, velocity, collidedX, collidedZ,
                 downwardCollision || (state.onGround() && state.velocity().y == 0
-                        && !input.jump() && world.isOnGround(position)));
+                        && !input.jump() && world.isOnGround(position)), fallDistance);
     }
 
-    private static boolean moveHorizontal(
+    private boolean moveHorizontal(
             World world, Vector3d position, Vector3d velocity, double halfWidth, double height,
             int axis, double movement, boolean canStep, double tickStartY) {
         if (movement == 0) return false;
@@ -268,13 +301,15 @@ public final class WalkingPhysics implements PhysicsStepper {
         velocity.add(applied);
     }
 
-    private static double fluidGravity(double verticalVelocity) {
-        // LivingEntity.applyFluidMovingSpeed: with default gravity=0.08,
-        // gravity/16 equals 0.005, so its special falling branch cannot apply.
-        return verticalVelocity - 0.08 / 16;
+    private static double fluidGravity(double verticalVelocity, double gravity, boolean falling) {
+        // LivingEntity.applyFluidMovingSpeed avoids tiny positive motion at low gravity.
+        if (gravity == 0) return verticalVelocity;
+        if (falling && Math.abs(verticalVelocity - 0.005) >= 0.003
+                && Math.abs(verticalVelocity - gravity / 16) < 0.003) return -0.003;
+        return verticalVelocity - gravity / 16;
     }
 
-    private void accelerate(Vector3d velocity, boolean onGround, double yawRadians, boolean fluid) {
+    private void accelerate(Vector3d velocity, boolean onGround, double yawRadians, boolean fluid, double slipperiness) {
         double forward = (input.forward() ? 1 : 0) - (input.backward() ? 1 : 0);
         double strafe = (input.left() ? 1 : 0) - (input.right() ? 1 : 0);
         double length = Math.hypot(forward, strafe);
@@ -284,12 +319,12 @@ public final class WalkingPhysics implements PhysicsStepper {
         strafe /= length;
         // Since 1.21.5, scaled input expands to the unit square, capped at unit length.
         double distanceToUnitSquare = 1 / Math.max(Math.abs(forward), Math.abs(strafe));
-        double keyScale = Math.min(0.98 * (input.sneak() && !fluid ? 0.3 : 1) * distanceToUnitSquare, 1);
+        double keyScale = Math.min(0.98 * (input.sneak() && !fluid ? parameters.sneakingSpeed() : 1) * distanceToUnitSquare, 1);
         forward *= keyScale;
         strafe *= keyScale;
         double acceleration = fluid ? (double) 0.02f : onGround
-            ? 0.1 * (input.sprint() ? 1.3 : 1) * 0.21600002
-                / (BLOCK_FRICTION * BLOCK_FRICTION * BLOCK_FRICTION)
+            ? parameters.movementSpeed(input.sprint()) * 0.21600002
+                / (slipperiness * slipperiness * slipperiness)
             : (input.sprint() ? 0.026 : 0.02);
         double sine = Math.sin(yawRadians);
         double cosine = Math.cos(yawRadians);
@@ -310,7 +345,7 @@ public final class WalkingPhysics implements PhysicsStepper {
      * boxes, so path blocks, slabs, stairs, trapdoors, and directional shapes
      * keep their real heights instead of being treated as whole cubes.
      */
-    private static boolean tryStepUp(
+    private boolean tryStepUp(
             World world, boolean onGround, double halfWidth, double height,
             Vector3d position,
             double candidateX,
@@ -320,7 +355,7 @@ public final class WalkingPhysics implements PhysicsStepper {
 
         java.util.OptionalDouble support = world.findHighestCollisionTop(
             candidateX - PLAYER_HALF_WIDTH, position.y + STEP_EPSILON, candidateZ - PLAYER_HALF_WIDTH,
-            candidateX + PLAYER_HALF_WIDTH, tickStartY + MAX_STEP_HEIGHT, candidateZ + PLAYER_HALF_WIDTH
+            candidateX + PLAYER_HALF_WIDTH, tickStartY + parameters.stepHeight(), candidateZ + PLAYER_HALF_WIDTH
         );
         if (support.isEmpty()) return false;
 

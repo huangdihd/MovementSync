@@ -32,8 +32,8 @@ final class ElytraTakeoffMovementTest extends ElytraCommandTestSupport {
         double startY = movementSync.position.get().y;
         stepPhysics(input);
         assertFalse(movementSync.onGround.get());
-        assertEquals(startY + 0.42, movementSync.position.get().y, 1.0e-9);
-        assertEquals((0.42 - 0.08) * 0.9800000190734863D, movementSync.velocity.get().y, 1.0e-9);
+        assertEquals(startY + (double) 0.42F, movementSync.position.get().y, 1.0e-9);
+        assertEquals(((double) 0.42F - 0.08) * 0.9800000190734863D, movementSync.velocity.get().y, 1.0e-9);
         assertEquals(0.12 * 0.6 * 0.91, movementSync.velocity.get().x, 1.0e-9);
         assertEquals(-0.2 * 0.6 * 0.91, movementSync.velocity.get().z, 1.0e-9);
         movement.onTick();

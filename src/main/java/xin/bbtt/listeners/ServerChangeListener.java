@@ -11,6 +11,7 @@ public class ServerChangeListener implements Listener {
     public void onServerChange(ServerChangeEvent event) {
         MovementSync.INSTANCE.cancelNavigation();
         MovementSync.INSTANCE.clearFlightState();
+        MovementSync.INSTANCE.getMovementParameterState().reset();
         MovementSync.INSTANCE.onGround.set(true);
         MovementSync.INSTANCE.velocity.set(new Vector3d());
         MovementSync.INSTANCE.getWorld().clear();

@@ -72,6 +72,92 @@ public final class EnvironmentalPhysics {
         return new Environment(depths[1], depths[2], pushes[1], pushes[2], climbing, scaffolding);
     }
 
+    public static BlockMovementProperties supportProperties(World world, Vector3d position) {
+        return BlockMovementProperties.of(block(world, floor(position.x),
+                floor(position.y - (double) 0.500001f), floor(position.z)));
+    }
+
+    public static double jumpMultiplier(World world, Vector3d position) {
+        double multiplier = BlockMovementProperties.of(block(world, floor(position.x),
+                floor(position.y), floor(position.z))).jumpMultiplier();
+        return multiplier == 1 ? supportProperties(world, position).jumpMultiplier() : multiplier;
+    }
+
+    public static double velocityMultiplier(World world, Vector3d position) {
+        BlockMovementProperties feet = BlockMovementProperties.of(block(world, floor(position.x),
+                floor(position.y), floor(position.z)));
+        return feet.velocityMultiplier() != 1 || feet.ignoresSupportVelocity()
+                ? feet.velocityMultiplier() : supportProperties(world, position).velocityMultiplier();
+    }
+
+    public static BlockMovementProperties landingProperties(World world, Vector3d position) {
+        return BlockMovementProperties.of(block(world, floor(position.x),
+                floor(position.y - (double) 0.2f), floor(position.z)));
+    }
+
+    /** Sample tick-start contacts without adding mutable block state to the pure stepper. */
+    public static Vector3d stuckMultiplier(World world, Vector3d position, double halfWidth, double height) {
+        Vector3d multiplier = new Vector3d(1);
+        forEachContact(world, position, halfWidth, height, (state, x, y, z) -> {
+            BlockMovementProperties properties = BlockMovementProperties.of(state);
+            if (properties.requiresFeetContact() && !BlockMovementProperties.of(block(world,
+                    floor(position.x), floor(position.y), floor(position.z))).requiresFeetContact()) return;
+            if (properties.stuck()) multiplier.set(properties.stuckHorizontal(),
+                    properties.stuckVertical(), properties.stuckHorizontal());
+        });
+        return multiplier;
+    }
+
+    /** Collision callbacks run after travel drag/gravity, as in LivingEntity.tickMovement. */
+    public static void applyContactVelocity(World world, Vector3d position, Vector3d velocity,
+                                           double halfWidth, double height, boolean onGround) {
+        forEachContact(world, position, halfWidth, height, (state, x, y, z) -> {
+            BlockMovementProperties properties = BlockMovementProperties.of(state);
+            if (properties.honeySliding() && !onGround && position.y <= y + 0.9375 - 1.0e-7
+                    && (Math.abs(x + 0.5 - position.x) + 1.0e-7 > 0.4375 + halfWidth
+                    || Math.abs(z + 0.5 - position.z) + 1.0e-7 > 0.4375 + halfWidth)) {
+                applyHoneySlide(velocity);
+            }
+            if (properties.bubbleColumn()) {
+                BlockState above = block(world, x, y + 1, z);
+                boolean surface = fluid(above).type == 0
+                        && CollisionShapeRegistry.getInstance().boxesFor(above.stateId()).isEmpty();
+                velocity.y = bubbleVelocity(velocity.y, !"false".equals(state.getProperty("drag")), surface);
+            }
+        });
+    }
+
+    static void applyHoneySlide(Vector3d velocity) {
+        double previousY = velocity.y / (double) 0.98f + 0.08;
+        if (previousY >= -0.08) return;
+        if (previousY < -0.13) {
+            double scale = -0.05 / previousY;
+            velocity.x *= scale;
+            velocity.z *= scale;
+        }
+        velocity.y = (-0.05 - 0.08) * (double) 0.98f;
+    }
+
+    static double bubbleVelocity(double velocityY, boolean drag, boolean surface) {
+        if (drag) return Math.max(surface ? -0.9 : -0.3, velocityY - 0.03);
+        return Math.min(surface ? 1.8 : 0.7, velocityY + (surface ? 0.1 : 0.06));
+    }
+
+    private interface ContactConsumer {
+        void accept(BlockState state, int x, int y, int z);
+    }
+
+    private static void forEachContact(World world, Vector3d position, double halfWidth, double height,
+                                       ContactConsumer consumer) {
+        for (int x = floor(position.x - halfWidth + 1.0e-7); x < Math.ceil(position.x + halfWidth - 1.0e-7); x++) {
+            for (int y = floor(position.y + 1.0e-7); y < Math.ceil(position.y + height - 1.0e-7); y++) {
+                for (int z = floor(position.z - halfWidth + 1.0e-7); z < Math.ceil(position.z + halfWidth - 1.0e-7); z++) {
+                    if (world.chunkLoaded(x >> 4, z >> 4)) consumer.accept(block(world, x, y, z), x, y, z);
+                }
+            }
+        }
+    }
+
     private static boolean regionLoaded(World world, Vector3d position, double halfWidth) {
         int minimumX = floor(position.x - halfWidth - 1) >> 4;
         int maximumX = (int) Math.ceil(position.x + halfWidth + 1) >> 4;

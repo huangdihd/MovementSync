@@ -13,7 +13,6 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
     private final double arrivalRadius;
     private final Vector3d target;
     private long generation;
-    private final ElytraFlightController controller = new ElytraFlightController();
     private int takeoffTicks;
     private int flightTicks;
     private int rocketCooldown;
@@ -77,7 +76,7 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
             return;
         }
         airborne = true;
-        PhysicsState state = new PhysicsState(movementSync.position.get(), movementSync.velocity.get(), movementSync.onGround.get());
+        PhysicsState state = new PhysicsState(movementSync.position.get(), movementSync.velocity.get(), movementSync.onGround.get(), movementSync.fallDistance.get());
         if (state.onGround() || !movementSync.isGliding() || ++flightTicks > 12000) {
             movementSync.runIfNavigationRequestCurrent(generation, () -> {
                 if (isFinished()) return;
@@ -89,6 +88,8 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
         if (rocketCooldown > 0) rocketCooldown--;
         ElytraFlightController.Decision decision;
         try {
+            xin.bbtt.physics.MovementParameters parameters = movementSync.getMovementParameters();
+            ElytraFlightController controller = new ElytraFlightController(parameters.gravity(), parameters.slowFalling());
             decision = controller.decide(movementSync.getWorld(), state,
                     movementSync.yaw.get(), movementSync.pitch.get(),
                     movementSync.hasAttachedFirework() || rocketCooldown > 35,

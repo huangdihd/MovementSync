@@ -8,6 +8,18 @@ public final class JumpInputController {
 
     private JumpInputController() {}
 
+    /** Coast toward the resting position on slippery ground; reverse keys only to brake overshoot. */
+    public static Command groundArrival(Vector3d position, Vector3d target, Vector3d velocity,
+            double slipperiness) {
+        double drag = Math.min(0.999, slipperiness * 0.91);
+        double steeringX = target.x - position.x - velocity.x / (1 - drag);
+        double steeringZ = target.z - position.z - velocity.z / (1 - drag);
+        float yaw = (float) Math.toDegrees(Math.atan2(-steeringX, steeringZ));
+        boolean moving = Math.hypot(steeringX, steeringZ) > 0.12;
+        return new Command(new PlayerInput(moving, false, false, false,
+                false, false, false), yaw);
+    }
+
     public static Command toward(
             Vector3d position, Vector3d target, Vector3d velocity,
             boolean grounded, boolean gapJump) {

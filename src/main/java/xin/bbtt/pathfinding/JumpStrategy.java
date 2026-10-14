@@ -1,12 +1,11 @@
 package xin.bbtt.pathfinding;
 
-import org.joml.Vector3d;
 import xin.bbtt.world.World;
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Strategy for jumping up by one block, optionally digging the target cell.
+ * Strategy for jumping onto reachable collision tops, optionally digging the target cell.
  */
 public class JumpStrategy extends AbstractMovementStrategy {
     private final boolean allowDigging;
@@ -42,15 +41,15 @@ public class JumpStrategy extends AbstractMovementStrategy {
                 ));
             }
 
-            Node raisedTarget = new Node(nx, u.y + 1, nz);
-
-            // Can only jump if head space is clear
-            if (world.isPassable(new Vector3d(u.x, u.y + 2, u.z))) {
-                if (isStandable(nx, u.y + 1, nz, world)
+            // Enumerate the snapshot's rise bound, then let production physics prove reachability.
+            int maximumRise = (int) Math.ceil(StandablePositionResolver.maximumJumpRise());
+            for (int rise = 1; rise <= maximumRise; rise++) {
+                Node raisedTarget = new Node(nx, u.y + rise, nz);
+                if (isStandable(nx, raisedTarget.y, nz, world)
                         && StandablePositionResolver.canJump(world, u, raisedTarget)) {
                     edges.add(new Edge(raisedTarget, getEuclideanDistance(u, raisedTarget) + 0.5, BuiltinMovementType.JUMP));
                 } else if (allowDigging
-                        && canDigThrough(nx, u.y + 1, nz, world)
+                        && canDigThrough(nx, raisedTarget.y, nz, world)
                         && StandablePositionResolver.canJumpToSupport(world, u, raisedTarget)) {
                     edges.add(new Edge(raisedTarget, getEuclideanDistance(u, raisedTarget) + 100.5, BuiltinMovementType.DIG));
                 }

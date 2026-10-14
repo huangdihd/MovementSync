@@ -226,6 +226,20 @@ final class PathMovementInputTest {
         }
     }
 
+    @Test
+    void boostedTwoBlockAscentIsNotMistakenForPathDeviation() throws Exception {
+        installWorld(2, 0);
+        movementSync.getMovementParameterState().updateEffect(
+                org.geysermc.mcprotocollib.protocol.data.game.entity.Effect.JUMP_BOOST, 1);
+        Vector3i goal = new Vector3i(1, 3, 0);
+        PathMovement movement = pathTo(goal, BuiltinMovementType.JUMP);
+        movement.onTick();
+        assertTrue(movementSync.getInput().jump());
+        assertFalse(movement.isFinished());
+        runToCompletion(movement, goal);
+        settleAtGoal(goal);
+    }
+
     private PathMovement pathTo(Vector3i goal, BuiltinMovementType type) {
         long generation = movementSync.beginStaticNavigationRequest(goal);
         PathMovement movement = new PathMovement(List.of(

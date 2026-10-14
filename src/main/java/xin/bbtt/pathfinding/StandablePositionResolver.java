@@ -13,6 +13,8 @@ import xin.bbtt.physics.JumpInputController;
 import xin.bbtt.physics.PhysicsResult;
 import xin.bbtt.physics.PhysicsState;
 import xin.bbtt.physics.WalkingPhysics;
+import xin.bbtt.physics.MovementParameters;
+import xin.bbtt.MovementSync;
 import xin.bbtt.world.World;
 
 /** Resolves an integer planner node to an exact collision-supported player feet height. */
@@ -29,18 +31,25 @@ public final class StandablePositionResolver {
 
     /** Query results live only for one synchronous search, never across world updates. */
     static SearchCache beginSearch() {
-        SearchCache cache = new SearchCache(SEARCH_CACHE.get());
+        return beginSearch(MovementSync.INSTANCE == null
+                ? MovementParameters.DEFAULT : MovementSync.INSTANCE.getMovementParameters());
+    }
+
+    static SearchCache beginSearch(MovementParameters parameters) {
+        SearchCache cache = new SearchCache(SEARCH_CACHE.get(), parameters);
         SEARCH_CACHE.set(cache);
         return cache;
     }
 
     static final class SearchCache implements AutoCloseable {
         private final SearchCache previous;
+        private final MovementParameters parameters;
         private final Map<World, Map<Node, OptionalDouble>> feet = new IdentityHashMap<>();
         private final Map<World, Map<Node, OptionalDouble>> supports = new IdentityHashMap<>();
 
-        private SearchCache(SearchCache previous) {
+        private SearchCache(SearchCache previous, MovementParameters parameters) {
             this.previous = previous;
+            this.parameters = java.util.Objects.requireNonNull(parameters);
         }
 
         @Override
@@ -48,6 +57,25 @@ public final class StandablePositionResolver {
             if (previous == null) SEARCH_CACHE.remove();
             else SEARCH_CACHE.set(previous);
         }
+    }
+
+    static MovementParameters movementParameters() {
+        SearchCache cache = SEARCH_CACHE.get();
+        if (cache != null) return cache.parameters;
+        return MovementSync.INSTANCE == null
+                ? MovementParameters.DEFAULT : MovementSync.INSTANCE.getMovementParameters();
+    }
+
+    /** Candidate bound only; actual edges still require a key-driven physics replay. */
+    static double maximumJumpRise() {
+        MovementParameters parameters = movementParameters();
+        double velocity = parameters.jumpVelocity(1);
+        double height = 0;
+        for (int tick = 0; tick < 40 && velocity > 0; tick++) {
+            height += velocity;
+            velocity = parameters.verticalVelocityAfterForces(velocity) * (double) 0.98f;
+        }
+        return height;
     }
 
     public static int nodeY(double feetY) {
@@ -70,7 +98,8 @@ public final class StandablePositionResolver {
         double centerZ = z + 0.5;
         // Liquids have no collision shape, but are not safe ground destinations.
         // Submerged floors belong to surface traversal, and lava is never walkable.
-        if (intersectsFluid(world, new Vector3d(centerX, feetY, centerZ))) {
+        if (intersectsFluid(world, new Vector3d(centerX, feetY, centerZ))
+                || !TraversalSafety.isSafe(world, new Vector3d(centerX, feetY, centerZ))) {
             return OptionalDouble.empty();
         }
         boolean blocked = world.isBoxColliding(
@@ -112,7 +141,10 @@ public final class StandablePositionResolver {
 
     public static boolean canWalk(World world, Node source, Node target) {
         OptionalDouble rise = rise(world, source, target);
-        return rise.isPresent() && rise.getAsDouble() <= MAX_STEP_RISE + EPSILON;
+        return rise.isPresent() && rise.getAsDouble() <= movementParameters().stepHeight() + EPSILON
+                && TraversalSafety.isSafeSegment(world,
+                    new Vector3d(source.x + 0.5, expectedSourceFeetY(world, source).orElseThrow(), source.z + 0.5),
+                    new Vector3d(target.x + 0.5, feetY(world, target.x, target.y, target.z).orElseThrow(), target.z + 0.5));
     }
 
     public static boolean canJump(World world, Node source, Node target) {
@@ -135,7 +167,7 @@ public final class StandablePositionResolver {
         OptionalDouble targetFeetY = feetY(world, target.x, target.y, target.z);
         if (sourceFeetY.isEmpty() || targetFeetY.isEmpty()) return false;
         double rise = targetFeetY.getAsDouble() - sourceFeetY.getAsDouble();
-        return rise <= MAX_JUMP_RISE + EPSILON
+        return rise <= maximumJumpRise() + EPSILON
             && canCompleteJumpTrajectory(
                 world,
                 source,
@@ -151,26 +183,30 @@ public final class StandablePositionResolver {
         OptionalDouble rise = rise(world, source, target);
         if (rise.isEmpty()) return false;
         double drop = -rise.getAsDouble();
-        return drop > EPSILON && drop <= maximumDrop + EPSILON;
+        return drop > EPSILON && drop <= maximumDrop + EPSILON
+                && TraversalSafety.isSafeSegment(world,
+                    new Vector3d(source.x + 0.5, expectedSourceFeetY(world, source).orElseThrow(), source.z + 0.5),
+                    new Vector3d(target.x + 0.5, feetY(world, target.x, target.y, target.z).orElseThrow(), target.z + 0.5));
     }
 
     public static boolean canStepToFeetY(World world, Node source, double targetFeetY) {
-        return canRiseToFeetY(world, source, targetFeetY, MAX_STEP_RISE);
+        return canRiseToFeetY(world, source, targetFeetY, movementParameters().stepHeight());
     }
 
     public static boolean canJumpToFeetY(World world, Node source, double targetFeetY) {
-        return canRiseToFeetY(world, source, targetFeetY, MAX_JUMP_RISE)
+        return canRiseToFeetY(world, source, targetFeetY, maximumJumpRise())
             && hasJumpClearance(world, source, targetFeetY);
     }
 
     public static boolean canWalkToSupport(World world, Node source, Node target) {
-        return canReachSupport(world, source, target, MAX_STEP_RISE);
+        return canReachSupport(world, source, target, movementParameters().stepHeight());
     }
 
     public static boolean canJumpToSupport(World world, Node source, Node target) {
         OptionalDouble targetSupportY = supportY(world, target.x, target.y, target.z);
         return targetSupportY.isPresent()
-            && canReachSupport(world, source, target, MAX_JUMP_RISE)
+            && TraversalSafety.isSafe(world, new Vector3d(target.x + 0.5, targetSupportY.getAsDouble(), target.z + 0.5))
+            && canReachSupport(world, source, target, maximumJumpRise())
             && hasJumpClearance(world, source, targetSupportY.getAsDouble());
     }
 
@@ -193,6 +229,9 @@ public final class StandablePositionResolver {
         OptionalDouble sourceFeetY = expectedSourceFeetY(world, source);
         OptionalDouble targetSupportY = supportY(world, target.x, target.y, target.z);
         return sourceFeetY.isPresent() && targetSupportY.isPresent()
+            && TraversalSafety.isSafeSegment(world,
+                new Vector3d(source.x + 0.5, sourceFeetY.getAsDouble(), source.z + 0.5),
+                new Vector3d(target.x + 0.5, targetSupportY.getAsDouble(), target.z + 0.5))
             && !intersectsFluid(world, new Vector3d(
                 target.x + 0.5, targetSupportY.getAsDouble(), target.z + 0.5))
             && targetSupportY.getAsDouble() - sourceFeetY.getAsDouble()
@@ -260,19 +299,21 @@ public final class StandablePositionResolver {
         Set<Vector3i> exclusions = jumpSourceExclusions(world, source);
         World collisionWorld = exclusions.isEmpty()
                 ? world : new ExcludedBlockCollisionView(world, exclusions);
+        MovementParameters parameters = movementParameters();
         for (int tick = 0; tick < 40; tick++) {
             JumpInputController.Command command = JumpInputController.toward(
                     state.position(), targetPosition, state.velocity(), state.onGround(), gapJump);
-            PhysicsResult result = new WalkingPhysics(command.input(), command.yaw()).step(
+            PhysicsResult result = new WalkingPhysics(command.input(), command.yaw(), true, parameters).step(
                     collisionWorld, state, PLAYER_HALF_WIDTH, PLAYER_HEIGHT);
             observer.accept(command, result);
             Vector3d position = result.position();
-            if (intersectsFluid(world, position)) return false;
+            if (intersectsFluid(world, position)
+                    || !TraversalSafety.isSafeSegment(world, state.position(), position)) return false;
             if (result.onGround() && Math.abs(position.y - targetFeetY) <= EPSILON
                     && footprintOverlapsTarget(position, target)) return true;
             if (result.velocity().y < 0
                     && position.y < Math.min(sourceFeetY, targetFeetY) - 1) return false;
-            state = new PhysicsState(position, result.velocity(), result.onGround());
+            state = new PhysicsState(position, result.velocity(), result.onGround(), result.fallDistance());
         }
         return false;
     }
@@ -305,7 +346,8 @@ public final class StandablePositionResolver {
         if (!world.chunkLoaded(source.x >> 4, source.z >> 4)) return OptionalDouble.empty();
         Vector3d center = new Vector3d(source.x + 0.5, source.y, source.z + 0.5);
         if (EnvironmentalTraversal.position(world, source).isPresent()
-                || intersectsFluid(world, center)) return OptionalDouble.empty();
+                || intersectsFluid(world, center)
+                || !TraversalSafety.isSafe(world, center)) return OptionalDouble.empty();
         OptionalDouble actual = feetY(world, source.x, source.y, source.z);
         if (actual.isPresent()) return actual;
 

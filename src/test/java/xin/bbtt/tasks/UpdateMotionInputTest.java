@@ -224,7 +224,7 @@ final class UpdateMotionInputTest {
         assertSame(initial, movementSync.velocity.get());
         assertEquals(0, initial.y);
         task.run();
-        assertEquals(1.42, movementSync.position.get().y, 1.0e-9);
+        assertEquals(1 + (double) 0.42F, movementSync.position.get().y, 1.0e-9);
         assertEquals(PlayerInput.NONE, movementSync.getInput());
         resetToGround();
         task.run();
@@ -239,7 +239,7 @@ final class UpdateMotionInputTest {
     void heldJumpRepeatsAfterTenTicksAndReleaseResetsCooldown() {
         movementSync.setInput(PlayerInput.NONE.withJump(true));
         task.run();
-        assertEquals(1.42, movementSync.position.get().y, 1.0e-9);
+        assertEquals(1 + (double) 0.42F, movementSync.position.get().y, 1.0e-9);
         // Simulate early landings to isolate cooldown from the twelve-tick jump arc.
         for (int tick = 1; tick < 10; tick++) {
             resetToGround();
@@ -248,13 +248,13 @@ final class UpdateMotionInputTest {
         }
         resetToGround();
         task.run();
-        assertEquals(1.42, movementSync.position.get().y, 1.0e-9);
+        assertEquals(1 + (double) 0.42F, movementSync.position.get().y, 1.0e-9);
         movementSync.clearInput();
         resetToGround();
         task.run();
         movementSync.setInput(PlayerInput.NONE.withJump(true));
         task.run();
-        assertEquals(1.42, movementSync.position.get().y, 1.0e-9);
+        assertEquals(1 + (double) 0.42F, movementSync.position.get().y, 1.0e-9);
     }
 
     @Test
@@ -262,7 +262,7 @@ final class UpdateMotionInputTest {
         movementSync.setInput(PlayerInput.NONE.withJump(true));
         duringInputSend = movementSync::clearInput;
         task.run();
-        assertEquals(1.42, movementSync.position.get().y, 1.0e-9,
+        assertEquals(1 + (double) 0.42F, movementSync.position.get().y, 1.0e-9,
                 "physics must use the same snapshot as the emitted packet");
         resetToGround();
         task.run();
