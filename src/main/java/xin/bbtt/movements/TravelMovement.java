@@ -97,21 +97,25 @@ public final class TravelMovement extends Movement {
             }
             stage = Stage.LAND;
         }
+        boolean environmental = xin.bbtt.pathfinding.EnvironmentalTraversal.inWater(
+                movementSync.getWorld(), movementSync.position.get())
+                || xin.bbtt.pathfinding.EnvironmentalTraversal.climbing(
+                        movementSync.getWorld(), movementSync.position.get());
         if (stage == Stage.PREPARE) {
             if (fly && movementSync.isGliding()) {
                 startFlight();
                 return;
             }
-            if (!movementSync.onGround.get()) return;
-            if (fly && isOpen(movementSync.getWorld(), movementSync.position.get())) {
+            if (!movementSync.onGround.get() && !environmental) return;
+            if (fly && !environmental && isOpen(movementSync.getWorld(), movementSync.position.get())) {
                 startFlight();
                 return;
             }
-            if (fly && approachTakeoff()) return;
+            if (fly && !environmental && approachTakeoff()) return;
             if (stopped || finished || !movementSync.isNavigationRequestCurrent(generation)) return;
             stage = Stage.LAND;
         }
-        if (stage == Stage.LAND && movementSync.onGround.get() && !movementSync.isGliding()) {
+        if (stage == Stage.LAND && (movementSync.onGround.get() || environmental) && !movementSync.isGliding()) {
             stage = Stage.WALK;
             List<PathStep> path = legs.plan(goal);
             if (stopped || finished || !movementSync.isNavigationRequestCurrent(generation)) return;

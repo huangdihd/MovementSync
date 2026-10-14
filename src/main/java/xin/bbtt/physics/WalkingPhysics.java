@@ -39,24 +39,40 @@ public final class WalkingPhysics implements PhysicsStepper {
         Vector3d position = state.position();
         Vector3d velocity = state.velocity();
         Vector3d displacement = new Vector3d();
+        EnvironmentalPhysics.Environment environment = EnvironmentalPhysics.sample(world, position, halfWidth, height);
+        boolean water = environment.waterHeight() > 0;
+        boolean lava = !water && environment.lavaHeight() > 0;
+        boolean fluid = water || lava;
+        addFluidPush(velocity, environment.waterPush());
+        addFluidPush(velocity, environment.lavaPush());
         // Since 1.21.5 the horizontal threshold applies to the vector, not each axis.
         if (velocity.x * velocity.x + velocity.z * velocity.z < MIN_MOVEMENT * MIN_MOVEMENT) {
             velocity.x = 0;
             velocity.z = 0;
         }
         velocity.y = snapToZero(velocity.y);
+        if (water && input.sneak()) velocity.y -= (double) 0.04f;
 
         final double tickStartY = position.y;
         boolean groundedAtTickStart = state.onGround();
         double yawRadians = Math.toRadians(yaw);
-        if (groundedAtTickStart && input.jump() && jumpAllowed) {
+        double fluidDepth = water ? environment.waterHeight() : environment.lavaHeight();
+        boolean swimJump = fluid && (!groundedAtTickStart || fluidDepth > 0.4);
+        if (input.jump() && swimJump) velocity.y += (double) 0.04f;
+        if (groundedAtTickStart && input.jump() && jumpAllowed && !swimJump) {
             velocity.y = MovementSync.jumpVelocity;
-            if (input.sprint()) {
+            if (input.sprint() && !fluid) {
                 velocity.x -= Math.sin(yawRadians) * 0.2;
                 velocity.z += Math.cos(yawRadians) * 0.2;
             }
         }
-        accelerate(velocity, groundedAtTickStart, yawRadians);
+        accelerate(velocity, groundedAtTickStart, yawRadians, fluid);
+        if (!fluid && environment.climbing()) {
+            velocity.x = Math.max(-(double) 0.15f, Math.min((double) 0.15f, velocity.x));
+            velocity.z = Math.max(-(double) 0.15f, Math.min((double) 0.15f, velocity.z));
+            velocity.y = Math.max(-(double) 0.15f, velocity.y);
+            if (input.sneak() && !environment.scaffolding() && velocity.y < 0) velocity.y = 0;
+        }
 
         /*
          * Match the client tick order: move with this tick's accumulated
@@ -109,6 +125,34 @@ public final class WalkingPhysics implements PhysicsStepper {
             collidedZ = moveHorizontal(world, position, velocity, halfWidth, height,
                 2, displacement.z, canStep, tickStartY);
         }
+
+        boolean climbingAfterMove = EnvironmentalPhysics.sample(world, position, halfWidth, height).climbing();
+        if (fluid) {
+            if (water) {
+                if ((collidedX || collidedZ) && climbingAfterMove) velocity.y = 0.2;
+                velocity.mul((double) 0.8f);
+                velocity.y = fluidGravity(velocity.y);
+            } else {
+                if (environment.lavaHeight() <= 0.4) {
+                    velocity.mul(0.5, (double) 0.8f, 0.5);
+                    velocity.y = fluidGravity(velocity.y);
+                } else {
+                    velocity.mul(0.5);
+                }
+                velocity.y -= 0.02;
+            }
+            if (collidedX || collidedZ) {
+                Vector3d exit = new Vector3d(position).add(velocity.x,
+                        velocity.y + (double) 0.6f - position.y + tickStartY, velocity.z);
+                EnvironmentalPhysics.Environment exitEnvironment = EnvironmentalPhysics.sample(world, exit, halfWidth, height);
+                if (!isBoxColliding(world, exit, halfWidth, height)
+                        && exitEnvironment.waterHeight() == 0 && exitEnvironment.lavaHeight() == 0) {
+                    velocity.y = (double) 0.3f;
+                }
+            }
+            return new PhysicsResult(position, velocity, collidedX, collidedZ, downwardCollision);
+        }
+        if ((collidedX || collidedZ || input.jump()) && climbingAfterMove) velocity.y = 0.2;
 
         // Ground contact cancels downward movement, not next tick's gravity.
         // Retain the falling velocity so leaving an edge does not hover for a tick.
@@ -215,7 +259,22 @@ public final class WalkingPhysics implements PhysicsStepper {
         return Math.abs(component) < MIN_MOVEMENT ? 0 : component;
     }
 
-    private void accelerate(Vector3d velocity, boolean onGround, double yawRadians) {
+    private static void addFluidPush(Vector3d velocity, Vector3d push) {
+        if (push.lengthSquared() == 0) return;
+        Vector3d applied = new Vector3d(push);
+        if (Math.abs(velocity.x) < 0.003 && Math.abs(velocity.z) < 0.003 && applied.length() < 0.0045000000000000005) {
+            applied.normalize(0.0045000000000000005);
+        }
+        velocity.add(applied);
+    }
+
+    private static double fluidGravity(double verticalVelocity) {
+        // LivingEntity.applyFluidMovingSpeed: with default gravity=0.08,
+        // gravity/16 equals 0.005, so its special falling branch cannot apply.
+        return verticalVelocity - 0.08 / 16;
+    }
+
+    private void accelerate(Vector3d velocity, boolean onGround, double yawRadians, boolean fluid) {
         double forward = (input.forward() ? 1 : 0) - (input.backward() ? 1 : 0);
         double strafe = (input.left() ? 1 : 0) - (input.right() ? 1 : 0);
         double length = Math.hypot(forward, strafe);
@@ -225,10 +284,10 @@ public final class WalkingPhysics implements PhysicsStepper {
         strafe /= length;
         // Since 1.21.5, scaled input expands to the unit square, capped at unit length.
         double distanceToUnitSquare = 1 / Math.max(Math.abs(forward), Math.abs(strafe));
-        double keyScale = Math.min(0.98 * (input.sneak() ? 0.3 : 1) * distanceToUnitSquare, 1);
+        double keyScale = Math.min(0.98 * (input.sneak() && !fluid ? 0.3 : 1) * distanceToUnitSquare, 1);
         forward *= keyScale;
         strafe *= keyScale;
-        double acceleration = onGround
+        double acceleration = fluid ? (double) 0.02f : onGround
             ? 0.1 * (input.sprint() ? 1.3 : 1) * 0.21600002
                 / (BLOCK_FRICTION * BLOCK_FRICTION * BLOCK_FRICTION)
             : (input.sprint() ? 0.026 : 0.02);

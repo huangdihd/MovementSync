@@ -156,7 +156,12 @@ public class PathMovement extends Movement {
         // while airborne — rebuilding mid-air would drop the jump momentum and
         // drift the bot across a gap. Genuine path failures still replan
         // promptly through stuck detection and goal/placement handling.
-        if (repathRequested && MovementSync.INSTANCE.onGround.get() && ticksSinceRepath >= 20) {
+        boolean canRepath = MovementSync.INSTANCE.onGround.get()
+                || xin.bbtt.pathfinding.EnvironmentalTraversal.inWater(
+                        MovementSync.INSTANCE.getWorld(), MovementSync.INSTANCE.position.get())
+                || xin.bbtt.pathfinding.EnvironmentalTraversal.climbing(
+                        MovementSync.INSTANCE.getWorld(), MovementSync.INSTANCE.position.get());
+        if (repathRequested && canRepath && ticksSinceRepath >= 20) {
             repathRequested = false;
             scheduleRepath();
             return;
@@ -194,7 +199,10 @@ public class PathMovement extends Movement {
         }
 
         if (isPathDeviated(currentPos, targetNode)) return;
-        if (isFallingUnexpectedly(currentPos, targetPos)) return;
+        boolean environmental = xin.bbtt.pathfinding.EnvironmentalTraversal.isEnvironmental(currentType)
+                || xin.bbtt.pathfinding.EnvironmentalTraversal.inWater(MovementSync.INSTANCE.getWorld(), currentPos)
+                || xin.bbtt.pathfinding.EnvironmentalTraversal.climbing(MovementSync.INSTANCE.getWorld(), currentPos);
+        if (!environmental && isFallingUnexpectedly(currentPos, targetPos)) return;
 
         boolean isGapJump = currentType == BuiltinMovementType.GAP_JUMP;
         boolean onGround = MovementSync.INSTANCE.onGround.get();
@@ -243,6 +251,15 @@ public class PathMovement extends Movement {
             return;
         }
 
+        if (environmental && !MovementSync.INSTANCE.isRiding()) {
+            var command = xin.bbtt.pathfinding.EnvironmentalTraversal.toward(
+                    MovementSync.INSTANCE.getWorld(), currentPos, targetPos,
+                    MovementSync.INSTANCE.velocity.get(), onGround);
+            MovementSync.INSTANCE.setYawToward(command.yaw());
+            issuedInput = command.input();
+            MovementSync.INSTANCE.setInput(issuedInput);
+            return;
+        }
         updateLookDirection(currentPos, targetPos);
         applyPreciseMovement(currentPos, targetPos, isGapJump,
                 currentType == BuiltinMovementType.JUMP || isGapJump);
@@ -314,6 +331,8 @@ public class PathMovement extends Movement {
     }
 
     private Vector3d targetPosition(Node node) {
+        var environmental = xin.bbtt.pathfinding.EnvironmentalTraversal.position(MovementSync.INSTANCE.getWorld(), node);
+        if (environmental.isPresent()) return environmental.get();
         double feetY = xin.bbtt.pathfinding.StandablePositionResolver.feetY(
             MovementSync.INSTANCE.getWorld(), node.x, node.y, node.z
         ).orElse(node.y);
@@ -326,7 +345,8 @@ public class PathMovement extends Movement {
         double dy = Math.abs(currentPos.y - targetPos.y);
         boolean isLastNode = currentIndex == path.size() - 1;
         double horizontalTolerance = isLastNode ? 0.3 : 0.35;
-        double verticalTolerance = 0.5;
+        double verticalTolerance = xin.bbtt.pathfinding.EnvironmentalTraversal.isEnvironmental(
+                path.get(currentIndex).getType()) ? 0.18 : 0.5;
         return dx < horizontalTolerance && dz < horizontalTolerance && dy < verticalTolerance;
     }
 

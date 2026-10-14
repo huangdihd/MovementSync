@@ -63,7 +63,8 @@ public class PathfindingContextBuilder {
     }
 
     public PathfindingContextBuilder addDefaultStrategies(boolean allowDigging) {
-        this.addWalk(allowDigging)
+        this.addStrategy(new EnvironmentalStrategy())
+            .addWalk(allowDigging)
             .addJump(allowDigging)
             .addFall()
             .addGapJump()
@@ -84,7 +85,8 @@ public class PathfindingContextBuilder {
     }
 
     public PathfindingContextBuilder addNoPlacementStrategies(boolean allowDigging) {
-        this.addWalk(allowDigging)
+        this.addStrategy(new EnvironmentalStrategy())
+            .addWalk(allowDigging)
             .addJump(allowDigging)
             .addFall()
             .addGapJump();

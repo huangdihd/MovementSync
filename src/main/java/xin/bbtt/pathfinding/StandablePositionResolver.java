@@ -8,6 +8,7 @@ import java.util.Set;
 import java.util.function.BiConsumer;
 import org.joml.Vector3d;
 import org.joml.Vector3i;
+import xin.bbtt.physics.EnvironmentalPhysics;
 import xin.bbtt.physics.JumpInputController;
 import xin.bbtt.physics.PhysicsResult;
 import xin.bbtt.physics.PhysicsState;
@@ -67,6 +68,11 @@ public final class StandablePositionResolver {
         double feetY = support.getAsDouble();
         double centerX = x + 0.5;
         double centerZ = z + 0.5;
+        // Liquids have no collision shape, but are not safe ground destinations.
+        // Submerged floors belong to surface traversal, and lava is never walkable.
+        if (intersectsFluid(world, new Vector3d(centerX, feetY, centerZ))) {
+            return OptionalDouble.empty();
+        }
         boolean blocked = world.isBoxColliding(
             centerX - PLAYER_HALF_WIDTH,
             feetY + EPSILON,
@@ -76,6 +82,11 @@ public final class StandablePositionResolver {
             centerZ + PLAYER_HALF_WIDTH
         );
         return blocked ? OptionalDouble.empty() : OptionalDouble.of(feetY);
+    }
+
+    private static boolean intersectsFluid(World world, Vector3d position) {
+        var environment = EnvironmentalPhysics.sample(world, position, PLAYER_HALF_WIDTH, PLAYER_HEIGHT);
+        return environment.lavaHeight() > 0 || environment.waterHeight() > 0;
     }
 
     public static OptionalDouble supportY(World world, int x, int nodeY, int z) {
@@ -182,6 +193,8 @@ public final class StandablePositionResolver {
         OptionalDouble sourceFeetY = expectedSourceFeetY(world, source);
         OptionalDouble targetSupportY = supportY(world, target.x, target.y, target.z);
         return sourceFeetY.isPresent() && targetSupportY.isPresent()
+            && !intersectsFluid(world, new Vector3d(
+                target.x + 0.5, targetSupportY.getAsDouble(), target.z + 0.5))
             && targetSupportY.getAsDouble() - sourceFeetY.getAsDouble()
                 <= maximumRise + EPSILON;
     }
@@ -254,6 +267,7 @@ public final class StandablePositionResolver {
                     collisionWorld, state, PLAYER_HALF_WIDTH, PLAYER_HEIGHT);
             observer.accept(command, result);
             Vector3d position = result.position();
+            if (intersectsFluid(world, position)) return false;
             if (result.onGround() && Math.abs(position.y - targetFeetY) <= EPSILON
                     && footprintOverlapsTarget(position, target)) return true;
             if (result.velocity().y < 0
@@ -289,11 +303,17 @@ public final class StandablePositionResolver {
      */
     private static OptionalDouble expectedSourceFeetY(World world, Node source) {
         if (!world.chunkLoaded(source.x >> 4, source.z >> 4)) return OptionalDouble.empty();
+        Vector3d center = new Vector3d(source.x + 0.5, source.y, source.z + 0.5);
+        if (EnvironmentalTraversal.position(world, source).isPresent()
+                || intersectsFluid(world, center)) return OptionalDouble.empty();
         OptionalDouble actual = feetY(world, source.x, source.y, source.z);
         if (actual.isPresent()) return actual;
 
         OptionalDouble existingSupport = supportY(world, source.x, source.y, source.z);
-        if (existingSupport.isPresent()) return existingSupport;
+        if (existingSupport.isPresent()) {
+            center.y = existingSupport.getAsDouble();
+            return intersectsFluid(world, center) ? OptionalDouble.empty() : existingSupport;
+        }
 
         double expectedPlacedSupportY = source.y;
         double centerX = source.x + 0.5;

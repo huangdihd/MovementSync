@@ -158,6 +158,16 @@ public class updateMotionTask implements Runnable {
         Vector3d position = new Vector3d(MovementSync.INSTANCE.position.get());
 
         PlayerInput input = MovementSync.INSTANCE.snapshotInput();
+        // Never start swimming: normalize the request before both input/action packets
+        // and travel, rather than predicting a standing body with a sprinting server state.
+        BodyDimensions inputDimensions = getBodyDimensions();
+        xin.bbtt.physics.EnvironmentalPhysics.Environment environment =
+                xin.bbtt.physics.EnvironmentalPhysics.sample(MovementSync.INSTANCE.getWorld(), position,
+                        inputDimensions.halfWidth(), inputDimensions.height());
+        if (environment.waterHeight() > 0 || environment.lavaHeight() > 0) {
+            input = new PlayerInput(input.forward(), input.backward(), input.left(), input.right(),
+                    input.jump(), input.sneak(), false);
+        }
         float tickYaw = MovementSync.INSTANCE.yaw.get();
         float tickPitch = MovementSync.INSTANCE.pitch.get();
         // ElytraB checks the previous (released) input at the action, then

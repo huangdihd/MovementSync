@@ -8,6 +8,19 @@ import xin.bbtt.mcbot.LangManager;
 
 public class MovementCommandExecutor extends SubCommandExecutor {
     public MovementCommandExecutor() {
+        registerSubCommand("input", new CommandExecutor() {
+            @Override
+            public void onCommand(Command command, String label, String[] args) {
+                java.util.Set<String> keys = new java.util.HashSet<>(java.util.List.of(args));
+                if (!java.util.Set.of("forward", "backward", "left", "right", "jump", "sneak", "sprint").containsAll(keys)) {
+                    MovementSync.getLogger().info("movement input [forward backward left right jump sneak sprint]; no keys releases input");
+                    return;
+                }
+                MovementSync.INSTANCE.setInput(new xin.bbtt.physics.PlayerInput(
+                        keys.contains("forward"), keys.contains("backward"), keys.contains("left"),
+                        keys.contains("right"), keys.contains("jump"), keys.contains("sneak"), keys.contains("sprint")));
+            }
+        });
         registerSubCommand("pause", new CommandExecutor() {
             @Override
             public void onCommand(Command command, String label, String[] args) {
