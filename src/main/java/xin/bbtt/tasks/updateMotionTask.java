@@ -12,7 +12,6 @@ import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.Serv
 import org.joml.Vector3d;
 import xin.bbtt.MovementSync;
 import xin.bbtt.mcbot.Bot;
-import xin.bbtt.mcbot.Server;
 
 import xin.bbtt.physics.GlidingPhysics;
 import xin.bbtt.physics.PhysicsResult;
@@ -108,7 +107,6 @@ public class updateMotionTask implements Runnable {
     @Override
     public void run() {
         if (!Bot.INSTANCE.isRunning()) return;
-        if (Bot.INSTANCE.getServer() != Server.Game) return;
 
         // A start request must not change flight physics or enqueue its action
         // between this tick's input snapshot and movement/tick-end packets.
