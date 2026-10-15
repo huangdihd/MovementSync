@@ -7,17 +7,20 @@ import xin.bbtt.pathfinding.Node;
 import xin.bbtt.pathfinding.PathStep;
 import xin.bbtt.pathfinding.BuiltinMovementType;
 import xin.bbtt.pathfinding.StandablePositionResolver;
+import xin.bbtt.physics.PlayerInput;
+import xin.bbtt.physics.JumpInputController;
 
 import java.util.List;
 
 public class PathMovement extends Movement {
     /** Default follow keep radius in blocks. */
     private static final double DEFAULT_FOLLOW_KEEP_DISTANCE = 1.0;
-    /** Adjacent path nodes should complete quickly; ten seconds means execution is livelocked. */
+    /** Ten seconds of execution opportunities without a new completed node is livelock. */
     private static final int MAX_TICKS_WITHOUT_NODE_PROGRESS = 200;
 
     private List<PathStep> path;
     private int currentIndex = 0;
+    private PlayerInput issuedInput;
     private volatile boolean repathRequested = false;
     private boolean immediateRepathRequested;
     private int repathThrottler = 0;
@@ -39,6 +42,8 @@ public class PathMovement extends Movement {
     private final int requestedFollowTargetId;
     /** Monotonic request identity; coordinates alone cannot distinguish replacements. */
     private final long requestGeneration;
+    private org.joml.Vector3i navigationGoal;
+    private boolean intermediateLeg;
 
     public PathMovement(List<PathStep> path) {
         this(path, DEFAULT_FOLLOW_KEEP_DISTANCE, false);
@@ -57,7 +62,7 @@ public class PathMovement extends Movement {
             path,
             followKeepDistance,
             allowDigging,
-            goalFromPath(path),
+            currentActiveGoal(),
             currentFollowTargetId(),
             currentNavigationGeneration()
         );
@@ -76,10 +81,37 @@ public class PathMovement extends Movement {
         this.requestedGoal = requestedGoal == null ? null : new org.joml.Vector3i(requestedGoal);
         this.requestedFollowTargetId = requestedFollowTargetId;
         this.requestGeneration = requestGeneration;
+        this.navigationGoal = this.requestedGoal;
+    }
+
+    /** Keeps a local walking destination within the enclosing navigation request. */
+    public PathMovement asIntermediateLeg(org.joml.Vector3i finalGoal) {
+        navigationGoal = new org.joml.Vector3i(finalGoal);
+        intermediateLeg = true;
+        return this;
     }
 
     public void requestRepath() {
         this.repathRequested = true;
+    }
+
+    /**
+     * Requests a replan only when the changed block can affect the route still ahead.
+     * Loaded worlds change constantly (grass spreading, crops, other players); replanning
+     * a long route for every one of those keeps the bot planning instead of walking.
+     */
+    public void requestRepath(int x, int y, int z) {
+        List<PathStep> route = this.path;
+        if (route == null) return;
+        for (int index = Math.max(0, currentIndex - 1); index < route.size(); index++) {
+            Node node = route.get(index).getNode();
+            // Floor, body and jump headroom of the node and of the blocks beside it.
+            if (Math.abs(x - node.x) <= 1 && Math.abs(z - node.z) <= 1
+                    && y >= node.y - 2 && y <= node.y + 3) {
+                this.repathRequested = true;
+                return;
+            }
+        }
     }
 
     @Override
@@ -93,6 +125,7 @@ public class PathMovement extends Movement {
     public void onTick() {
         if (!MovementSync.INSTANCE.runIfNavigationRequestCurrent(
                 requestGeneration, this::onAuthorizedTick)) {
+            stopHorizontal();
             setFinished(true);
             return;
         }
@@ -104,7 +137,14 @@ public class PathMovement extends Movement {
 
     private void onAuthorizedTick() {
         if (isSuperseded()) {
+            stopHorizontal();
             setFinished(true);
+            return;
+        }
+        if (requestedFollowTargetId == -1
+                && requestedGoal != null
+                && progressWatchdog.tick()) {
+            abortLivelockedGoal(MovementSync.INSTANCE.position.get());
             return;
         }
         repathThrottler++;
@@ -116,7 +156,12 @@ public class PathMovement extends Movement {
         // while airborne — rebuilding mid-air would drop the jump momentum and
         // drift the bot across a gap. Genuine path failures still replan
         // promptly through stuck detection and goal/placement handling.
-        if (repathRequested && MovementSync.INSTANCE.onGround.get() && ticksSinceRepath >= 20) {
+        boolean canRepath = MovementSync.INSTANCE.onGround.get()
+                || xin.bbtt.pathfinding.EnvironmentalTraversal.inWater(
+                        MovementSync.INSTANCE.getWorld(), MovementSync.INSTANCE.position.get())
+                || xin.bbtt.pathfinding.EnvironmentalTraversal.climbing(
+                        MovementSync.INSTANCE.getWorld(), MovementSync.INSTANCE.position.get());
+        if (repathRequested && canRepath && ticksSinceRepath >= 20) {
             repathRequested = false;
             scheduleRepath();
             return;
@@ -136,9 +181,13 @@ public class PathMovement extends Movement {
         Vector3d targetPos = targetPosition(targetNode);
         Vector3d currentPos = MovementSync.INSTANCE.position.get();
 
-        if (hasReachedNode(currentPos, targetPos)) {
+        boolean jumpRequiresLanding = (currentType == BuiltinMovementType.JUMP
+                || currentType == BuiltinMovementType.GAP_JUMP)
+                && !MovementSync.INSTANCE.isRiding()
+                && !MovementSync.INSTANCE.onGround.get();
+        if (!jumpRequiresLanding && hasReachedNode(currentPos, targetPos)) {
             currentIndex++;
-            progressWatchdog.nodeAdvanced();
+            progressWatchdog.nodeAdvanced(targetNode);
             if (currentIndex >= path.size()) {
                 finishPath();
                 return;
@@ -149,15 +198,11 @@ public class PathMovement extends Movement {
             targetPos = targetPosition(targetNode);
         }
 
-        if (requestedFollowTargetId == -1
-                && requestedGoal != null
-                && progressWatchdog.tick()) {
-            abortLivelockedGoal(currentPos);
-            return;
-        }
-
         if (isPathDeviated(currentPos, targetNode)) return;
-        if (isFallingUnexpectedly(currentPos, targetPos)) return;
+        boolean environmental = xin.bbtt.pathfinding.EnvironmentalTraversal.isEnvironmental(currentType)
+                || xin.bbtt.pathfinding.EnvironmentalTraversal.inWater(MovementSync.INSTANCE.getWorld(), currentPos)
+                || xin.bbtt.pathfinding.EnvironmentalTraversal.climbing(MovementSync.INSTANCE.getWorld(), currentPos);
+        if (!environmental && isFallingUnexpectedly(currentPos, targetPos)) return;
 
         boolean isGapJump = currentType == BuiltinMovementType.GAP_JUMP;
         boolean onGround = MovementSync.INSTANCE.onGround.get();
@@ -206,8 +251,18 @@ public class PathMovement extends Movement {
             return;
         }
 
-        applyPreciseMovement(currentPos, targetPos, isGapJump);
+        if (environmental && !MovementSync.INSTANCE.isRiding()) {
+            var command = xin.bbtt.pathfinding.EnvironmentalTraversal.toward(
+                    MovementSync.INSTANCE.getWorld(), currentPos, targetPos,
+                    MovementSync.INSTANCE.velocity.get(), onGround);
+            MovementSync.INSTANCE.setYawToward(command.yaw());
+            issuedInput = command.input();
+            MovementSync.INSTANCE.setInput(issuedInput);
+            return;
+        }
         updateLookDirection(currentPos, targetPos);
+        applyPreciseMovement(currentPos, targetPos, isGapJump,
+                currentType == BuiltinMovementType.JUMP || isGapJump);
     }
 
     /**
@@ -268,12 +323,16 @@ public class PathMovement extends Movement {
     private void updateLookDirection(Vector3d currentPos, Vector3d targetPos) {
         Vector3d lookDiff = new Vector3d(targetPos).sub(currentPos);
         float targetYaw = (float) Math.toDegrees(Math.atan2(-lookDiff.x, lookDiff.z));
-        targetYaw = (targetYaw + 180.0f) % 360.0f;
-        MovementSync.INSTANCE.yaw.set(targetYaw);
+        if (MovementSync.INSTANCE.isRiding()) {
+            targetYaw = (targetYaw + 180.0f) % 360.0f;
+        }
+        MovementSync.INSTANCE.setYawToward(targetYaw);
         MovementSync.INSTANCE.pitch.set(0f);
     }
 
     private Vector3d targetPosition(Node node) {
+        var environmental = xin.bbtt.pathfinding.EnvironmentalTraversal.position(MovementSync.INSTANCE.getWorld(), node);
+        if (environmental.isPresent()) return environmental.get();
         double feetY = xin.bbtt.pathfinding.StandablePositionResolver.feetY(
             MovementSync.INSTANCE.getWorld(), node.x, node.y, node.z
         ).orElse(node.y);
@@ -285,12 +344,39 @@ public class PathMovement extends Movement {
         double dz = Math.abs(currentPos.z - targetPos.z);
         double dy = Math.abs(currentPos.y - targetPos.y);
         boolean isLastNode = currentIndex == path.size() - 1;
-        double horizontalTolerance = isLastNode ? 0.15 : 0.3;
-        double verticalTolerance = 0.5;
-        return dx < horizontalTolerance && dz < horizontalTolerance && dy < verticalTolerance;
+        double horizontalTolerance = isLastNode ? 0.3 : 0.35;
+        double verticalTolerance = xin.bbtt.pathfinding.EnvironmentalTraversal.isEnvironmental(
+                path.get(currentIndex).getType()) ? 0.18 : 0.5;
+        boolean settled = !isLastNode || groundSlipperiness(currentPos) <= 0.6
+                || Math.hypot(MovementSync.INSTANCE.velocity.get().x,
+                    MovementSync.INSTANCE.velocity.get().z) < 0.025;
+        return settled && dx < horizontalTolerance && dz < horizontalTolerance && dy < verticalTolerance;
     }
 
-    private void applyPreciseMovement(Vector3d currentPos, Vector3d targetPos, boolean isGapJump) {
+    private double groundSlipperiness(Vector3d position) {
+        var support = MovementSync.INSTANCE.getWorld().getBlockStateAt(
+                new Vector3d(position.x, position.y - 0.500001, position.z));
+        return xin.bbtt.physics.BlockMovementProperties.of(support).slipperiness();
+    }
+
+    private void applyPreciseMovement(Vector3d currentPos, Vector3d targetPos,
+            boolean isGapJump, boolean isJumpEdge) {
+        if (currentIndex == path.size() - 1 && !MovementSync.INSTANCE.isRiding()
+                && MovementSync.INSTANCE.onGround.get() && groundSlipperiness(currentPos) > 0.6
+                && Math.abs(targetPos.y - currentPos.y) < 0.5) {
+            var command = JumpInputController.groundArrival(currentPos, targetPos,
+                    MovementSync.INSTANCE.velocity.get(), groundSlipperiness(currentPos));
+            MovementSync.INSTANCE.setYawToward(command.yaw());
+            issuedInput = command.input();
+            MovementSync.INSTANCE.setInput(issuedInput);
+            return;
+        }
+        // Keep the preview's controller in charge until touchdown; slippery
+        // final landings then use the same ground-arrival brake as walking.
+        if (isJumpEdge && !MovementSync.INSTANCE.isRiding()) {
+            applyJumpInput(currentPos, targetPos, isGapJump);
+            return;
+        }
         Vector3d diff = new Vector3d(targetPos).sub(currentPos);
         double verticalDist = diff.y;
         diff.y = 0;
@@ -318,25 +404,29 @@ public class PathMovement extends Movement {
             return;
         }
 
-        double currentSpeed = MovementSync.movementSpeed;
-        // Sprint during gap jumps: a diagonal landing is ~2.83 blocks away and
-        // plain walking speed cannot carry the jump arc that far.
-        if (isGapJump) currentSpeed *= MovementSync.gapJumpSpeedMultiplier;
-        if (dist < 0.25) {
-            currentSpeed *= (dist / 0.25);
-            if (dist < 0.05) {
-                MovementSync.INSTANCE.position.set(new Vector3d(targetPos.x, currentPos.y, targetPos.z));
-                stopHorizontal();
-                return;
-            }
+        Vector3d velocity = MovementSync.INSTANCE.velocity.get();
+        if (isGapJump || verticalDist > 0.6 || !MovementSync.INSTANCE.onGround.get()) {
+            applyJumpInput(currentPos, targetPos, isGapJump);
+            return;
         }
+        double closingSpeed = (velocity.x * diff.x + velocity.z * diff.z) / dist;
+        // Velocity already includes last tick's drag. Coasting covers v / (1 - 0.546).
+        // Release before the final centre rather than braking by reversing the keys.
+        boolean coast = currentIndex == path.size() - 1
+                && MovementSync.INSTANCE.onGround.get() && Math.abs(verticalDist) < 0.5
+                && dist <= Math.max(0.3, closingSpeed / (1 - 0.546));
+        issuedInput = new PlayerInput(
+                !coast, false, false, false, false, false, isGapJump && !coast);
+        MovementSync.INSTANCE.setInput(issuedInput);
+    }
 
-        diff.normalize().mul(currentSpeed);
-        MovementSync.INSTANCE.velocity.set(new Vector3d(diff.x, MovementSync.INSTANCE.velocity.get().y, diff.z));
-        
-        if (MovementSync.INSTANCE.onGround.get() && (verticalDist > 0.5 || isGapJump)) {
-            MovementSync.INSTANCE.jump();
-        }
+    private void applyJumpInput(Vector3d currentPos, Vector3d targetPos, boolean isGapJump) {
+        JumpInputController.Command command = JumpInputController.toward(
+                currentPos, targetPos, MovementSync.INSTANCE.velocity.get(),
+                MovementSync.INSTANCE.onGround.get(), isGapJump);
+        MovementSync.INSTANCE.setYawToward(command.yaw());
+        issuedInput = command.input();
+        MovementSync.INSTANCE.setInput(issuedInput);
     }
 
     private void finishPath() {
@@ -361,7 +451,7 @@ public class PathMovement extends Movement {
         if (!isWithinFollowRange(targetPos)) { scheduleRepath(); return; }
 
         stopHorizontal();
-        MovementSync.INSTANCE.velocity.set(new Vector3d(0, 0, 0));
+
     }
 
     private void handleGoalFinish(org.joml.Vector3i goal) {
@@ -379,8 +469,8 @@ public class PathMovement extends Movement {
         setFinished(true);
         MovementSync.INSTANCE.runIfNavigationRequestCurrent(requestGeneration, () -> {
             stopHorizontal();
-            MovementSync.INSTANCE.velocity.set(new Vector3d(0, 0, 0));
-            if (requestedFollowTargetId == -1
+
+            if (!intermediateLeg && requestedFollowTargetId == -1
                     && requestedGoal != null
                     && requestedGoal.equals(MovementSync.INSTANCE.getActiveGoal())) {
                 MovementSync.INSTANCE.setActiveGoal(null);
@@ -390,7 +480,7 @@ public class PathMovement extends Movement {
 
     private void abortLivelockedGoal(Vector3d currentPos) {
         MovementSync.getLogger().warn(
-                "Pathfinding aborted: no path node completed for {} ticks despite replanning; position={}, goal={}",
+                "Pathfinding aborted: no new path node completed for {} execution ticks despite replanning; position={}, goal={}",
                 MAX_TICKS_WITHOUT_NODE_PROGRESS,
                 currentPos,
                 requestedGoal
@@ -399,10 +489,21 @@ public class PathMovement extends Movement {
     }
 
     private void scheduleRepath() {
+        stopHorizontal();
         immediateRepathRequested = true;
     }
 
     private void repathInternally() {
+        // Release owned keys before synchronous planning; physics runs independently.
+        stopHorizontal();
+        try {
+            computeRepath();
+        } finally {
+            progressWatchdog.excludeElapsedTime();
+        }
+    }
+
+    private void computeRepath() {
         if (!MovementSync.INSTANCE.isNavigationRequestCurrent(requestGeneration)) {
             setFinished(true);
             return;
@@ -456,7 +557,7 @@ public class PathMovement extends Movement {
             this.lastProgressPos = null;
         } else if (requestedFollowTargetId != -1) {
             stopHorizontal();
-            MovementSync.INSTANCE.velocity.set(new Vector3d(0, 0, 0));
+
             this.path = List.of(new PathStep(start, BuiltinMovementType.WALK));
             this.currentIndex = 0;
         } else {
@@ -470,13 +571,12 @@ public class PathMovement extends Movement {
             return MovementSync.INSTANCE.getFollowTargetId() != requestedFollowTargetId;
         }
         return MovementSync.INSTANCE.getFollowTargetId() != -1
-                || !java.util.Objects.equals(requestedGoal, MovementSync.INSTANCE.getActiveGoal());
+                || !java.util.Objects.equals(navigationGoal, MovementSync.INSTANCE.getActiveGoal());
     }
 
-    private static org.joml.Vector3i goalFromPath(List<PathStep> path) {
-        if (path == null || path.isEmpty()) return null;
-        Node goal = path.get(path.size() - 1).getNode();
-        return new org.joml.Vector3i(goal.x, goal.y, goal.z);
+    private static org.joml.Vector3i currentActiveGoal() {
+        // A partial path's endpoint is not the navigation request's goal.
+        return MovementSync.INSTANCE == null ? null : MovementSync.INSTANCE.getActiveGoal();
     }
 
     private static int currentFollowTargetId() {
@@ -488,15 +588,23 @@ public class PathMovement extends Movement {
     }
 
     private void stopHorizontal() {
-        Vector3d vel = MovementSync.INSTANCE.velocity.get();
-        if (vel != null) MovementSync.INSTANCE.velocity.set(new Vector3d(0, vel.y, 0));
+        if (issuedInput != null && MovementSync.INSTANCE.getInput() == issuedInput) {
+            MovementSync.INSTANCE.clearInput();
+        }
+        issuedInput = null;
         MovementSync.INSTANCE.setRidingForward(0);
         MovementSync.INSTANCE.setRidingSideways(0);
     }
 
     private boolean isPathDeviated(Vector3d currentPos, Node targetNode) {
         if (MovementSync.INSTANCE.isRiding()) return false;
-        if (currentPos.y >= targetNode.y - 1.2) return false;
+        double expectedFloor = targetNode.y;
+        if (currentIndex > 0 && path.get(currentIndex).getType() == BuiltinMovementType.JUMP) {
+            // A planned boosted ascent starts below its landing node; deviation is
+            // measured against the takeoff floor, not the old vanilla jump height.
+            expectedFloor = Math.min(expectedFloor, path.get(currentIndex - 1).getNode().y);
+        }
+        if (currentPos.y >= expectedFloor - 1.2) return false;
         finishPath();
         return true;
     }
@@ -514,5 +622,14 @@ public class PathMovement extends Movement {
     public long getTime() { return -1; }
 
     @Override
-    public void onStop() { stopHorizontal(); }
+    public void onStop() {
+        stopHorizontal();
+        progressWatchdog.pause();
+    }
+
+    @Override
+    public void onPause() {
+        stopHorizontal();
+        progressWatchdog.pause();
+    }
 }

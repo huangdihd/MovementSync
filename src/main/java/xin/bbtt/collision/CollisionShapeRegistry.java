@@ -23,6 +23,7 @@ public final class CollisionShapeRegistry {
     private static final CollisionShapeRegistry INSTANCE = load();
 
     private final List<CollisionBox>[] boxesByState;
+    private final CollisionBox[][] collisionBoxes;
     private final double minX;
     private final double minY;
     private final double minZ;
@@ -35,6 +36,10 @@ public final class CollisionShapeRegistry {
             double minX, double minY, double minZ,
             double maxX, double maxY, double maxZ) {
         this.boxesByState = boxesByState;
+        this.collisionBoxes = new CollisionBox[boxesByState.length][];
+        for (int i = 0; i < boxesByState.length; i++) {
+            collisionBoxes[i] = boxesByState[i].toArray(CollisionBox[]::new);
+        }
         this.minX = minX;
         this.minY = minY;
         this.minZ = minZ;
@@ -74,13 +79,16 @@ public final class CollisionShapeRegistry {
             int stateId, int blockX, int blockY, int blockZ,
             double minX, double minY, double minZ,
             double maxX, double maxY, double maxZ) {
+        if (stateId < 0 || stateId >= collisionBoxes.length) return false;
+        CollisionBox[] boxes = collisionBoxes[stateId];
+        if (boxes.length == 0) return false;
         double localMinX = minX - blockX;
         double localMinY = minY - blockY;
         double localMinZ = minZ - blockZ;
         double localMaxX = maxX - blockX;
         double localMaxY = maxY - blockY;
         double localMaxZ = maxZ - blockZ;
-        for (CollisionBox box : boxesFor(stateId)) {
+        for (CollisionBox box : boxes) {
             if (box.intersects(localMinX, localMinY, localMinZ,
                     localMaxX, localMaxY, localMaxZ)) return true;
         }

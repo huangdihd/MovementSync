@@ -1,34 +1,60 @@
 package xin.bbtt.movements;
 
-import org.joml.Vector3d;
 import xin.bbtt.MovementSync;
 import xin.bbtt.movement.Movement;
+import xin.bbtt.physics.PlayerInput;
+
+import java.util.Objects;
 
 public class WalkMovement extends Movement {
-    private static final double VELOCITY_EPSILON = 1.0e-9;
+    public enum Direction {
+        FRONT(null), BACK(null), LEFT(null), RIGHT(null),
+        NORTH(180f), SOUTH(0f), WEST(90f), EAST(-90f);
 
-    private final Vector3d velocity;
+        private final Float yaw;
+
+        Direction(Float yaw) {
+            this.yaw = yaw;
+        }
+    }
+
+    private final Direction direction;
     private final long time;
-    private volatile Vector3d velocityBeforeStart;
-    private volatile Vector3d expectedVelocity;
+    private final boolean sprint;
+    private PlayerInput acquiredInput;
 
-    public WalkMovement(Vector3d velocity, long time){
-        this.velocity = new Vector3d(velocity);
+    public WalkMovement(Direction direction, long time) {
+        this(direction, time, false);
+    }
+
+    public WalkMovement(Direction direction, long time, boolean sprint) {
+        this.direction = Objects.requireNonNull(direction, "direction");
+        if (time < 0) throw new IllegalArgumentException("Walk duration must not be negative");
         this.time = time;
+        this.sprint = sprint;
     }
 
     @Override
     public void init() {
-        MovementSync.INSTANCE.velocity.updateAndGet(current -> {
-            velocityBeforeStart = new Vector3d(current);
-            expectedVelocity = new Vector3d(current).add(velocity);
-            return new Vector3d(expectedVelocity);
-        });
+        if (acquiredInput != null) return;
+        if (direction.yaw != null) MovementSync.INSTANCE.setYawToward(direction.yaw);
+        PlayerInput current = MovementSync.INSTANCE.getInput();
+        boolean forward = direction == Direction.FRONT || direction.yaw != null;
+        boolean backward = direction == Direction.BACK;
+        boolean left = direction == Direction.LEFT;
+        boolean right = direction == Direction.RIGHT;
+        acquiredInput = new PlayerInput(
+            forward && !current.forward(), backward && !current.backward(),
+            left && !current.left(), right && !current.right(), false, false,
+            sprint && !current.sprint());
+        MovementSync.INSTANCE.setInput(new PlayerInput(
+            current.forward() || forward, current.backward() || backward,
+            current.left() || left, current.right() || right,
+            current.jump(), current.sneak(), current.sprint() || sprint));
     }
 
     @Override
     public void onTick() {
-
     }
 
     @Override
@@ -38,17 +64,25 @@ public class WalkMovement extends Movement {
 
     @Override
     public void onStop() {
-        Vector3d before = velocityBeforeStart;
-        Vector3d expected = expectedVelocity;
-        if (before == null || expected == null) return;
-        MovementSync.INSTANCE.velocity.updateAndGet(current -> new Vector3d(
-            unchanged(current.x, expected.x) ? before.x : current.x,
-            unchanged(current.y, expected.y) ? before.y : current.y,
-            unchanged(current.z, expected.z) ? before.z : current.z
-        ));
+        if (acquiredInput == null) return;
+        PlayerInput current = MovementSync.INSTANCE.getInput();
+        // Release only keys acquired here; jump and sneak belong to other input producers.
+        MovementSync.INSTANCE.setInput(new PlayerInput(
+            current.forward() && !acquiredInput.forward(),
+            current.backward() && !acquiredInput.backward(),
+            current.left() && !acquiredInput.left(),
+            current.right() && !acquiredInput.right(),
+            current.jump(), current.sneak(), current.sprint() && !acquiredInput.sprint()));
+        acquiredInput = null;
     }
 
-    private static boolean unchanged(double current, double expected) {
-        return Math.abs(current - expected) <= VELOCITY_EPSILON;
+    @Override
+    public void onPause() {
+        onStop();
+    }
+
+    @Override
+    public void onResume() {
+        init();
     }
 }

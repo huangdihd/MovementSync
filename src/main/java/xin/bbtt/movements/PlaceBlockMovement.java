@@ -3,13 +3,13 @@ package xin.bbtt.movements;
 import org.cloudburstmc.math.vector.Vector3i;
 import org.geysermc.mcprotocollib.protocol.data.game.entity.object.Direction;
 import org.geysermc.mcprotocollib.protocol.data.game.entity.player.Hand;
-import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.level.ServerboundPlayerInputPacket;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundSwingPacket;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundUseItemOnPacket;
 import org.joml.Vector3d;
 import xin.bbtt.MovementSync;
 import xin.bbtt.mcbot.Bot;
 import xin.bbtt.movement.Movement;
+import xin.bbtt.physics.PlayerInput;
 
 public class PlaceBlockMovement extends Movement implements NavigationBoundMovement {
     private final Vector3i pos; // Position to place block AT
@@ -64,12 +64,14 @@ public class PlaceBlockMovement extends Movement implements NavigationBoundMovem
 
     @Override
     public void onTick() {
+        if (isFinished()) return;
         if (navigationGeneration == null) {
             onAuthorizedTick();
             return;
         }
         if (!MovementSync.INSTANCE.runIfNavigationRequestCurrent(
                 navigationGeneration, this::onAuthorizedTick)) {
+            onStop();
             setFinished(true);
         }
     }
@@ -80,27 +82,24 @@ public class PlaceBlockMovement extends Movement implements NavigationBoundMovem
         if (bridge) {
             switch (step) {
                 case 0: // Sneak via input
-                    sendInput(true);
+                    setBridgeInput(false);
                     step = 1;
                     break;
                 case 1: // Wait and move to edge
                     if (elapsed > 100) {
-                        Vector3d current = MovementSync.INSTANCE.position.get();
-                        Vector3d edge = new Vector3d(pos.getX() + 0.5, current.y, pos.getZ() + 0.5);
-                        Vector3d diff = new Vector3d(edge).sub(current);
-                        if (diff.length() > 0.1) diff.normalize().mul(0.05);
-                        MovementSync.INSTANCE.velocity.set(diff);
+                        setBridgeInput(true);
                         
                         if (elapsed > 300) step = 2;
                     }
                     break;
                 case 2: // Place
+                    setBridgeInput(false);
                     place();
                     step = 3;
                     break;
                 case 3: // Stop sneaking
                     if (elapsed > 400) {
-                        sendInput(false);
+                        onStop();
                         setFinished(true);
                     }
                     break;
@@ -109,13 +108,29 @@ public class PlaceBlockMovement extends Movement implements NavigationBoundMovem
             if (step == 0 && elapsed > 50) {
                 place();
                 step = 1;
+                onStop();
                 setFinished(true);
             }
         }
     }
 
-    private void sendInput(boolean sneak) {
-        Bot.INSTANCE.getSession().send(new ServerboundPlayerInputPacket(false, false, false, false, false, sneak, false));
+    private void setBridgeInput(boolean approachEdge) {
+        Vector3d current = MovementSync.INSTANCE.position.get();
+        double deltaX = pos.getX() + 0.5 - current.x;
+        double deltaZ = pos.getZ() + 0.5 - current.z;
+        double distance = Math.hypot(deltaX, deltaZ);
+        double forward = 0;
+        double strafe = 0;
+        if (approachEdge && distance > 0.1) {
+            double yaw = Math.toRadians(MovementSync.INSTANCE.yaw.get());
+            forward = (-deltaX * Math.sin(yaw) + deltaZ * Math.cos(yaw)) / distance;
+            strafe = (deltaX * Math.cos(yaw) + deltaZ * Math.sin(yaw)) / distance;
+        }
+        // Quantize the world-space target to keys without changing the placement aim.
+        double threshold = Math.sin(Math.PI / 8);
+        MovementSync.INSTANCE.setInput(new PlayerInput(
+            forward > threshold, forward < -threshold,
+            strafe > threshold, strafe < -threshold, false, true, false));
     }
     private void place() {
         MovementSync.getLogger().info(xin.bbtt.mcbot.LangManager.get("movementsync.movement.placing.start", pos.getX(), pos.getY(), pos.getZ(), side));
@@ -133,9 +148,16 @@ public class PlaceBlockMovement extends Movement implements NavigationBoundMovem
 
     @Override
     public void onStop() {
-        MovementSync.INSTANCE.velocity.set(new Vector3d(0, 0, 0));
-        if (bridge && step < 3) {
-            sendInput(false);
-        }
+        MovementSync.INSTANCE.clearInput();
+    }
+
+    @Override
+    public void onPause() {
+        onStop();
+    }
+
+    @Override
+    public void onResume() {
+        if (bridge && !isFinished()) setBridgeInput(step == 1);
     }
 }

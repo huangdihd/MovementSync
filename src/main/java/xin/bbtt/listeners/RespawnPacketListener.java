@@ -16,6 +16,7 @@ public class RespawnPacketListener extends SessionAdapter {
         if (!(packet instanceof ClientboundPlayerCombatKillPacket playerCombatKillPacket)) return;
         MovementSync.getLogger().info(playerCombatKillPacket.toString());
         MovementSync.INSTANCE.cancelNavigation();
+        MovementSync.INSTANCE.clearFlightState();
         DeathEvent deathEvent = new DeathEvent(playerCombatKillPacket.getPlayerId(), playerCombatKillPacket.getMessage());
         Bot.INSTANCE.getPluginManager().events().callEvent(deathEvent);
         if (deathEvent.isDefaultActionCancelled()) return;

@@ -33,6 +33,19 @@ final class WorldCollisionShapeTest {
     }
 
     @Test
+    void groundSupportIncludesVanillaFloatWidthAtBothSignedEdges() {
+        World world = singleBlock(BOTTOM_OAK_SLAB);
+        for (int axis : new int[]{0, 2}) {
+            for (double coordinate : new double[]{-0.2995, 1.2995}) {
+                Vector3d feet = new Vector3d(0.5, 0.5, 0.5).setComponent(axis, coordinate);
+                assertTrue(world.isOnGround(feet), "vanilla body still overlaps the slab: " + feet);
+                feet.setComponent(axis, coordinate < 0 ? -0.3001 : 1.3001);
+                assertFalse(world.isOnGround(feet), "body beyond vanilla width must lose support");
+            }
+        }
+    }
+
+    @Test
     void unloadedChunkIsNotReportedAsGroundSupport() {
         World world = new World();
 

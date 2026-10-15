@@ -37,8 +37,8 @@ public class GapJumpStrategy extends AbstractMovementStrategy {
 
                 Node target = new Node(tx, u.y, tz);
                 if (gapPassable && isStandable(tx, u.y, tz, world)
-                        && StandablePositionResolver.canGapJump(world, u, target)
-                        && world.isPassable(new Vector3d(tx, u.y + 2, tz))) {
+                        && world.isPassable(new Vector3d(tx, u.y + 2, tz))
+                        && StandablePositionResolver.canGapJump(world, u, target)) {
                     edges.add(new Edge(target, getEuclideanDistance(u, target) + 1.0, BuiltinMovementType.GAP_JUMP));
                 }
             }
@@ -61,8 +61,8 @@ public class GapJumpStrategy extends AbstractMovementStrategy {
 
             Node target = new Node(tx, u.y, tz);
             if (clear && isStandable(tx, u.y, tz, world)
-                    && StandablePositionResolver.canGapJump(world, u, target)
-                    && world.isPassable(new Vector3d(tx, u.y + 2, tz))) {
+                    && world.isPassable(new Vector3d(tx, u.y + 2, tz))
+                    && StandablePositionResolver.canGapJump(world, u, target)) {
                 edges.add(new Edge(target, getEuclideanDistance(u, target) + 1.0, BuiltinMovementType.GAP_JUMP));
             }
         }

@@ -85,7 +85,7 @@ public class World {
         Vector3i chunk = getChunk(position);
         if (!chunkLoaded(chunk.x, chunk.z)) return false;
 
-        double halfWidth = 0.299;
+        double halfWidth = (double) 0.6f / 2;
         double tolerance = 1.0e-4;
         return findHighestCollisionTop(
             position.x - halfWidth, position.y - tolerance, position.z - halfWidth,
@@ -284,31 +284,28 @@ public class World {
     }
 
     public int getBlockAt(Vector3d position) {
-        Vector3i chunk = getChunk(position);
-        int chunkX = chunk.x;
-        int chunkY = chunk.y;
-        int chunkZ = chunk.z;
         lock.readLock().lock();
         try {
-            if (!chunks.containsKey(chunkX)) return 0;
-            Map<Integer, Map<Integer, ChunkSection>> xChunks = chunks.get(chunkX);
-            if (!xChunks.containsKey(chunkZ)) return 0;
-            Map<Integer, ChunkSection> zChunks = xChunks.get(chunkZ);
-            if (!zChunks.containsKey(chunkY)) return 0;
-            ChunkSection section = zChunks.get(chunkY);
-            int relativeX = (int) Math.floor(position.x) & 15;
-            int relativeY = (int) Math.floor(position.y) & 15;
-            int relativeZ = (int) Math.floor(position.z) & 15;
-            try {
-                synchronized (section) {
-                    return section.getBlock(relativeX, relativeY, relativeZ);
-                }
-            } catch (IndexOutOfBoundsException e) {
-                return 0;
-            }
-        }
-        finally {
+            return blockAtLocked((int) Math.floor(position.x),
+                    (int) Math.floor(position.y), (int) Math.floor(position.z));
+        } finally {
             lock.readLock().unlock();
+        }
+    }
+
+    private int blockAtLocked(int x, int y, int z) {
+        Map<Integer, Map<Integer, ChunkSection>> xChunks = chunks.get(x >> 4);
+        if (xChunks == null) return 0;
+        Map<Integer, ChunkSection> sections = xChunks.get(z >> 4);
+        if (sections == null) return 0;
+        ChunkSection section = sections.get(y >> 4);
+        if (section == null) return 0;
+        try {
+            synchronized (section) {
+                return section.getBlock(x & 15, y & 15, z & 15);
+            }
+        } catch (IndexOutOfBoundsException e) {
+            return 0;
         }
     }
 
@@ -347,16 +344,35 @@ public class World {
         int lastY = Math.min(getMaxWorldY(), (int) Math.ceil(maxY - registry.minY()) - 1);
         int lastZ = (int) Math.ceil(maxZ - registry.minZ()) - 1;
 
-        for (int x = firstX; x <= lastX; x++) {
-            for (int y = firstY; y <= lastY; y++) {
-                if (!isWithinWorldBounds(y)) continue;
-                for (int z = firstZ; z <= lastZ; z++) {
-                    if (excludedBlocks.contains(new Vector3i(x, y, z))) continue;
-                    int stateId = getBlockStateAt(new Vector3d(x, y, z)).stateId();
-                    if (registry.intersects(stateId, x, y, z,
-                            minX, minY, minZ, maxX, maxY, maxZ)) return true;
+        // Subclasses may provide virtual block data instead of chunk storage.
+        boolean direct = getClass() == World.class;
+        if (direct) lock.readLock().lock();
+        try {
+            for (int x = firstX; x <= lastX; x++) {
+                for (int y = firstY; y <= lastY; y++) {
+                    if (!isWithinWorldBounds(y)) continue;
+                    for (int z = firstZ; z <= lastZ; z++) {
+                        if (isExcluded(excludedBlocks, x, y, z)) continue;
+                        int stateId = direct ? blockAtLocked(x, y, z)
+                                : getBlockStateAt(new Vector3d(x, y, z)).stateId();
+                        if (registry.intersects(stateId, x, y, z,
+                                minX, minY, minZ, maxX, maxY, maxZ)) return true;
+                    }
                 }
             }
+            return false;
+        } finally {
+            if (direct) lock.readLock().unlock();
+        }
+    }
+
+    private static boolean isExcluded(Set<Vector3i> excludedBlocks, int x, int y, int z) {
+        // Small hypothetical block edits are common here. Avoid allocating a vector
+        // and probing an immutable set for every voxel in a swept collision box.
+        if (excludedBlocks.isEmpty()) return false;
+        if (excludedBlocks.size() > 4) return excludedBlocks.contains(new Vector3i(x, y, z));
+        for (Vector3i block : excludedBlocks) {
+            if (block.x == x && block.y == y && block.z == z) return true;
         }
         return false;
     }
@@ -388,27 +404,35 @@ public class World {
         int lastZ = (int) Math.ceil(maxZ - registry.minZ()) - 1;
         double highest = Double.NEGATIVE_INFINITY;
 
-        for (int x = firstX; x <= lastX; x++) {
-            for (int y = firstY; y <= lastY; y++) {
-                for (int z = firstZ; z <= lastZ; z++) {
-                    if (excludedBlocks.contains(new Vector3i(x, y, z))) continue;
-                    int stateId = getBlockStateAt(new Vector3d(x, y, z)).stateId();
-                    for (CollisionBox box : registry.boxesFor(stateId)) {
-                        double boxMinX = x + box.minX();
-                        double boxMaxX = x + box.maxX();
-                        double boxMinZ = z + box.minZ();
-                        double boxMaxZ = z + box.maxZ();
-                        if (boxMinX >= maxX || boxMaxX <= minX
-                                || boxMinZ >= maxZ || boxMaxZ <= minZ) continue;
-                        double top = y + box.maxY();
-                        if (top >= minY && top <= maxY && top > highest) highest = top;
+        // Subclasses may provide virtual block data instead of chunk storage.
+        boolean direct = getClass() == World.class;
+        if (direct) lock.readLock().lock();
+        try {
+            for (int x = firstX; x <= lastX; x++) {
+                for (int y = firstY; y <= lastY; y++) {
+                    for (int z = firstZ; z <= lastZ; z++) {
+                        if (isExcluded(excludedBlocks, x, y, z)) continue;
+                        int stateId = direct ? blockAtLocked(x, y, z)
+                                : getBlockStateAt(new Vector3d(x, y, z)).stateId();
+                        for (CollisionBox box : registry.boxesFor(stateId)) {
+                            double boxMinX = x + box.minX();
+                            double boxMaxX = x + box.maxX();
+                            double boxMinZ = z + box.minZ();
+                            double boxMaxZ = z + box.maxZ();
+                            if (boxMinX >= maxX || boxMaxX <= minX
+                                    || boxMinZ >= maxZ || boxMaxZ <= minZ) continue;
+                            double top = y + box.maxY();
+                            if (top >= minY && top <= maxY && top > highest) highest = top;
+                        }
                     }
                 }
             }
+            return highest == Double.NEGATIVE_INFINITY
+                ? OptionalDouble.empty()
+                : OptionalDouble.of(highest);
+        } finally {
+            if (direct) lock.readLock().unlock();
         }
-        return highest == Double.NEGATIVE_INFINITY
-            ? OptionalDouble.empty()
-            : OptionalDouble.of(highest);
     }
 
     /**

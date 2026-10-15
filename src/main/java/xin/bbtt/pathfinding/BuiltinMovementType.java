@@ -8,6 +8,12 @@ import xin.bbtt.movement.Movement;
 public enum BuiltinMovementType implements MovementType {
     /** Walk onto an already standable neighbour. */
     WALK,
+
+    /** Swim along an exposed water surface, or enter/leave the shore. */
+    SWIM,
+
+    /** Enter, ascend, descend or leave a climbable column. */
+    CLIMB,
     
     /** Walk through an obstacle that must be dug out first. */
     DIG {

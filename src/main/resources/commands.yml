@@ -78,15 +78,21 @@ follow:
   usage: "movementsync.command.follow.usage"
   aliases: ["follow"]
   executor: "xin.bbtt.commands.FollowCommandExecutor"
+elytra:
+  description: "movementsync.command.elytra.description"
+  usage: "movementsync.command.elytra.usage"
+  aliases: ["elytra"]
+  executor: "xin.bbtt.commands.ElytraCommandExecutor"
 ride:
   description: "movementsync.command.ride.description"
   usage: "movementsync.command.ride.usage"
   aliases: ["ride", "mount"]
   executor: "xin.bbtt.commands.RideCommandExecutor"
-stop:
+# Named stopmove rather than stop: xinbot's own `stop` command shuts the whole bot down.
+stopmove:
   description: "movementsync.command.stop.description"
   usage: "movementsync.command.stop.usage"
-  aliases: ["stop"]
+  aliases: ["stopmove"]
   executor: "xin.bbtt.commands.StopCommandExecutor"
 debug:
   description: "movementsync.command.debug.description"

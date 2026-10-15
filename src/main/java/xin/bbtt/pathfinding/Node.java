@@ -3,8 +3,6 @@ package xin.bbtt.pathfinding;
 import org.joml.Vector3i;
 import org.joml.Vector3ic;
 
-import java.util.Objects;
-
 public class Node {
     public final int x, y, z;
 
@@ -34,7 +32,7 @@ public class Node {
 
     @Override
     public int hashCode() {
-        return Objects.hash(x, y, z);
+        return 31 * (31 * (31 + x) + y) + z;
     }
 
     @Override

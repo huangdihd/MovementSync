@@ -40,8 +40,17 @@ public class DStarLite {
     }
 
     public List<PathStep> findPath(int maxIterations) {
+        if (maxIterations < 0) return new ArrayList<>();
+        if (start.equals(goal)) return new ArrayList<>(List.of(new PathStep(start, BuiltinMovementType.WALK)));
+        try (StandablePositionResolver.SearchCache ignored = StandablePositionResolver.beginSearch()) {
+            return search(maxIterations);
+        }
+    }
+
+    private List<PathStep> search(int maxIterations) {
         long startTime = System.currentTimeMillis();
         PriorityQueue<NodeEntry> openSet = new PriorityQueue<>();
+        Map<Node, NodeEntry> active = new HashMap<>();
         Map<Node, Double> gScore = new HashMap<>();
         Map<Node, Node> cameFromNode = new HashMap<>();
         Map<Node, MovementType> cameFromType = new HashMap<>();
@@ -49,13 +58,18 @@ public class DStarLite {
         Node bestNode = start;
         double minH = context.getHeuristic(start, goal);
         
-        openSet.add(new NodeEntry(start, minH, 0.0));
+        NodeEntry initial = new NodeEntry(start, minH, 0.0);
+        openSet.add(initial);
+        active.put(start, initial);
         gScore.put(start, 0.0);
         
         int iterations = 0;
-        while (!openSet.isEmpty()) {
+        while (!active.isEmpty()) {
+            NodeEntry entry = openSet.poll();
+            if (active.get(entry.node) != entry) continue;
             if (iterations++ > maxIterations) break;
-            Node curr = openSet.poll().node;
+            Node curr = entry.node;
+            active.remove(curr);
             
             if (curr.equals(goal)) {
                 List<PathStep> path = reconstructPath(cameFromNode, cameFromType, curr);
@@ -68,6 +82,13 @@ public class DStarLite {
                 minH = h; 
                 bestNode = curr; 
             }
+
+            // A partial route is useful immediately once the closest search
+            // frontier reaches unknown terrain toward an unloaded goal.
+            if (h <= minH && context.isUnloadedFrontier(curr, goal)
+                    && active.values().stream().noneMatch(candidate -> context.getHeuristic(candidate.node, goal) < h)) {
+                return reconstructPath(cameFromNode, cameFromType, curr);
+            }
             
             for (Edge edge : context.getEdges(curr)) {
                 Node neighbor = edge.getTarget();
@@ -76,8 +97,10 @@ public class DStarLite {
                     cameFromNode.put(neighbor, curr);
                     cameFromType.put(neighbor, edge.getType());
                     gScore.put(neighbor, tentativeG);
-                    openSet.removeIf(e -> e.node.equals(neighbor));
-                    openSet.add(new NodeEntry(neighbor, tentativeG + context.getHeuristic(neighbor, goal), tentativeG));
+                    NodeEntry replacement = new NodeEntry(neighbor,
+                            tentativeG + context.getHeuristic(neighbor, goal), tentativeG);
+                    active.put(neighbor, replacement);
+                    openSet.add(replacement);
                 }
             }
         }

@@ -1,5 +1,18 @@
 package xin.bbtt;
 
+import xin.bbtt.physics.PlayerInput;
+import org.geysermc.mcprotocollib.network.packet.Packet;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.Queue;
+import java.util.Objects;
+
+import org.geysermc.mcprotocollib.protocol.data.game.item.ItemStack;
+import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundPlayerCommandPacket;
+import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundUseItemPacket;
+import org.geysermc.mcprotocollib.protocol.data.game.entity.player.PlayerState;
+import org.geysermc.mcprotocollib.protocol.data.game.entity.player.Hand;
+import xin.bbtt.inventory.ItemRegistry;
+import java.util.OptionalInt;
 import lombok.Getter;
 import lombok.Setter;
 import org.joml.Vector3d;
@@ -27,9 +40,50 @@ public class MovementSync implements Plugin {
     private static final Logger logger = LoggerFactory.getLogger(MovementSync.class.getSimpleName());
     public static MovementSync INSTANCE;
 
+    @Getter
+    private final xin.bbtt.physics.MovementParameterState movementParameterState =
+            new xin.bbtt.physics.MovementParameterState();
+
+    public xin.bbtt.physics.MovementParameters getMovementParameters() {
+        return movementParameterState.snapshot();
+    }
+
     public int entityId = -1;
     public AtomicReference<Vector3d> position = new AtomicReference<>(new Vector3d(0, 0, 0));
     public AtomicReference<Vector3d> velocity = new AtomicReference<>(new Vector3d(0, 0, 0));
+    private final AtomicReference<PlayerInput> input =
+            new AtomicReference<>(PlayerInput.NONE);
+    private final AtomicBoolean jumpRequested = new AtomicBoolean();
+    private final Queue<Packet> beforeMovementPackets =
+            new ConcurrentLinkedQueue<>();
+
+    public PlayerInput getInput() {
+        return input.get();
+    }
+
+    public void setInput(PlayerInput keys) {
+        input.set(Objects.requireNonNull(keys, "keys"));
+    }
+
+    public void clearInput() {
+        input.set(PlayerInput.NONE);
+        jumpRequested.set(false);
+    }
+
+    /** Consumes only the one-shot request; held jump remains held. */
+    public PlayerInput snapshotInput() {
+        PlayerInput keys = input.get();
+        return jumpRequested.getAndSet(false) ? keys.withJump(true) : keys;
+    }
+
+    public void queueBeforeMovement(Packet packet) {
+        beforeMovementPackets.add(Objects.requireNonNull(packet, "packet"));
+    }
+
+    public Packet pollBeforeMovementPacket() {
+        return beforeMovementPackets.poll();
+    }
+
     public AtomicReference<Float> pitch = new AtomicReference<>(0f);
     public AtomicReference<Float> yaw = new AtomicReference<>(0f);
     public static final Vector3d gravitationalAcceleration = new Vector3d(0, -0.08, 0);
@@ -39,6 +93,8 @@ public class MovementSync implements Plugin {
     public static final double jumpVelocity = 0.42;
     public static final double verticalDrag = 0.9800000190734863D;
     public AtomicBoolean onGround = new AtomicBoolean(true);
+    public final AtomicReference<Double> fallDistance = new AtomicReference<>(0.0);
+    private final AtomicBoolean gliding = new AtomicBoolean();
     private ScheduledExecutorService physicalSimulationService;
     public ScheduledExecutorService movementService;
 
@@ -103,14 +159,18 @@ public class MovementSync implements Plugin {
     @Override
     public void onEnable() {
         getLogger().info(LangManager.get("movementsync.plugin.enabling"));
+        movementParameterState.reset();
         position.set(new Vector3d(0, 0, 0));
         velocity.set(new Vector3d(0, 0, 0));
         pitch.set(0f);
         yaw.set(0f);
 
         Bot.INSTANCE.addPacketListener(new TeleportPacketListener(), this);
+        Bot.INSTANCE.addPacketListener(new PingPacketListener(), this);
+        Bot.INSTANCE.addPacketListener(new VelocityPacketListener(), this);
         Bot.INSTANCE.addPacketListener(new LoginPacketListener(), this);
         Bot.INSTANCE.addPacketListener(new EntityIdRecorder(), this);
+        Bot.INSTANCE.addPacketListener(new MovementParametersPacketListener(), this);
         Bot.INSTANCE.addPacketListener(new RespawnPacketListener(), this);
         Bot.INSTANCE.addPacketListener(new ChunkDataListener(), this);
         Bot.INSTANCE.addPacketListener(new RegistryDataListener(), this);
@@ -127,18 +187,119 @@ public class MovementSync implements Plugin {
     @Override
     public void onDisable() {
         getLogger().info(LangManager.get("movementsync.plugin.disabling"));
+        movementParameterState.reset();
         physicalSimulationService.shutdown();
         movementService.shutdown();
     }
 
+    public boolean isGliding() {
+        return gliding.get();
+    }
+
+    /** Updates local state, including authoritative server corrections; sends no packet. */
+    public void setGliding(boolean gliding) {
+        this.gliding.set(gliding);
+    }
+
+    /** Returns whether a start request was sent, not whether the server accepted it. */
+    public synchronized boolean startGliding() {
+        if (isGliding() || onGround.get() || isRiding() || entityId < 0) return false;
+        if (!hasEquippedElytra()) return false;
+        if (Bot.INSTANCE == null || Bot.INSTANCE.getSession() == null || !Bot.INSTANCE.getSession().isConnected()) return false;
+        jump();
+        setGliding(true);
+        queueBeforeMovement(new ServerboundPlayerCommandPacket(
+                entityId, PlayerState.START_ELYTRA_FLYING));
+        return true;
+    }
+
+    /** The protocol has a start command only: stopping is local, never a toggle packet. */
+    public boolean stopGliding() {
+        boolean wasGliding = isGliding();
+        setGliding(false);
+        return wasGliding;
+    }
+
+    /** Selects a hotbar rocket; acceleration waits for server-confirmed entity attachment. */
+    public synchronized boolean useFirework() {
+        if (!isGliding()) return false;
+        int rocketSlot = hotbarFireworks().firstSlot();
+        if (rocketSlot < 0) return false;
+        if (Bot.INSTANCE == null || Bot.INSTANCE.getSession() == null || !Bot.INSTANCE.getSession().isConnected()) return false;
+        if (inventoryManager.getHeldSlot() != rocketSlot) {
+            queueBeforeMovement(new org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundSetCarriedItemPacket(rocketSlot));
+            inventoryManager.setHeldSlot(rocketSlot);
+        }
+        queueBeforeMovement(new ServerboundUseItemPacket(
+                Hand.MAIN_HAND, Bot.INSTANCE.getAndIncreaseSequence(), yaw.get(), pitch.get()));
+        return true;
+    }
+
+    public boolean hasEquippedElytra() {
+        ItemStack[] inventory = inventoryManager.getInventory();
+        return inventory != null && inventory.length > 6 && isItem(inventory[6], "elytra");
+    }
+
+    public int countHotbarFireworks() {
+        return hotbarFireworks().count();
+    }
+
+    private record HotbarFireworks(int firstSlot, int count) {}
+
+    private HotbarFireworks hotbarFireworks() {
+        ItemStack[] inventory = inventoryManager.getInventory();
+        int firstSlot = -1;
+        int count = 0;
+        if (inventory == null) return new HotbarFireworks(firstSlot, count);
+        for (int slot = 36; slot < Math.min(45, inventory.length); slot++) {
+            if (!isItem(inventory[slot], "firework_rocket")) continue;
+            if (firstSlot < 0) firstSlot = slot - 36;
+            count += inventory[slot].getAmount();
+        }
+        return new HotbarFireworks(firstSlot, count);
+    }
+
+    private static boolean isItem(ItemStack stack, String name) {
+        if (stack == null || stack.getAmount() <= 0) return false;
+        ItemRegistry.ItemEntry item = ItemRegistry.Instance.getItem(stack.getId());
+        return item != null && name.equals(item.getName());
+    }
+
+    public boolean hasAttachedFirework() {
+        if (!isGliding() || entityId < 0) return false;
+        for (xin.bbtt.Entity.Entity entity : world.getEntities().values()) {
+            if (entity.getType() != org.geysermc.mcprotocollib.protocol.data.game.entity.type.EntityType.FIREWORK_ROCKET) continue;
+            Object target = entity.getMetadata().get("attached_to_target");
+            if (target instanceof OptionalInt attached && attached.isPresent()
+                    && attached.getAsInt() == entityId) return true;
+        }
+        return false;
+    }
+
+    public void clearFlightState() {
+        setGliding(false);
+        selfMetadata.remove("shared_flags");
+        selfMetadata.remove("pose");
+    }
+
     public void jump() {
-        if (!onGround.get()) return;
-        velocity.updateAndGet(v -> new Vector3d(v).add(0, jumpVelocity, 0));
-        onGround.set(false);
+        jumpRequested.set(true);
     }
 
     public void lookAt(Vector3d target) {
         getMovementController().addMovement(new xin.bbtt.movements.LookAtMovement(target));
+    }
+
+    /** Direction changes preserve accumulated turns; server teleports write yaw directly. */
+    public void setYawToward(float direction) {
+        yaw.updateAndGet(current -> nearestEquivalentYaw(current, direction));
+    }
+
+    public static float nearestEquivalentYaw(float current, float direction) {
+        float difference = (direction - current) % 360.0f;
+        if (difference >= 180.0f) difference -= 360.0f;
+        if (difference < -180.0f) difference += 360.0f;
+        return current + difference;
     }
 
     public void directLookAt(Vector3d target) {
@@ -147,7 +308,7 @@ public class MovementSync implements Plugin {
         double distanceXZ = Math.sqrt(diff.x * diff.x + diff.z * diff.z);
         float targetYaw = (float) Math.toDegrees(Math.atan2(-diff.x, diff.z));
         float targetPitch = (float) Math.toDegrees(Math.atan2(-diff.y, distanceXZ));
-        this.yaw.set(targetYaw);
+        setYawToward(targetYaw);
         this.pitch.set(targetPitch);
     }
 
@@ -315,6 +476,14 @@ public class MovementSync implements Plugin {
         }
     }
 
+    /** Clears a failed request's goal without disturbing newer navigation or other state. */
+    public void abandonNavigationRequest(long generation) {
+        synchronized (navigationLock) {
+            if (!isNavigationRequestCurrent(generation)) return;
+            activeGoal = null;
+        }
+    }
+
     public void cancelNavigation() {
         synchronized (navigationLock) {
             navigationGeneration.incrementAndGet();
@@ -369,6 +538,18 @@ public class MovementSync implements Plugin {
         xin.bbtt.movement.Movement current = movementController.getCurrentMovement();
         if (current instanceof xin.bbtt.movements.PathMovement pathMovement) {
             pathMovement.requestRepath();
+        } else if (current instanceof xin.bbtt.movements.TravelMovement travelMovement) {
+            travelMovement.requestRepath();
+        }
+    }
+
+    /** A block changed at the given position; replan only if it lies along the current route. */
+    public void requestRepath(int x, int y, int z) {
+        xin.bbtt.movement.Movement current = movementController.getCurrentMovement();
+        if (current instanceof xin.bbtt.movements.PathMovement pathMovement) {
+            pathMovement.requestRepath(x, y, z);
+        } else if (current instanceof xin.bbtt.movements.TravelMovement travelMovement) {
+            travelMovement.requestRepath(x, y, z);
         }
     }
 

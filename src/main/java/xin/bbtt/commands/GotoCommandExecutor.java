@@ -17,11 +17,13 @@ import java.util.List;
 public class GotoCommandExecutor extends TabHighlightExecutor {
     @Override
     public void onCommand(Command command, String label, String[] args) {
-        if (args.length < 3) {
+        if (args.length < 3 || args.length > 4 || args.length == 4 && !"walk".equalsIgnoreCase(args[3])) {
             MovementSync.getLogger().info(LangManager.get("movementsync.command.common.usage", command.getUsage()));
             return;
         }
 
+        Long requestGeneration = null;
+        boolean movementPublished = false;
         try {
             // Tolerate comma-separated input like "goto 58, 120, -284".
             int tx = Integer.parseInt(args[0].replace(",", ""));
@@ -48,7 +50,18 @@ public class GotoCommandExecutor extends TabHighlightExecutor {
             MovementSync.getLogger().info(LangManager.get("movementsync.command.goto.searching", tx, ty, tz));
 
             org.joml.Vector3i requestedGoal = new org.joml.Vector3i(tx, ty, tz);
-            long requestGeneration = MovementSync.INSTANCE.beginStaticNavigationRequest(requestedGoal);
+            requestGeneration = MovementSync.INSTANCE.beginStaticNavigationRequest(requestedGoal);
+
+            boolean fly = xin.bbtt.movements.TravelMovement.shouldFly(
+                    Math.hypot(currentPos.x - (tx + 0.5), currentPos.z - (tz + 0.5)),
+                    MovementSync.INSTANCE.hasEquippedElytra(),
+                    MovementSync.INSTANCE.countHotbarFireworks() > 0,
+                    args.length == 4, MovementSync.INSTANCE.isGliding());
+            if (fly || !MovementSync.INSTANCE.onGround.get()) {
+                movementPublished = MovementSync.INSTANCE.addMovementIfNavigationRequestCurrent(
+                        requestGeneration, new xin.bbtt.movements.TravelMovement(requestedGoal, requestGeneration, fly));
+                return;
+            }
 
             DStarLite pathfinder = new DStarLite(start, goal, MovementSync.INSTANCE.getWorld());
             List<xin.bbtt.pathfinding.PathStep> path = pathfinder.findPath(5000);
@@ -63,7 +76,7 @@ public class GotoCommandExecutor extends TabHighlightExecutor {
                 MovementSync.getLogger().info(LangManager.get("movementsync.command.goto.partial", end.x, end.y, end.z));
             }
 
-            MovementSync.INSTANCE.addMovementIfNavigationRequestCurrent(
+            movementPublished = MovementSync.INSTANCE.addMovementIfNavigationRequestCurrent(
                 requestGeneration,
                 new PathMovement(path, -1, false, requestedGoal, -1, requestGeneration)
             );
@@ -72,6 +85,10 @@ public class GotoCommandExecutor extends TabHighlightExecutor {
             MovementSync.getLogger().info(LangManager.get("movementsync.command.common.usage", command.getUsage()));
         } catch (Exception e) {
             MovementSync.getLogger().error("Error during pathfinding", e);
+        } finally {
+            if (requestGeneration != null && !movementPublished) {
+                MovementSync.INSTANCE.abandonNavigationRequest(requestGeneration);
+            }
         }
     }
 

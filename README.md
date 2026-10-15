@@ -55,11 +55,12 @@ English / [简体中文](README_CN.md)
 | `container` | Show current container content |
 | `ispassable` | Check if a block is passable |
 | `lookatentity` | Look at an entity by ID |
-| `goto` | Pathfind to a coordinate |
+| `goto` | Pathfind to a coordinate; flies there with an elytra when the target is far and rockets are available (`goto <x> <y> <z> walk` forces walking) |
+| `elytra` | Elytra flight: `start`, `boost`, `status`, `fly <x> <z> [y]` |
 | `follow` | Follow an entity by ID |
 | `ride` | Ride an entity or dismount |
 | `cansee` | Check line-of-sight to a coordinate |
-| `stop` | Stop all movement and clear goals |
+| `stopmove` | Stop all movement and clear goals |
 | `debug` | Print current state for troubleshooting |
 
 ---

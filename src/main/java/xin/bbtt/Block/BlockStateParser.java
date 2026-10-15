@@ -13,6 +13,7 @@ import java.util.stream.Collectors;
 
 public class BlockStateParser {
     private final TreeMap<Integer, BlockEntry> rangeMap = new TreeMap<>();
+    private volatile BlockEntry[] entriesByState = new BlockEntry[0];
     private final Map<String, BlockEntry> nameToBlock = new java.util.HashMap<>();
     @Getter
     private static int blockStateRegistrySize = 0;
@@ -42,6 +43,14 @@ public class BlockStateParser {
             }
         }
         blockStateRegistrySize = maxId + 1;
+        // Publish a complete lookup table; readers never observe a partially filled registry.
+        int lastState = rangeMap.values().stream().mapToInt(BlockEntry::getMaxStateId).max().orElse(-1);
+        BlockEntry[] lookup = new BlockEntry[lastState + 1];
+        for (int stateId = 0; stateId < lookup.length; stateId++) {
+            Map.Entry<Integer, BlockEntry> entry = rangeMap.floorEntry(stateId);
+            if (entry != null && stateId <= entry.getValue().getMaxStateId()) lookup[stateId] = entry.getValue();
+        }
+        entriesByState = lookup;
     }
 
     public BlockEntry getBlockByStateId(int stateId) {
@@ -68,13 +77,10 @@ public class BlockStateParser {
     }
 
     public BlockState parseStateId(int stateId) {
-        Map.Entry<Integer, BlockEntry> floorEntry = rangeMap.floorEntry(stateId);
-
-        if (floorEntry == null || stateId > floorEntry.getValue().getMaxStateId()) {
-            throw new UnknownBlockStateException(stateId);
-        }
-
-        BlockEntry block = floorEntry.getValue();
+        BlockEntry[] lookup = entriesByState;
+        BlockEntry block = stateId >= 0 && stateId < lookup.length
+                ? lookup[stateId] : getBlockByStateId(stateId);
+        if (block == null) throw new UnknownBlockStateException(stateId);
         Map<String, String> properties = getProperties(stateId, block);
 
         return new BlockState(block.getName(), stateId, properties, block.getBoundingBox(), block.getHardness(), block.isDiggable(), block.getMaterial());
