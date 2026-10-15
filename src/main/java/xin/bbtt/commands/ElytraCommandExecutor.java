@@ -11,6 +11,7 @@ import xin.bbtt.movements.ElytraTakeoffMovement;
 
 public class ElytraCommandExecutor extends SubCommandExecutor {
     public ElytraCommandExecutor() {
+
         registerSubCommand("start", new CommandExecutor() {
             @Override
             public void onCommand(Command command, String label, String[] args) {
@@ -101,6 +102,12 @@ public class ElytraCommandExecutor extends SubCommandExecutor {
             @Override
             public void onCommand(Command command, String label, String[] args) {
                 MovementSync movementSync = MovementSync.INSTANCE;
+                if (args.length == 2 && args[0].equals("inventory-swap")
+                        && (args[1].equals("on") || args[1].equals("off"))) {
+                    movementSync.getInventoryManager().setAirborneInventorySwap(args[1].equals("on"));
+                    MovementSync.getLogger().info("Airborne elytra inventory swap: {}", args[1]);
+                    return;
+                }
                 Vector3d position = new Vector3d(movementSync.position.get());
                 Vector3d velocity = new Vector3d(movementSync.velocity.get());
                 MovementSync.getLogger().info(LangManager.get("movementsync.command.elytra.status",

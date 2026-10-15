@@ -16,6 +16,15 @@ public class InventoryManager {
     @Getter @Setter
     private int heldSlot = 0;
     
+    @Getter @Setter
+    // Airborne inventory clicks raised no Grim or Vulcan alerts in live tests; "elytra status inventory-swap off" disables them.
+    private volatile boolean airborneInventorySwap = true;
+    @Getter
+    private volatile boolean inventorySwapOpen;
+    @Setter
+    private volatile ItemStack carriedItem;
+    private boolean inventoryRollback;
+
     private final Map<Integer, ItemStack[]> containers = new ConcurrentHashMap<>();
 
     /** Reads the authoritative chest-slot stack; never predicts or writes item damage. */
@@ -54,12 +63,12 @@ public class InventoryManager {
         return new xin.bbtt.physics.ElytraDurability(true, Math.max(0, max), Math.max(0, damage), unbreakable);
     }
 
-    /** Budget includes only equipment and hotbar, never unprepared backpack stacks. */
+    /** Backpack reserves count only when airborne inventory interaction is enabled. */
     public synchronized double remainingFlightSeconds() {
         double seconds = getElytraDurability().remainingFlightSeconds();
         ItemStack[] items = getInventory();
         if (!canRemoveChestEquipment()) return seconds;
-        if (items != null) for (int i = 36; i < Math.min(45, items.length); i++) {
+        if (items != null) for (int i = airborneInventorySwap ? 9 : 36; i < Math.min(45, items.length); i++) {
             if (canEquip(items[i])) seconds += durability(items[i]).remainingFlightSeconds();
         }
         return seconds;
@@ -112,12 +121,20 @@ public class InventoryManager {
                                                     java.util.function.IntSupplier sequence, float yaw, float pitch) {
         if (pendingSlot >= 0) {
             ItemStack[] items = getInventory();
+            if (inventorySwapOpen && (inventoryRollback || carriedItem != null || currentContainerId != 0)) {
+                closeInventorySwap(send);
+                pendingSlot = -1;
+                swapFailed = true;
+                return ElytraAction.LAND;
+            }
             if (confirmed(items)) {
+                closeInventorySwap(send);
                 MovementSync.getLogger().info("Elytra inventory update confirmed: remaining={}, seconds={}",
                         getElytraDurability().remainingDurability(), getElytraDurability().remainingFlightSeconds());
                 pendingSlot = -1;
                 expectedStack = null;
             } else if (++pendingTicks >= 40) {
+                closeInventorySwap(send);
                 pendingSlot = -1;
                 expectedStack = null;
                 swapFailed = true;
@@ -141,6 +158,33 @@ public class InventoryManager {
             double candidate = durability(items[i]).remainingFlightSeconds();
             if (canEquip(items[i]) && candidate > budget) { best = i; budget = candidate; }
         }
+        if (best < 0 && !onGround && airborneInventorySwap && carriedItem == null && items != null && items.length >= 45) {
+            for (int i = 9; i < 36; i++) {
+                double candidate = durability(items[i]).remainingFlightSeconds();
+                if (canEquip(items[i]) && candidate > budget) { best = i; budget = candidate; }
+            }
+            if (best >= 0) {
+                int destination = -1;
+                for (int i = 36; i < 45; i++) if (items[i] == null || items[i].getAmount() <= 0) { destination = i; break; }
+                if (destination < 0) destination = 36;
+                pendingSlot = destination;
+                expectedStack = items[best];
+                pendingOtherSlot = best;
+                expectedOtherStack = items[destination];
+                pendingTicks = 0;
+                inventoryRollback = false;
+                inventorySwapOpen = true;
+                MovementSync.getLogger().info("Airborne elytra inventory SWAP: slot={}, hotbar={}, state={}", best, destination - 36, currentStateId);
+                // Omit prediction hashes to receive authoritative updates for both slots.
+                // Matching hashes suppress confirmations in vanilla ScreenHandler.
+                send.accept(new org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.inventory.ServerboundContainerClickPacket(
+                        0, currentStateId, best,
+                        org.geysermc.mcprotocollib.protocol.data.game.inventory.ContainerActionType.MOVE_TO_HOTBAR_SLOT,
+                        org.geysermc.mcprotocollib.protocol.data.game.inventory.MoveToHotbarAction.values()[destination - 36],
+                        null, java.util.Map.of()));
+                return ElytraAction.WAITING;
+            }
+        }
         if (best < 0) return ElytraAction.LAND;
         MovementSync.getLogger().info("Swapping elytra from hotbar {}: remaining={}, replacement seconds={}",
                 best - 36, getElytraDurability().remainingDurability(), budget);
@@ -155,6 +199,13 @@ public class InventoryManager {
                 org.geysermc.mcprotocollib.protocol.data.game.entity.player.Hand.MAIN_HAND, sequence.getAsInt(), yaw, pitch));
         send.accept(new org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundSetCarriedItemPacket(restore));
         return ElytraAction.WAITING;
+    }
+
+    private void closeInventorySwap(java.util.function.Consumer<org.geysermc.mcprotocollib.network.packet.Packet> send) {
+        if (!inventorySwapOpen) return;
+        send.accept(new org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.inventory.ServerboundContainerClosePacket(0));
+        inventorySwapOpen = false;
+        MovementSync.getLogger().info("Airborne elytra inventory closed: rollback={}", inventoryRollback);
     }
 
     /** Ground-only number-key transfer into an empty hotbar slot, awaiting server confirmation. */
@@ -201,9 +252,12 @@ public class InventoryManager {
         currentContainerId = 0;
         currentStateId = 0;
         heldSlot = 0;
+        carriedItem = null;
     }
 
     public synchronized void resetElytraSwap() {
+        inventorySwapOpen = false;
+        inventoryRollback = false;
         pendingSlot = -1;
         expectedStack = null;
         pendingTicks = 0;
@@ -268,6 +322,7 @@ public class InventoryManager {
 
     public synchronized void setContainerItems(int containerId, ItemStack[] items) {
         containers.put(containerId, items);
+        if (containerId == 0 && inventorySwapOpen && !confirmed(items)) inventoryRollback = true;
     }
 
     public synchronized void setSlot(int containerId, int slot, ItemStack item) {
@@ -278,6 +333,11 @@ public class InventoryManager {
         }
         ItemStack[] items = containers.get(containerId);
         if (items != null && slot >= 0 && slot < items.length) {
+            if (containerId == 0 && inventorySwapOpen
+                    && (slot == pendingSlot && !java.util.Objects.equals(item, expectedStack)
+                    || slot == pendingOtherSlot && !java.util.Objects.equals(item, expectedOtherStack))) {
+                inventoryRollback = true;
+            }
             items = items.clone();
             items[slot] = item;
             containers.put(containerId, items);

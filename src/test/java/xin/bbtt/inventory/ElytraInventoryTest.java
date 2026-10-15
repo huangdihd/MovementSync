@@ -21,6 +21,7 @@ class ElytraInventoryTest {
     }
     @Test void budgetOnlyCountsChestAndHotbarAndUsesServerDamage() {
         var manager = new InventoryManager();
+        manager.setAirborneInventorySwap(false); // hotbar-only budget (switch off)
         var items = new ItemStack[46];
         items[6] = elytra(422); items[9] = elytra(0); items[36] = elytra(400);
         manager.setContainerItems(0, items);
@@ -50,6 +51,7 @@ class ElytraInventoryTest {
     }
     @Test void preparationIsGroundOnlyAndDoesNotPredictInventory() {
         var manager = new InventoryManager(); var items = new ItemStack[46];
+        manager.setAirborneInventorySwap(false); // hotbar-only budget (switch off)
         items[6] = elytra(0); items[9] = elytra(0); manager.setContainerItems(0, items);
         var packets = new ArrayList<Packet>();
         assertEquals(InventoryManager.ElytraAction.LAND, manager.prepareElytra(false, packets::add));
@@ -131,6 +133,54 @@ class ElytraInventoryTest {
             manager.setSlot(0, 6, items[36]); manager.setSlot(0, 36, items[6]);
             assertEquals(InventoryManager.ElytraAction.READY, manager.tickElytraSwap(false, packets::add, () -> 3, 0, 0));
         }
+    }
+    @Test void backpackSwapUsesStateAndPausesInputUntilBothSlotsArrive() {
+        var sync = new xin.bbtt.MovementSync();
+        var manager = sync.getInventoryManager(); manager.setAirborneInventorySwap(true);
+        var items = new ItemStack[46]; items[6] = elytra(422); items[9] = elytra(100); items[35] = elytra(0);
+        manager.setContainerItems(0, items); manager.setCurrentStateId(123);
+        assertEquals(771, manager.remainingFlightSeconds());
+        var input = new xin.bbtt.physics.PlayerInput(true, false, false, false, false, false, true);
+        sync.setInput(input);
+        var packets = new ArrayList<Packet>();
+        assertEquals(InventoryManager.ElytraAction.WAITING, manager.tickElytraSwap(false, packets::add, () -> 1, 0, 0));
+        var click = (ServerboundContainerClickPacket) packets.getFirst();
+        assertEquals(0, click.getContainerId()); assertEquals(123, click.getStateId()); assertEquals(35, click.getSlot());
+        assertNull(click.getCarriedItem()); assertTrue(click.getChangedSlots().isEmpty());
+        assertEquals(xin.bbtt.physics.PlayerInput.NONE, sync.snapshotInput());
+        manager.setSlot(0, 36, items[35]);
+        assertEquals(InventoryManager.ElytraAction.WAITING, manager.tickElytraSwap(false, packets::add, () -> 1, 0, 0));
+        manager.setSlot(0, 35, null);
+        manager.tickElytraSwap(false, packets::add, () -> 1, 0, 0);
+        assertInstanceOf(org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.inventory.ServerboundContainerClosePacket.class, packets.get(1));
+        assertInstanceOf(ServerboundUseItemPacket.class, packets.get(3));
+        assertEquals(input, sync.snapshotInput());
+    }
+    @Test void backpackRollbackOrCursorAbandonsAndDisabledKeepsOldBehavior() {
+        for (int mode = 0; mode < 4; mode++) {
+            var manager = new InventoryManager(); var items = new ItemStack[46];
+            items[6] = elytra(422); items[9] = elytra(0); manager.setContainerItems(0, items);
+            manager.setAirborneInventorySwap(mode != 0);
+            var packets = new ArrayList<Packet>();
+            var result = manager.tickElytraSwap(false, packets::add, () -> 1, 0, 0);
+            if (mode == 0) { assertEquals(InventoryManager.ElytraAction.LAND, result); assertTrue(packets.isEmpty()); }
+            else {
+                assertEquals(InventoryManager.ElytraAction.WAITING, result);
+                if (mode == 1) manager.setContainerItems(0, items);
+                else if (mode == 2) manager.setCarriedItem(items[9]);
+                else manager.setSlot(0, 36, null);
+                assertEquals(InventoryManager.ElytraAction.LAND, manager.tickElytraSwap(false, packets::add, () -> 1, 0, 0));
+                assertFalse(manager.isInventorySwapOpen());
+                assertEquals(2, packets.size());
+            }
+        }
+    }
+    @Test void hotbarWinsOverBetterBackpackAndSelectsBestHotbar() {
+        var manager = new InventoryManager(); manager.setAirborneInventorySwap(true);
+        var items = new ItemStack[46]; items[6] = elytra(422); items[9] = elytra(0);
+        items[36] = elytra(100); items[44] = elytra(50); manager.setContainerItems(0, items);
+        var packets = new ArrayList<Packet>(); manager.tickElytraSwap(false, packets::add, () -> 1, 0, 0);
+        assertEquals(8, ((ServerboundSetCarriedItemPacket) packets.getFirst()).getSlot());
     }
     @Test void vanillaBreakBoundaryAndUnbreakable() {
         assertFalse(new ElytraDurability(true, 432, 431, false).usable());

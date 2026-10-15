@@ -72,6 +72,7 @@ public class MovementSync implements Plugin {
 
     /** Consumes only the one-shot request; held jump remains held. */
     public PlayerInput snapshotInput() {
+        if (inventoryManager.isInventorySwapOpen()) return PlayerInput.NONE;
         PlayerInput keys = input.get();
         return jumpRequested.getAndSet(false) ? keys.withJump(true) : keys;
     }
