@@ -44,6 +44,17 @@ public class PathMovement extends Movement {
     private final long requestGeneration;
     private org.joml.Vector3i navigationGoal;
     private boolean intermediateLeg;
+    public enum Completion { NORMAL, UNEXPECTED_FALL }
+    private Completion completion = Completion.NORMAL;
+    private boolean yieldUnexpectedFalls;
+
+    public Completion completion() { return completion; }
+
+    /** Only a parent that handles {@link Completion#UNEXPECTED_FALL} may ask for it; others keep replanning after landing. */
+    public PathMovement yieldingUnexpectedFalls() {
+        yieldUnexpectedFalls = true;
+        return this;
+    }
 
     public PathMovement(List<PathStep> path) {
         this(path, DEFAULT_FOLLOW_KEEP_DISTANCE, false);
@@ -147,6 +158,7 @@ public class PathMovement extends Movement {
             abortLivelockedGoal(MovementSync.INSTANCE.position.get());
             return;
         }
+        if (yieldUnexpectedFall()) return;
         repathThrottler++;
         ticksSinceRepath++;
         // External repath requests come in bursts as the bot moves (block
@@ -594,6 +606,28 @@ public class PathMovement extends Movement {
         issuedInput = null;
         MovementSync.INSTANCE.setRidingForward(0);
         MovementSync.INSTANCE.setRidingSideways(0);
+    }
+
+    private boolean yieldUnexpectedFall() {
+        MovementSync sync = MovementSync.INSTANCE;
+        if (!yieldUnexpectedFalls || sync.onGround.get() || sync.isRiding() || sync.velocity.get().y >= 0
+                || path == null || currentIndex >= path.size()) return false;
+        Vector3d p = sync.position.get();
+        Node to = path.get(currentIndex).getNode();
+        Node from = path.get(Math.max(0, currentIndex - 1)).getNode();
+        // The active edge includes its planned jump/drop corridor, not just the destination.
+        boolean withinEdge = p.x >= Math.min(from.x, to.x) - 0.5
+                && p.x <= Math.max(from.x, to.x) + 1.5
+                && p.z >= Math.min(from.z, to.z) - 0.5
+                && p.z <= Math.max(from.z, to.z) + 1.5
+                && p.y >= Math.min(from.y, to.y) - 0.5;
+        if (withinEdge || !xin.bbtt.physics.FallPrediction.predict(sync.getWorld(),
+                new xin.bbtt.physics.PhysicsState(p, sync.velocity.get(), false, sync.fallDistance.get()),
+                sync.getMovementParameters()).dangerous()) return false;
+        completion = Completion.UNEXPECTED_FALL;
+        stopHorizontal();
+        setFinished(true);
+        return true;
     }
 
     private boolean isPathDeviated(Vector3d currentPos, Node targetNode) {

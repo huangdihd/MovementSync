@@ -224,7 +224,7 @@ public final class WalkingPhysics implements PhysicsStepper {
         return true;
     }
 
-    private static double clipMovement(
+    static double clipMovement(
             World world, Vector3d position, double halfWidth, double height, int axis, double movement) {
         if (!isSweepColliding(world, position, halfWidth, height, axis, movement)) return movement;
         // World exposes overlap queries rather than collision boxes. A swept AABB

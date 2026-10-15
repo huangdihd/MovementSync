@@ -85,31 +85,12 @@ public final class GlidingPhysics implements PhysicsStepper {
         double fallDistance = slowFalling ? 0 : state.fallDistance();
         // Gliding limits accumulated fall damage while descending slowly.
         if (state.velocity().y > -0.5 && fallDistance > 1) fallDistance = 1;
-        boolean collidedX = false;
-        boolean collidedZ = false;
-        if (velocity.x != 0) {
-            Vector3d candidate = new Vector3d(position).add(velocity.x, 0, 0);
-            if (collides(world, candidate, halfWidth, height)) {
-                velocity.x = 0;
-                collidedX = true;
-            } else {
-                position.x = candidate.x;
-            }
-        }
-        if (velocity.z != 0) {
-            Vector3d candidate = new Vector3d(position).add(0, 0, velocity.z);
-            if (collides(world, candidate, halfWidth, height)) {
-                velocity.z = 0;
-                collidedZ = true;
-            } else {
-                position.z = candidate.z;
-            }
-        }
+        // Entity.move clips Y first, then the larger horizontal component. In
+        // particular, falling below a platform must happen before testing its side.
         boolean onGround = false;
         if (velocity.y < 0) {
             double desiredY = position.y + velocity.y;
             double resolvedY = VerticalCollisionResolver.resolveDownwardY(world, position, halfWidth, velocity.y, fallDistance);
-            // Include exact contact, not just motion clipped short of the destination.
             onGround = resolvedY > desiredY + 1.0e-9
                     || world.findHighestCollisionTop(position.x - halfWidth, desiredY - 1.0e-9,
                             position.z - halfWidth, position.x + halfWidth, desiredY + 1.0e-9,
@@ -117,12 +98,17 @@ public final class GlidingPhysics implements PhysicsStepper {
             position.y = resolvedY;
             if (onGround) velocity.y = 0;
         } else if (velocity.y > 0) {
-            Vector3d candidate = new Vector3d(position).add(0, velocity.y, 0);
-            if (collides(world, candidate, halfWidth, height)) {
-                velocity.y = 0;
-            } else {
-                position.y = candidate.y;
-            }
+            moveAxis(world, position, velocity, halfWidth, height, 1);
+        }
+        boolean zFirst = Math.abs(velocity.x) < Math.abs(velocity.z);
+        boolean collidedX;
+        boolean collidedZ;
+        if (zFirst) {
+            collidedZ = moveAxis(world, position, velocity, halfWidth, height, 2);
+            collidedX = moveAxis(world, position, velocity, halfWidth, height, 0);
+        } else {
+            collidedX = moveAxis(world, position, velocity, halfWidth, height, 0);
+            collidedZ = moveAxis(world, position, velocity, halfWidth, height, 2);
         }
 
         // FireworkRocketEntity ticks after player travel. Contact does not clear
@@ -136,8 +122,15 @@ public final class GlidingPhysics implements PhysicsStepper {
         return new PhysicsResult(position, velocity, collidedX, collidedZ, onGround, fallDistance);
     }
 
-    private static boolean collides(World world, Vector3d position, double halfWidth, double height) {
-        return world.isBoxColliding(position.x - halfWidth, position.y, position.z - halfWidth,
-                position.x + halfWidth, position.y + height, position.z + halfWidth);
+    private static boolean moveAxis(World world, Vector3d position, Vector3d velocity,
+            double halfWidth, double height, int axis) {
+        double requested = velocity.get(axis);
+        // Sweep the entire displacement, not just its endpoint: a fast glide
+        // can cross a thin collision shape and end in clear air.
+        double clipped = WalkingPhysics.clipMovement(world, position, halfWidth, height, axis, requested);
+        position.setComponent(axis, position.get(axis) + clipped);
+        boolean collided = clipped != requested;
+        if (collided) velocity.setComponent(axis, 0);
+        return collided;
     }
 }

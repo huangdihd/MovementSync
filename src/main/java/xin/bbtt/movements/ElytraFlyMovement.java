@@ -18,6 +18,7 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
     private int rocketCooldown;
     private boolean airborne;
     private boolean emergencyLanding;
+    private boolean safeLandingLeg;
     private boolean emergencyHoldWarned;
 
     public ElytraFlyMovement(Vector3d target) {
@@ -34,6 +35,13 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
         if (target == null || !target.isFinite()) throw new IllegalArgumentException("Target must be finite");
         this.target = new Vector3d(target);
         this.generation = generation;
+    }
+
+    /** Deploy through takeoff, then use the existing solid-ground emergency landing controller. */
+    public ElytraFlyMovement forSafeLanding() {
+        emergencyLanding = true;
+        safeLandingLeg = true;
+        return this;
     }
 
     @Override
@@ -83,8 +91,13 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
             movementSync.runIfNavigationRequestCurrent(generation, () -> {
                 if (isFinished()) return;
                 Vector3d position = state.position();
-                finish(!emergencyLanding && state.onGround()
-                        && Math.hypot(position.x - target.x, position.z - target.z) <= arrivalRadius);
+                if (safeLandingLeg && state.onGround()) {
+                    setFinished(true);
+                    MovementSync.getLogger().info("Elytra safe landing complete at {}", position);
+                } else {
+                    finish(!emergencyLanding && state.onGround()
+                            && Math.hypot(position.x - target.x, position.z - target.z) <= arrivalRadius);
+                }
             });
             return;
         }

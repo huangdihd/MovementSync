@@ -68,7 +68,9 @@ public class GotoCommandExecutor extends TabHighlightExecutor {
                     MovementSync.INSTANCE.hasEquippedElytra(),
                     MovementSync.INSTANCE.countHotbarFireworks() > 0,
                     args.length == 4, MovementSync.INSTANCE.isGliding());
-            if (fly || !MovementSync.INSTANCE.onGround.get()) {
+            // Equipped walkers need a travel parent to receive an unexpected-fall result.
+            // The flight decision is unchanged: short/walk-only routes still pass fly=false.
+            if (fly || !MovementSync.INSTANCE.onGround.get() || MovementSync.INSTANCE.hasEquippedElytra()) {
                 movementPublished = MovementSync.INSTANCE.addMovementIfNavigationRequestCurrent(
                         requestGeneration, new xin.bbtt.movements.TravelMovement(requestedGoal, requestGeneration, fly));
                 return;

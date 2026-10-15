@@ -83,9 +83,25 @@ final class GlidingPhysicsTest {
                 new PhysicsState(new Vector3d(0, 10, 0), new Vector3d(1, 0, 0), false), HALF_WIDTH, HEIGHT);
         assertTrue(result.collidedX());
         assertFalse(result.collidedZ());
-        assertEquals(0, result.position().x);
+        assertEquals(1 - HALF_WIDTH, result.position().x, 1.0e-9);
         assertEquals(0, result.velocity().x);
         assertTrue(result.position().y < 10);
+    }
+
+    @Test
+    void fastGlideCannotTunnelThroughThinWall() {
+        World wall = new World() {
+            @Override
+            public boolean isBoxColliding(double minX, double minY, double minZ,
+                    double maxX, double maxY, double maxZ) {
+                return maxX > 1 && minX < 1.125;
+            }
+        };
+        PhysicsResult result = new GlidingPhysics(-90, 0, false).step(wall,
+                new PhysicsState(new Vector3d(0, 10, 0), new Vector3d(4, 0, 0), false), HALF_WIDTH, HEIGHT);
+        assertTrue(result.collidedX());
+        assertEquals(1 - HALF_WIDTH, result.position().x, 1.0e-9);
+        assertEquals(0, result.velocity().x);
     }
 
     @Test

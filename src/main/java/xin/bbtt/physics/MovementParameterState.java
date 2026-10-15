@@ -86,7 +86,9 @@ public final class MovementParameterState {
                 value(AttributeType.Builtin.SNEAKING_SPEED, false),
                 effects.containsKey(Effect.SLOW_FALLING),
                 effects.getOrDefault(Effect.LEVITATION, -1),
-                (food > 6 || canFly) && !effects.containsKey(Effect.BLINDNESS));
+                (food > 6 || canFly) && !effects.containsKey(Effect.BLINDNESS),
+                value(AttributeType.Builtin.SAFE_FALL_DISTANCE, false),
+                value(AttributeType.Builtin.FALL_DAMAGE_MULTIPLIER, false));
     }
 
     private double value(AttributeType.Builtin type, boolean sprinting) {

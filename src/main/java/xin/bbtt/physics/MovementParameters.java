@@ -11,7 +11,16 @@ public record MovementParameters(
         double sneakingSpeed,
         boolean slowFalling,
         int levitationAmplifier,
-        boolean canSprint) {
+        boolean canSprint,
+        double safeFallDistance,
+        double fallDamageMultiplier) {
+    public MovementParameters(double movementSpeed, double sprintingMovementSpeed, double jumpStrength,
+            double jumpBoostVelocity, double gravity, double stepHeight, double sneakingSpeed,
+            boolean slowFalling, int levitationAmplifier, boolean canSprint) {
+        this(movementSpeed, sprintingMovementSpeed, jumpStrength, jumpBoostVelocity, gravity, stepHeight,
+                sneakingSpeed, slowFalling, levitationAmplifier, canSprint, 3, 1);
+    }
+
     public static final MovementParameters DEFAULT = new MovementParameters(
             (double) 0.1F, (double) 0.1F * (1.0 + (double) 0.3F),
             (double) 0.42F, 0, 0.08, 0.6, 0.3, false, -1, true);

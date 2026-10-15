@@ -182,6 +182,7 @@ public class updateMotionTask implements Runnable {
         java.util.List<Packet> actions = new java.util.ArrayList<>();
         java.util.List<Packet> deferredActions = new java.util.ArrayList<>();
         boolean releaseBeforeDeployment = false;
+        boolean deploying = false;
         Packet queuedAction;
         while ((queuedAction = MovementSync.INSTANCE.pollBeforeMovementPacket()) != null) {
             if (queuedAction instanceof ServerboundPlayerCommandPacket command
@@ -192,6 +193,7 @@ public class updateMotionTask implements Runnable {
                     MovementSync.INSTANCE.setGliding(false);
                     input = input.withJump(false);
                 } else {
+                    deploying = true;
                     MovementSync.INSTANCE.setGliding(true);
                     input = input.withJump(true);
                     Bot.INSTANCE.getSession().send(queuedAction);
@@ -227,7 +229,8 @@ public class updateMotionTask implements Runnable {
         }
         Vector3d initialVelocity = MovementSync.INSTANCE.velocity.get();
         Vector3d velocity = new Vector3d(initialVelocity);
-        BodyDimensions dimensions = getBodyDimensions();
+        // PlayerEntity.tick updates pose after travel: deployment still uses the standing box.
+        BodyDimensions dimensions = deploying ? new BodyDimensions(PLAYER_HALF_WIDTH, (double) 1.8f) : getBodyDimensions();
         boolean gliding = MovementSync.INSTANCE.isGliding();
         if (jumpCooldown > 0) jumpCooldown--;
         if (!input.jump()) jumpCooldown = 0;

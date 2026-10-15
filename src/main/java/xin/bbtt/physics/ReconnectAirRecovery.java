@@ -23,7 +23,7 @@ public final class ReconnectAirRecovery {
 
     public static boolean needsDeployment(boolean grounded, boolean gliding, double verticalSpeed,
             double heightAboveGround, boolean voidBelow) {
-        return !grounded && !gliding && verticalSpeed < 0 && (voidBelow || heightAboveGround > 3);
+        return !grounded && !gliding && verticalSpeed < 0 && (voidBelow || FallPrediction.damage(heightAboveGround, 1, MovementParameters.DEFAULT) > 0);
     }
 
     public void tick(MovementSync sync, boolean game, boolean recoveringNavigation) {
@@ -34,10 +34,10 @@ public final class ReconnectAirRecovery {
             pending = false;
             return;
         }
-        var ground = sync.getWorld().findHighestCollisionTop(p.x - .299, World.getMinWorldY(),
-                p.z - .299, p.x + .299, p.y, p.z + .299);
-        boolean deploy = needsDeployment(false, sync.isGliding(), sync.velocity.get().y,
-                ground.isPresent() ? p.y - ground.getAsDouble() : Double.POSITIVE_INFINITY, ground.isEmpty());
+        boolean deploy = !sync.isGliding() && sync.velocity.get().y < 0
+                && FallPrediction.predict(sync.getWorld(),
+                    new PhysicsState(p, sync.velocity.get(), false, sync.fallDistance.get()),
+                    sync.getMovementParameters()).dangerous();
         if (deploy) {
             if (!sync.inventoryManager.getElytraDurability().usable() || !sync.hasEquippedElytra()) {
                 if (!warned) MovementSync.getLogger().warn("Reconnect aerial rescue unavailable: no usable elytra, durability={}",

@@ -51,7 +51,8 @@ public final class TravelMovement extends Movement {
         this.legs = legs == null ? new Legs() {
             @Override public List<PathStep> plan(Vector3i destination) { return pathTo(destination); }
             @Override public Movement walk(List<PathStep> path, Vector3i destination, boolean intermediate) {
-                PathMovement movement = new PathMovement(path, -1, false, destination, -1, generation);
+                PathMovement movement = new PathMovement(path, -1, false, destination, -1, generation)
+                        .yieldingUnexpectedFalls();
                 return intermediate ? movement.asIntermediateLeg(TravelMovement.this.goal) : movement;
             }
             @Override public xin.bbtt.inventory.InventoryManager.ElytraAction prepareFlight() {
@@ -105,7 +106,10 @@ public final class TravelMovement extends Movement {
             child = null;
             currentChild.onStop();
             if (stopped || finished || !movementSync.isNavigationRequestCurrent(generation)) return;
-            if (stage == Stage.WALK) {
+            if (currentChild instanceof PathMovement path
+                    && path.completion() == PathMovement.Completion.UNEXPECTED_FALL) {
+                stage = Stage.PREPARE;
+            } else if (stage == Stage.WALK) {
                 finished = true;
                 return;
             }
@@ -113,7 +117,7 @@ public final class TravelMovement extends Movement {
                 startFlight();
                 return;
             }
-            stage = Stage.LAND;
+            if (stage != Stage.PREPARE) stage = Stage.LAND;
         }
         boolean environmental = xin.bbtt.pathfinding.EnvironmentalTraversal.inWater(
                 movementSync.getWorld(), movementSync.position.get())
@@ -124,7 +128,21 @@ public final class TravelMovement extends Movement {
                 startFlight();
                 return;
             }
-            if (!movementSync.onGround.get() && !environmental) return;
+            if (!movementSync.onGround.get() && !environmental) {
+                if (movementSync.hasEquippedElytra()
+                        && movementSync.inventoryManager.getElytraDurability().usable()
+                        && xin.bbtt.physics.FallPrediction.predict(movementSync.getWorld(),
+                            new xin.bbtt.physics.PhysicsState(movementSync.position.get(), movementSync.velocity.get(),
+                                    false, movementSync.fallDistance.get()), movementSync.getMovementParameters()).dangerous()) {
+                    boolean cruise = fly && legs.hasFlightBudget();
+                    ElytraFlyMovement flight = new ElytraFlyMovement(
+                            new Vector3d(goal.x + 0.5, goal.y, goal.z + 0.5), generation);
+                    stage = Stage.FLIGHT;
+                    MovementSync.getLogger().info("Travel: airborne takeoff, cruise={}", cruise);
+                    startChild(cruise ? flight : flight.forSafeLanding());
+                }
+                return;
+            }
             if (fly && !environmental && isOpen(movementSync.getWorld(), movementSync.position.get())) {
                 startFlight();
                 return;
