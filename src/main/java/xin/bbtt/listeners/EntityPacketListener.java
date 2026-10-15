@@ -66,6 +66,16 @@ public class EntityPacketListener implements Listener {
         MovementSync.INSTANCE.getWorld().handleSetEntityMetadataPacket(packet);
 
         if (packet.getEntityId() == MovementSync.INSTANCE.entityId) {
+            // Entity shared flags are protocol metadata index zero, even before registry loading.
+            for (var entry : packet.getMetadata()) {
+                if (entry.getId() == 0 && entry.getValue() instanceof Byte flags) {
+                    boolean gliding = (flags & 0x80) != 0;
+                    if (gliding && !MovementSync.INSTANCE.isGliding()) {
+                        MovementSync.getLogger().info("Server metadata: adopting authoritative gliding state");
+                    }
+                    MovementSync.INSTANCE.setGliding(gliding);
+                }
+            }
             EntityRegistry.EntityEntry registryEntry = EntityRegistry.Instance.getEntity("PLAYER");
             if (registryEntry != null && registryEntry.getMetadataKeys() != null) {
                 List<String> keys = registryEntry.getMetadataKeys();

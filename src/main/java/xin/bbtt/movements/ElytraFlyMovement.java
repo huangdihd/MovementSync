@@ -17,6 +17,8 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
     private int flightTicks;
     private int rocketCooldown;
     private boolean airborne;
+    private boolean emergencyLanding;
+    private boolean emergencyHoldWarned;
 
     public ElytraFlyMovement(Vector3d target) {
         this(target, MovementSync.INSTANCE.getNavigationGeneration());
@@ -81,31 +83,77 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
             movementSync.runIfNavigationRequestCurrent(generation, () -> {
                 if (isFinished()) return;
                 Vector3d position = state.position();
-                finish(state.onGround() && Math.hypot(position.x - target.x, position.z - target.z) <= arrivalRadius);
+                finish(!emergencyLanding && state.onGround()
+                        && Math.hypot(position.x - target.x, position.z - target.z) <= arrivalRadius);
             });
             return;
         }
         if (rocketCooldown > 0) rocketCooldown--;
+        var equipmentAction = movementSync.inventoryManager.tickElytraSwap(false,
+                movementSync::queueBeforeMovement, () -> xin.bbtt.mcbot.Bot.INSTANCE.getAndIncreaseSequence(),
+                movementSync.yaw.get(), movementSync.pitch.get());
         ElytraFlightController.Decision decision;
         try {
             xin.bbtt.physics.MovementParameters parameters = movementSync.getMovementParameters();
             ElytraFlightController controller = new ElytraFlightController(parameters.gravity(), parameters.slowFalling());
-            decision = controller.decide(movementSync.getWorld(), state,
-                    movementSync.yaw.get(), movementSync.pitch.get(),
-                    movementSync.hasAttachedFirework() || rocketCooldown > 35,
-                    target, rocketCooldown == 0 ? movementSync.countHotbarFireworks() : 0, arrivalRadius);
+            if (!emergencyLanding && equipmentAction == xin.bbtt.inventory.InventoryManager.ElytraAction.LAND) {
+                // Spare-equipment replacement must be attempted before latching this emergency.
+                emergencyLanding = true;
+                MovementSync.getLogger().warn("Elytra durability low; seeking solid emergency landing ground");
+            }
+            boolean attached = movementSync.hasAttachedFirework() || rocketCooldown > 35;
+            int fireworks = rocketCooldown == 0 ? movementSync.countHotbarFireworks() : 0;
+            if (!emergencyLanding && !attached && movementSync.countHotbarFireworks() == 0
+                    && "minecraft:the_end".equals(movementSync.getRecoveryDimension())) {
+                Vector3d p = state.position();
+                var support = movementSync.getWorld().findHighestCollisionTop(p.x - .299,
+                        xin.bbtt.world.World.getMinWorldY(), p.z - .299, p.x + .299, p.y, p.z + .299);
+                if (support.isEmpty()) {
+                    emergencyLanding = true;
+                    MovementSync.getLogger().warn("Fireworks exhausted above void; diverting to known solid ground");
+                }
+            }
+            ElytraFlightController.Decision selected;
+            if (emergencyLanding) {
+                selected = controller.forceLand(movementSync.getWorld(), state,
+                        movementSync.yaw.get(), movementSync.pitch.get(), attached, fireworks, arrivalRadius);
+            } else {
+                try {
+                    selected = controller.decide(movementSync.getWorld(), state,
+                            movementSync.yaw.get(), movementSync.pitch.get(), attached, target, fireworks, arrivalRadius);
+                } catch (IllegalStateException unavailable) {
+                    emergencyLanding = true;
+                    selected = controller.forceLand(movementSync.getWorld(), state,
+                            movementSync.yaw.get(), movementSync.pitch.get(), attached, fireworks, arrivalRadius);
+                }
+                if (selected.phase() == ElytraFlightController.Phase.FORCED_LANDING) {
+                    emergencyLanding = true;
+                    selected = controller.forceLand(movementSync.getWorld(), state,
+                            movementSync.yaw.get(), movementSync.pitch.get(), attached, fireworks, arrivalRadius);
+                }
+            }
+            decision = selected;
         } catch (IllegalStateException error) {
-            MovementSync.getLogger().warn("Flight prediction failed at {} with velocity {}: {}",
-                    state.position(), state.velocity(), error.getMessage());
-            movementSync.runIfNavigationRequestCurrent(generation, () -> finish(false));
-            return;
+            emergencyLanding = true;
+            if (!emergencyHoldWarned) {
+                MovementSync.getLogger().warn("Emergency landing unavailable at {} with velocity {}: {}; "
+                                + "retaining unpowered steering and retrying; safe touchdown is not guaranteed",
+                        state.position(), state.velocity(), error.getMessage());
+                emergencyHoldWarned = true;
+            }
+            var parameters = movementSync.getMovementParameters();
+            decision = new ElytraFlightController(parameters.gravity(), parameters.slowFalling())
+                    .emergencyHold(movementSync.getWorld(), state, movementSync.yaw.get(), movementSync.pitch.get(),
+                            movementSync.hasAttachedFirework() || rocketCooldown > 35);
         }
+        ElytraFlightController.Decision applied = decision;
         // Cancellation may happen while trajectory evaluation is running. Guard the actual writes too.
         movementSync.runIfNavigationRequestCurrent(generation, () -> {
             if (isFinished()) return;
-            movementSync.setYawToward(decision.yaw());
-            movementSync.pitch.set(decision.pitch());
-            if (decision.firework() && !movementSync.hasAttachedFirework()) {
+            movementSync.setYawToward(applied.yaw());
+            movementSync.pitch.set(applied.pitch());
+            if (applied.firework() && !movementSync.hasAttachedFirework()
+                    && equipmentAction != xin.bbtt.inventory.InventoryManager.ElytraAction.WAITING) {
                 rocketCooldown = 40;
                 movementSync.useFirework();
             }

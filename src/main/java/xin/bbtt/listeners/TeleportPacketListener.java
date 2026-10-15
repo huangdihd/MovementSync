@@ -20,6 +20,8 @@ public class TeleportPacketListener extends SessionAdapter {
     @Override
     public synchronized void packetReceived(Session session, Packet packet) {
         if (!(packet instanceof ClientboundPlayerPositionPacket playerPositionPacket)) return;
+        synchronized (MovementSync.INSTANCE) {
+        boolean firstPosition = !MovementSync.INSTANCE.getGotoRecovery().hasPosition();
         // Resolve the packet like the vanilla client: every component may be relative to
         // the current state, and the velocity is taken from the packet rather than zeroed.
         List<PositionElement> relatives = playerPositionPacket.getRelatives();
@@ -60,10 +62,15 @@ public class TeleportPacketListener extends SessionAdapter {
         session.send(new ServerboundMovePlayerPosRotPacket(
                 false, false, position.x, position.y, position.z,
                 yaw, pitch));
-        MovementSync.INSTANCE.cancelNavigation();
+        // Once positioned, the headless client has finished loading the world.
+        // Without this vanilla notification the server ignores movement for 60 ticks.
+        if (firstPosition) session.send(
+                org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.ServerboundPlayerLoadedPacket.INSTANCE);
         // A teleport does not end a glide: the server keeps its gliding flag set and
         // sends no metadata update, so clearing it here would leave the two sides out of sync.
         MovementSync.INSTANCE.velocity.set(velocity);
         checkOnGround();
+        MovementSync.INSTANCE.onRecoveryTeleport();
+        }
     }
 }

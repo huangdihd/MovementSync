@@ -106,7 +106,7 @@ public class updateMotionTask implements Runnable {
 
     @Override
     public void run() {
-        if (!Bot.INSTANCE.isRunning()) return;
+        if (!Bot.INSTANCE.isRunning() || !MovementSync.INSTANCE.getGotoRecovery().hasPosition()) return;
 
         // A start request must not change flight physics or enqueue its action
         // between this tick's input snapshot and movement/tick-end packets.
@@ -125,6 +125,10 @@ public class updateMotionTask implements Runnable {
     }
 
     private void tick() {
+        boolean game = Bot.INSTANCE.getServer() == xin.bbtt.mcbot.Server.Game;
+        MovementSync.INSTANCE.getReconnectAirRecovery().tick(MovementSync.INSTANCE, game,
+                MovementSync.INSTANCE.getGotoRecovery().isPending());
+        MovementSync.INSTANCE.tickNavigationRecovery(game);
         if (MovementSync.INSTANCE.isRiding()) {
             xin.bbtt.Entity.Entity vehicle = MovementSync.INSTANCE.getWorld().getEntity(MovementSync.INSTANCE.getVehicleId());
             if (vehicle != null) {

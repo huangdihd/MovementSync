@@ -44,6 +44,7 @@ final class UpdateMotionGlidingTest {
     @BeforeEach
     void setUp() throws Exception {
         movementSync = new MovementSync();
+        movementSync.onRecoveryTeleport();
         movementSync.entityId = 7;
         World world = new World() {
             @Override

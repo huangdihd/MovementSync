@@ -27,6 +27,10 @@ public class ElytraCommandExecutor extends SubCommandExecutor {
                     MovementSync.getLogger().info(LangManager.get("movementsync.command.elytra.start.no_elytra"));
                     return;
                 }
+                if (!movementSync.getInventoryManager().canStartFlight(0)) {
+                    MovementSync.getLogger().info("Insufficient prepared elytra durability for takeoff");
+                    return;
+                }
                 movementSync.getMovementController().addMovement(new ElytraTakeoffMovement());
             }
         });
@@ -63,6 +67,11 @@ public class ElytraCommandExecutor extends SubCommandExecutor {
                 }
                 if (movementSync.onGround.get() && movementSync.countHotbarFireworks() == 0) {
                     MovementSync.getLogger().info(LangManager.get("movementsync.command.elytra.fly.no_fireworks"));
+                    return;
+                }
+                if (!movementSync.getInventoryManager().canStartFlight(Math.hypot(
+                        target.x - movementSync.position.get().x, target.z - movementSync.position.get().z))) {
+                    MovementSync.getLogger().info("Insufficient prepared elytra durability for flight");
                     return;
                 }
                 // Claim without a ground goal so old follow/goto requests cannot resume after flight.

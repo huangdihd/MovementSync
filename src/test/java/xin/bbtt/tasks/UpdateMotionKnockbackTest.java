@@ -48,6 +48,7 @@ class UpdateMotionKnockbackTest {
         previousRunning = botField("running").get(Bot.INSTANCE);
         previousServer = Bot.INSTANCE.getServer();
         movementSync = new MovementSync();
+        movementSync.onRecoveryTeleport();
         movementSync.entityId = 42;
         movementSync.onGround.set(false);
         movementSync.position.set(new Vector3d(0.5, 20, 0.5));

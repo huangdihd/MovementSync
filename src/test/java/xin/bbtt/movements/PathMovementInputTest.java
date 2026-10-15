@@ -40,6 +40,7 @@ final class PathMovementInputTest {
     @BeforeEach
     void setUp() throws Exception {
         movementSync = new MovementSync();
+        movementSync.onRecoveryTeleport();
         movementSync.position.set(new Vector3d(0.5, 1, 0.5));
         movementSync.velocity.set(new Vector3d());
         movementSync.onGround.set(true);

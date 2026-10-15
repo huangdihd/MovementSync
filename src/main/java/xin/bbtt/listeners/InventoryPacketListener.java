@@ -25,6 +25,10 @@ public class InventoryPacketListener extends SessionAdapter {
             MovementSync.INSTANCE.getInventoryManager().setCurrentStateId(p.getStateId());
         }
 
+        if (packet instanceof org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.inventory.ClientboundSetPlayerInventoryPacket p) {
+            MovementSync.INSTANCE.getInventoryManager().setSlot(-2, p.getSlot(), p.getContents());
+        }
+
         if (packet instanceof ClientboundOpenScreenPacket p) {
             MovementSync.INSTANCE.getInventoryManager().setCurrentContainerId(p.getContainerId());
         }

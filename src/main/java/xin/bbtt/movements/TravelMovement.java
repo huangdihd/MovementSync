@@ -25,6 +25,10 @@ public final class TravelMovement extends Movement {
         List<PathStep> plan(Vector3i destination);
         Movement walk(List<PathStep> path, Vector3i destination, boolean intermediate);
         Movement flight();
+        default xin.bbtt.inventory.InventoryManager.ElytraAction prepareFlight() {
+            return xin.bbtt.inventory.InventoryManager.ElytraAction.READY;
+        }
+        default boolean hasFlightBudget() { return true; }
     }
 
     private final Legs legs;
@@ -50,6 +54,15 @@ public final class TravelMovement extends Movement {
                 PathMovement movement = new PathMovement(path, -1, false, destination, -1, generation);
                 return intermediate ? movement.asIntermediateLeg(TravelMovement.this.goal) : movement;
             }
+            @Override public xin.bbtt.inventory.InventoryManager.ElytraAction prepareFlight() {
+                MovementSync sync = MovementSync.INSTANCE;
+                return sync.getInventoryManager().prepareElytra(sync.onGround.get(), sync::queueBeforeMovement);
+            }
+            @Override public boolean hasFlightBudget() {
+                Vector3d position = MovementSync.INSTANCE.position.get();
+                return MovementSync.INSTANCE.getInventoryManager().canStartFlight(
+                        Math.hypot(position.x - (TravelMovement.this.goal.x + 0.5), position.z - (TravelMovement.this.goal.z + 0.5)));
+            }
             @Override public Movement flight() {
                 Vector3i destination = TravelMovement.this.goal;
                 return new ElytraFlyMovement(new Vector3d(destination.x + 0.5, destination.y, destination.z + 0.5), generation);
@@ -60,6 +73,11 @@ public final class TravelMovement extends Movement {
     public static boolean shouldFly(double distance, boolean elytra, boolean fireworks,
                                     boolean walk, boolean gliding) {
         return !walk && elytra && (gliding || distance > FLIGHT_DISTANCE_THRESHOLD && fireworks);
+    }
+
+    public static boolean shouldFly(double distance, xin.bbtt.physics.ElytraDurability durability,
+                                    boolean fireworks, boolean walk, boolean gliding) {
+        return durability.canStart(distance) && shouldFly(distance, durability.equipped(), fireworks, walk, gliding);
     }
 
     /** A 3x3 launch column reserves clear sky and lateral room for the climb. */
@@ -132,6 +150,18 @@ public final class TravelMovement extends Movement {
     }
 
     private void startFlight() {
+        MovementSync sync = MovementSync.INSTANCE;
+        if (!sync.isGliding()) {
+            var preparation = legs.prepareFlight();
+            if (preparation == xin.bbtt.inventory.InventoryManager.ElytraAction.WAITING) {
+                stage = Stage.PREPARE;
+                return;
+            }
+            if (preparation == xin.bbtt.inventory.InventoryManager.ElytraAction.LAND || !legs.hasFlightBudget()) {
+                stage = Stage.LAND;
+                return;
+            }
+        }
         MovementSync.getLogger().info("Travel: flight to {}", goal);
         stage = Stage.FLIGHT;
         startChild(legs.flight());

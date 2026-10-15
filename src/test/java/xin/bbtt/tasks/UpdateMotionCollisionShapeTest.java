@@ -51,6 +51,7 @@ final class UpdateMotionCollisionShapeTest {
     @BeforeEach
     void setUp() throws Exception {
         movementSync = new MovementSync();
+        movementSync.onRecoveryTeleport();
         World world = new World() {
             @Override
             public boolean chunkLoaded(int chunkX, int chunkZ) {
