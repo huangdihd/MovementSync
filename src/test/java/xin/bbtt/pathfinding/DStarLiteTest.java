@@ -48,6 +48,30 @@ class DStarLiteTest {
     }
 
     @Test
+    void staleQueueEntriesDoNotConsumeIterationBudget() {
+        Node start = new Node(0, 0, 0);
+        Node via = new Node(1, 0, 0);
+        Node improved = new Node(2, 0, 0);
+        Node goal = new Node(3, 0, 0);
+        List<Node> expanded = new ArrayList<>();
+        PathfindingContext context = new PathfindingContext() {
+            @Override public List<Edge> getEdges(Node node) {
+                expanded.add(node);
+                if (node.equals(start)) return List.of(
+                        new Edge(improved, 4, BuiltinMovementType.WALK),
+                        new Edge(via, 1, BuiltinMovementType.WALK));
+                if (node.equals(via)) return List.of(new Edge(improved, 1, BuiltinMovementType.WALK));
+                if (node.equals(improved)) return List.of(new Edge(goal, 5, BuiltinMovementType.WALK));
+                return List.of();
+            }
+            @Override public double getHeuristic(Node source, Node target) { return 0; }
+        };
+        List<PathStep> path = new DStarLite(start, goal, context).findPath(3);
+        assertEquals(List.of(start, via, improved, goal), path.stream().map(PathStep::getNode).toList());
+        assertEquals(List.of(start, via, improved), expanded);
+    }
+
+    @Test
     void straightLineOnEmptyPlane() {
         Node start = new Node(0, 0, 0);
         Node goal = new Node(5, 0, 0);
