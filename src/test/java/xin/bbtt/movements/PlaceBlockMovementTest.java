@@ -17,6 +17,26 @@ final class PlaceBlockMovementTest {
     }
 
     @Test
+    void bridgeApproachesFaceThenWaitsForAimWithoutDrivingIntoLedge() {
+        MovementSync sync = new MovementSync();
+        for (int x = 0; x < 7; x++) {
+            sync.position.set(new Vector3d(x + 0.5, 64, 0.5));
+            sync.publishPlacementFrame(x + 0.5, 64, 0.5, -90, 0, 1.27);
+            PlaceBlockMovement movement = new PlaceBlockMovement(
+                    Vector3i.from(x + 1, 63, 0), Vector3i.from(x, 63, 0), Direction.EAST, true);
+            movement.init();
+            sync.publishPlacementFrame(x + 0.5, 64, 0.5, -90, 0, 1.27);
+            movement.onTick();
+            org.junit.jupiter.api.Assertions.assertTrue(sync.snapshotInput().forward());
+            sync.position.set(new Vector3d(x + 1.05, 64, 0.5));
+            sync.publishPlacementFrame(x + 1.05, 64, 0.5, -90, 0, 1.27);
+            movement.onTick();
+            assertEquals(new xin.bbtt.physics.PlayerInput(false, false, false, false, false, true, false),
+                    sync.snapshotInput());
+        }
+    }
+
+    @Test
     void initializationFacesClickedSurfaceWithoutQueueingALaterLookAction() {
         MovementSync movementSync = new MovementSync();
         movementSync.position.set(new Vector3d(0.5, 64.0, 0.5));

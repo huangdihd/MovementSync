@@ -48,7 +48,8 @@ public final class WalkingPhysics implements PhysicsStepper {
         boolean water = environment.waterHeight() > 0;
         boolean lava = !water && environment.lavaHeight() > 0;
         boolean fluid = water || lava;
-        boolean slowDown = state.pose().shouldSlowDown(false, water, input.sneak());
+        // ClientPlayerEntity computes inSneakingPose before polling this tick's keys.
+        boolean slowDown = state.pose().shouldSlowDown(false, water, false);
         boolean sprint = input.sprint() && !state.pose().shouldSlowDown(false, water, false);
         addFluidPush(velocity, environment.waterPush());
         addFluidPush(velocity, environment.lavaPush());
@@ -330,8 +331,11 @@ public final class WalkingPhysics implements PhysicsStepper {
             ? parameters.movementSpeed(sprint) * 0.21600002
                 / (slipperiness * slipperiness * slipperiness)
             : (sprint ? 0.026 : 0.02);
-        double sine = Math.sin(yawRadians);
-        double cosine = Math.cos(yawRadians);
+        // Vanilla's sine lookup has exact zeros at cardinal headings. Avoid
+        // microscopic sideways travel (and extra position packets) on bridges.
+        float heading = yaw % 360.0f;
+        double sine = heading % 180.0f == 0 ? 0 : Math.sin(yawRadians);
+        double cosine = Math.abs(heading) % 180.0f == 90.0f ? 0 : Math.cos(yawRadians);
         velocity.x += (strafe * cosine - forward * sine) * acceleration;
         velocity.z += (forward * cosine + strafe * sine) * acceleration;
     }

@@ -53,10 +53,12 @@ public class PlaceBlockMovement extends Movement implements NavigationBoundMovem
             onAuthorizedTick();
             return;
         }
-        if (!MovementSync.INSTANCE.runIfNavigationRequestCurrent(
-                navigationGeneration, this::onAuthorizedTick)) {
-            onStop();
-            setFinished(true);
+        synchronized (MovementSync.INSTANCE) {
+            if (!MovementSync.INSTANCE.runIfNavigationRequestCurrent(
+                    navigationGeneration, this::onAuthorizedTick)) {
+                onStop();
+                setFinished(true);
+            }
         }
     }
 
@@ -87,7 +89,14 @@ public class PlaceBlockMovement extends Movement implements NavigationBoundMovem
         double distance = Math.hypot(deltaX, deltaZ);
         double forward = 0;
         double strafe = 0;
-        if (approachEdge && distance > 0.1) {
+        boolean outsideFace = switch (side) {
+            case EAST -> current.x > targetPos.getX() + 1;
+            case WEST -> current.x < targetPos.getX();
+            case SOUTH -> current.z > targetPos.getZ() + 1;
+            case NORTH -> current.z < targetPos.getZ();
+            default -> true;
+        };
+        if (approachEdge && !outsideFace && distance > 0) {
             double yaw = Math.toRadians(MovementSync.INSTANCE.yaw.get());
             forward = (-deltaX * Math.sin(yaw) + deltaZ * Math.cos(yaw)) / distance;
             strafe = (deltaX * Math.cos(yaw) + deltaZ * Math.sin(yaw)) / distance;
