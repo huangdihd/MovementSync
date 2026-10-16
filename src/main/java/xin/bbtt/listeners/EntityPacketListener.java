@@ -36,6 +36,19 @@ public class EntityPacketListener implements Listener {
     }
 
     @EventHandler
+    public void onEntityPositionSync(ReceivePacketEvent<ClientboundEntityPositionSyncPacket> event) {
+        var packet = event.getPacket();
+        var entity = MovementSync.INSTANCE.getWorld().getEntity(packet.getId());
+        if (entity == null) return;
+        var p = packet.getPosition();
+        entity.moveTo(new org.joml.Vector3d(p.getX(), p.getY(), p.getZ()));
+        var v = packet.getDeltaMovement();
+        entity.setMovement(new org.joml.Vector3d(v.getX(), v.getY(), v.getZ()));
+        entity.setYaw(packet.getYRot());
+        entity.setPitch(packet.getXRot());
+    }
+
+    @EventHandler
     public void OnMoveEntityPosition(ReceivePacketEvent<ClientboundMoveEntityPosPacket> receivePacketEvent) {
         MovementSync.INSTANCE.getWorld().handleMoveEntityPosPacket(receivePacketEvent.getPacket());
     }

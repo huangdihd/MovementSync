@@ -29,6 +29,7 @@ public class updateMotionTask implements Runnable {
     private PlayerInput lastInput = PlayerInput.NONE;
     private boolean lastSprinting;
     private int jumpCooldown;
+    private xin.bbtt.physics.PlayerPose pose = xin.bbtt.physics.PlayerPose.STANDING;
 
     private record BodyDimensions(double halfWidth, double height) {}
     Vector3d lastPos = new Vector3d();
@@ -176,7 +177,8 @@ public class updateMotionTask implements Runnable {
         xin.bbtt.physics.EnvironmentalPhysics.Environment environment =
                 xin.bbtt.physics.EnvironmentalPhysics.sample(MovementSync.INSTANCE.getWorld(), position,
                         inputDimensions.halfWidth(), inputDimensions.height());
-        if (environment.waterHeight() > 0 || environment.lavaHeight() > 0) {
+        if (environment.waterHeight() > 0 || environment.lavaHeight() > 0
+                || pose.shouldSlowDown(MovementSync.INSTANCE.isGliding(), environment.waterHeight() > 0, input.sneak())) {
             input = new PlayerInput(input.forward(), input.backward(), input.left(), input.right(),
                     input.jump(), input.sneak(), false);
         }
@@ -251,7 +253,7 @@ public class updateMotionTask implements Runnable {
             MovementSync.INSTANCE.getWorld(),
             new PhysicsState(position, velocity, MovementSync.INSTANCE.onGround.get(),
                     parameters.slowFalling() || parameters.levitationAmplifier() >= 0
-                            ? 0 : MovementSync.INSTANCE.fallDistance.get()),
+                            ? 0 : MovementSync.INSTANCE.fallDistance.get(), pose),
             dimensions.halfWidth(), dimensions.height());
         MovementSync.INSTANCE.fallDistance.set(result.fallDistance());
         position = result.position();
@@ -270,6 +272,7 @@ public class updateMotionTask implements Runnable {
             MovementSync.INSTANCE.velocity.compareAndSet(initialVelocity, velocity);
         }
         if (!gliding) MovementSync.INSTANCE.onGround.set(result.onGround());
+        pose = pose.afterTravel(MovementSync.INSTANCE.getWorld(), position, gliding, false, input.sneak());
         MovementSync.INSTANCE.position.set(position);
         MovementSync.INSTANCE.applyPersistentGazeIfIdle();
 

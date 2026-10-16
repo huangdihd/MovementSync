@@ -37,6 +37,12 @@ public final class ElytraFlightController {
 
     public Decision decide(World world, PhysicsState state, float yaw, float pitch,
             boolean attached, Vector3d target, int fireworks, double radius) {
+        return decide(world, state, yaw, pitch, attached, new FixedFlightTarget(target), fireworks, radius);
+    }
+
+    public Decision decide(World world, PhysicsState state, float yaw, float pitch,
+            boolean attached, FlightTarget destination, int fireworks, double radius) {
+        Vector3d target = destination.aim(state);
         Objects.requireNonNull(world, "world");
         Objects.requireNonNull(state, "state");
         Objects.requireNonNull(target, "target");
@@ -51,7 +57,8 @@ public final class ElytraFlightController {
         double distance = horizontalDistance(position, target);
         double speed = Math.hypot(state.velocity().x, state.velocity().z);
         double cruiseAltitude = routeAltitude(world, position, target);
-        boolean descending = distance <= Math.max(48, (position.y - target.y) * 5 + speed * HORIZON);
+        boolean descending = (destination instanceof FixedFlightTarget || destination.lost())
+                && distance <= Math.max(48, (position.y - target.y) * 5 + speed * HORIZON);
         boolean landing = descending && distance <= Math.max(radius + 16, speed * HORIZON)
                 && position.y <= target.y + 12;
         Phase phase = Phase.CRUISE;

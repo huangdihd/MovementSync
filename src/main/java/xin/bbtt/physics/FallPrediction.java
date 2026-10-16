@@ -41,7 +41,7 @@ public final class FallPrediction {
                 int damage = damage(distance, multiplier, parameters);
                 return new Result(damage > 0, distance, damage);
             }
-            state = new PhysicsState(next.position(), next.velocity(), false, next.fallDistance());
+            state = new PhysicsState(next.position(), next.velocity(), false, next.fallDistance(), next.pose());
         }
         return new Result(true, state.fallDistance(), 0);
     }

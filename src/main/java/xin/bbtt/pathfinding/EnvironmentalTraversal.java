@@ -114,7 +114,7 @@ public final class EnvironmentalTraversal {
                     && Math.abs(position.z - end.get().z) < 0.25
                     && Math.abs(position.y - end.get().y) < 0.18) return true;
             if (position.y < Math.min(start.get().y, end.get().y) - 1.5) return false;
-            state = new PhysicsState(position, result.velocity(), result.onGround(), result.fallDistance());
+            state = new PhysicsState(position, result.velocity(), result.onGround(), result.fallDistance(), result.pose());
         }
         return false;
     }

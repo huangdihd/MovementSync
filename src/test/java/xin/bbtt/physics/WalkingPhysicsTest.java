@@ -22,6 +22,23 @@ final class WalkingPhysicsTest {
     };
 
     @Test
+    void clearedGlidingFlagRetainsCrawlingInputUntilPoseUpdate() {
+        PlayerInput forward = input(true, false, false, false, true);
+        WalkingPhysics physics = new WalkingPhysics(forward, 0);
+        PhysicsState landing = new PhysicsState(new Vector3d(), new Vector3d(), true, 0, PlayerPose.GLIDING);
+        PhysicsResult slow = physics.step(EMPTY_WORLD, landing, PLAYER_HALF_WIDTH, 0.6);
+        assertEquals(GROUND_ACCELERATION * MovementParameters.DEFAULT.sneakingSpeed(), slow.position().z, 1.0e-12);
+        PlayerPose next = landing.pose().afterTravel(EMPTY_WORLD, slow.position(), false, false, false);
+        assertEquals(PlayerPose.STANDING, next);
+        PhysicsResult normal = physics.step(EMPTY_WORLD,
+                new PhysicsState(new Vector3d(), new Vector3d(), true, 0, next), PLAYER_HALF_WIDTH, 1.8);
+        assertEquals(GROUND_ACCELERATION * (1 + (double) 0.3f), normal.position().z, 1.0e-12);
+        assertFalse(PlayerPose.GLIDING.shouldSlowDown(true, false, false));
+        assertFalse(PlayerPose.GLIDING.shouldSlowDown(false, true, false));
+        assertTrue(PlayerPose.CROUCHING.shouldSlowDown(false, false, true));
+    }
+
+    @Test
     void forwardStartsAtVanillaAccelerationAndConvergesToWalkingSpeed() {
         WalkingPhysics physics = new WalkingPhysics(input(true, false, false, false, false), 0);
         PhysicsState state = state(new Vector3d(), true);

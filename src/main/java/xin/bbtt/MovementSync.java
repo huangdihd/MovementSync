@@ -479,14 +479,15 @@ public class MovementSync implements Plugin {
 
     public void startFollowingNavigation(int entityId, double keepDistance, boolean allowDigging) {
         synchronized (navigationLock) {
-            if (isGliding()) {
-                cancelNavigation();
-                getLogger().warn("Follow not started while gliding: safe landing first; issue follow again on the ground");
-                return;
-            }
             cancelNavigation(false);
         }
-        planAndPublish(claimNavigationRequest(null, entityId, keepDistance, allowDigging));
+        NavigationRequest request = claimNavigationRequest(null, entityId, keepDistance, allowDigging);
+        synchronized (navigationLock) {
+            if (isNavigationRequestCurrent(request.generation())) {
+                movementController.addMovement(new xin.bbtt.movements.FollowMovement(
+                        entityId, keepDistance, allowDigging, request.generation()));
+            }
+        }
     }
 
     private NavigationRequest claimNavigationRequest(

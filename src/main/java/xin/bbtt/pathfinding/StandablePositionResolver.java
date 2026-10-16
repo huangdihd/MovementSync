@@ -313,7 +313,7 @@ public final class StandablePositionResolver {
                     && footprintOverlapsTarget(position, target)) return true;
             if (result.velocity().y < 0
                     && position.y < Math.min(sourceFeetY, targetFeetY) - 1) return false;
-            state = new PhysicsState(position, result.velocity(), result.onGround(), result.fallDistance());
+            state = new PhysicsState(position, result.velocity(), result.onGround(), result.fallDistance(), result.pose());
         }
         return false;
     }

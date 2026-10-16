@@ -11,7 +11,7 @@ import xin.bbtt.physics.PhysicsState;
 public final class ElytraFlyMovement extends Movement implements NavigationBoundMovement {
     public static final double DEFAULT_ARRIVAL_RADIUS = 16;
     private final double arrivalRadius;
-    private final Vector3d target;
+    private final xin.bbtt.physics.FlightTarget target;
     private long generation;
     private int takeoffTicks;
     private int flightTicks;
@@ -43,10 +43,13 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
     }
 
     public ElytraFlyMovement(Vector3d target, long generation, double arrivalRadius) {
+        this(new xin.bbtt.physics.FixedFlightTarget(target), generation, arrivalRadius);
+    }
+
+    public ElytraFlyMovement(xin.bbtt.physics.FlightTarget target, long generation, double arrivalRadius) {
         if (!Double.isFinite(arrivalRadius) || arrivalRadius <= 0) throw new IllegalArgumentException("Radius must be positive");
         this.arrivalRadius = arrivalRadius;
-        if (target == null || !target.isFinite()) throw new IllegalArgumentException("Target must be finite");
-        this.target = new Vector3d(target);
+        this.target = java.util.Objects.requireNonNull(target);
         this.generation = generation;
     }
 
@@ -63,7 +66,7 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
     }
 
     public Vector3d getTarget() {
-        return new Vector3d(target);
+        return target.position();
     }
 
     @Override
@@ -109,7 +112,7 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
                     MovementSync.getLogger().info("Elytra safe landing complete at {}", position);
                 } else {
                     finish(!emergencyLanding && state.onGround()
-                            && Math.hypot(position.x - target.x, position.z - target.z) <= arrivalRadius);
+                            && Math.hypot(position.x - target.position().x, position.z - target.position().z) <= arrivalRadius);
                 }
             });
             return;
@@ -193,7 +196,7 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
         if (!arrived) {
             Vector3d position = MovementSync.INSTANCE.position.get();
             MovementSync.getLogger().info("Flight failed: remaining horizontal distance={} blocks, arrival radius={} blocks",
-                    Math.hypot(position.x - target.x, position.z - target.z), arrivalRadius);
+                    Math.hypot(position.x - target.position().x, position.z - target.position().z), arrivalRadius);
         }
     }
 
