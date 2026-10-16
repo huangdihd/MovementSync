@@ -17,12 +17,10 @@ public class BridgePillarStrategy extends AbstractMovementStrategy {
         boolean hasBlocks = MovementSync.INSTANCE.getInventoryManager().findBlock() != -1;
         if (!hasBlocks) return edges;
         
-        // Needs head space to jump/pillar
-        if (!world.isPassable(new Vector3d(u.x, u.y + 2, u.z))) return edges;
-
-        // Pillar Up
+        // Pillar Up: jumping needs head space above the standing column; bridging does not.
         Node pillarTarget = new Node(u.x, u.y + 1, u.z);
-        if (!world.getBlockStateAt(new Vector3d(pillarTarget.x, pillarTarget.y - 1, pillarTarget.z)).isSolid()
+        if (world.isPassable(new Vector3d(u.x, u.y + 2, u.z))
+                && !world.getBlockStateAt(new Vector3d(pillarTarget.x, pillarTarget.y - 1, pillarTarget.z)).isSolid()
                 && TraversalSafety.isSafe(world, new Vector3d(u.x + 0.5, u.y, u.z + 0.5))
                 && TraversalSafety.isSafe(world, new Vector3d(u.x + 0.5, pillarTarget.y, u.z + 0.5))
                 && StandablePositionResolver.canJumpToFeetY(world, u, pillarTarget.y)) {
