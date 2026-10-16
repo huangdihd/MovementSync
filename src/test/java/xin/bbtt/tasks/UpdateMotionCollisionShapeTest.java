@@ -78,6 +78,7 @@ final class UpdateMotionCollisionShapeTest {
             ClientSession.class.getClassLoader(),
             new Class<?>[]{ClientSession.class},
             (proxy, method, args) -> {
+                if (method.getName().equals("isConnected")) return true;
                 if (method.getName().equals("send")) {
                     // The per-tick end marker is counted on its own so movement-packet
                     // assertions keep describing movement packets only.

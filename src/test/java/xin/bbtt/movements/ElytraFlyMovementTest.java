@@ -39,6 +39,36 @@ final class ElytraFlyMovementTest extends ElytraCommandTestSupport {
     }
 
     @Test
+    void cancellationOwnsIndependentLandingAndRepeatedStopsPreserveIt() {
+        movementSync.getMovementController().pause();
+        movementSync.setGliding(true);
+        movementSync.setActiveGoal(new org.joml.Vector3i(100, 0, 0));
+        movementSync.cancelNavigation();
+        var landing = assertInstanceOf(ElytraFlyMovement.class,
+                movementSync.getMovementController().getMovements().getFirst());
+        assertNull(movementSync.getActiveGoal());
+        assertNull(movementSync.getGotoRecovery().getTask());
+        movementSync.cancelNavigation();
+        movementSync.cancelNavigation();
+        assertSame(landing, movementSync.getMovementController().getMovements().getFirst());
+        assertFalse(landing.isFinished());
+        movementSync.beginGotoNavigationRequest(new org.joml.Vector3i(200, 0, 0), false, false);
+        assertTrue(movementSync.getMovementController().getMovements().isEmpty());
+    }
+
+    @Test
+    void groundAndDeathCancellationDoNotLand() {
+        movementSync.getMovementController().pause();
+        movementSync.cancelNavigation();
+        assertTrue(movementSync.getMovementController().getMovements().isEmpty());
+        movementSync.setGliding(true);
+        new xin.bbtt.listeners.MovementParametersPacketListener().packetReceived(null,
+                new org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.entity.player.ClientboundSetHealthPacket(0, 20, 5));
+        assertTrue(movementSync.getMovementController().getMovements().isEmpty());
+        assertFalse(movementSync.isGliding());
+    }
+
+    @Test
     void forcedLandingFinishesAsFailureWithoutPredictionFailure() throws Exception {
         xin.bbtt.world.World world = new xin.bbtt.world.World() {
             @Override public boolean chunkLoaded(int chunkX, int chunkZ) { return true; }

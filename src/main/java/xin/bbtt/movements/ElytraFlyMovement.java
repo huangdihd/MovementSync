@@ -20,6 +20,19 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
     private boolean emergencyLanding;
     private boolean safeLandingLeg;
     private boolean emergencyHoldWarned;
+    private boolean independentLanding;
+
+    /** Safety control has no navigation request or destination intent. */
+    public ElytraFlyMovement forIndependentLanding() {
+        independentLanding = true;
+        return forSafeLanding();
+    }
+
+    private boolean runIfCurrent(Runnable action) {
+        MovementSync sync = MovementSync.INSTANCE;
+        return independentLanding ? sync.runIfSafetyMovementCurrent(this, action)
+                : sync.runIfNavigationRequestCurrent(generation, action);
+    }
 
     public ElytraFlyMovement(Vector3d target) {
         this(target, MovementSync.INSTANCE.getNavigationGeneration());
@@ -56,7 +69,7 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
     @Override
     public void init() {
         MovementSync movementSync = MovementSync.INSTANCE;
-        if (!movementSync.runIfNavigationRequestCurrent(generation, () -> {
+        if (!runIfCurrent(() -> {
             if (isFinished()) return;
             // Remember an inherited glide before physics can land it between action ticks.
             airborne = movementSync.isGliding();
@@ -68,12 +81,12 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
     public void onTick() {
         if (isFinished()) return;
         MovementSync movementSync = MovementSync.INSTANCE;
-        if (!movementSync.isNavigationRequestCurrent(generation)) {
+        if (!runIfCurrent(() -> {})) {
             setFinished(true);
             return;
         }
         if (!airborne && !movementSync.isGliding()) {
-            movementSync.runIfNavigationRequestCurrent(generation, () -> {
+            runIfCurrent(() -> {
                 if (isFinished()) return;
                 if (++takeoffTicks > 60 || movementSync.isRiding()) {
                     finish(false);
@@ -88,7 +101,7 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
         airborne = true;
         PhysicsState state = new PhysicsState(movementSync.position.get(), movementSync.velocity.get(), movementSync.onGround.get(), movementSync.fallDistance.get());
         if (state.onGround() || !movementSync.isGliding() || ++flightTicks > 12000) {
-            movementSync.runIfNavigationRequestCurrent(generation, () -> {
+            runIfCurrent(() -> {
                 if (isFinished()) return;
                 Vector3d position = state.position();
                 if (safeLandingLeg && state.onGround()) {
@@ -161,7 +174,7 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
         }
         ElytraFlightController.Decision applied = decision;
         // Cancellation may happen while trajectory evaluation is running. Guard the actual writes too.
-        movementSync.runIfNavigationRequestCurrent(generation, () -> {
+        runIfCurrent(() -> {
             if (isFinished()) return;
             movementSync.setYawToward(applied.yaw());
             movementSync.pitch.set(applied.pitch());

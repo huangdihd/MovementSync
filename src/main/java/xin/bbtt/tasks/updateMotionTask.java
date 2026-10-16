@@ -20,6 +20,11 @@ import xin.bbtt.physics.PhysicsStepper;
 import xin.bbtt.physics.WalkingPhysics;
 
 public class updateMotionTask implements Runnable {
+    private static void sendIfConnected(Packet packet) {
+        var session = Bot.INSTANCE.getSession();
+        if (session != null && session.isConnected()) session.send(packet);
+    }
+
     private static final double PLAYER_HALF_WIDTH = (double) 0.6f / 2;
     private PlayerInput lastInput = PlayerInput.NONE;
     private boolean lastSprinting;
@@ -46,19 +51,19 @@ public class updateMotionTask implements Runnable {
         Vector3d position = MovementSync.INSTANCE.position.get();
 
         if (positionChanged && rotationChanged) {
-            Bot.INSTANCE.getSession().send(new ServerboundMovePlayerPosRotPacket(
+            sendIfConnected(new ServerboundMovePlayerPosRotPacket(
                     onGround, horizontalCollision,
                     position.x, position.y, position.z, yaw, pitch));
         } else if (positionChanged) {
-            Bot.INSTANCE.getSession().send(new ServerboundMovePlayerPosPacket(
+            sendIfConnected(new ServerboundMovePlayerPosPacket(
                     onGround, horizontalCollision,
                     position.x, position.y, position.z));
         } else if (rotationChanged) {
-            Bot.INSTANCE.getSession().send(new ServerboundMovePlayerRotPacket(
+            sendIfConnected(new ServerboundMovePlayerRotPacket(
                     onGround, horizontalCollision, yaw, pitch));
         } else {
             // A collision-state transition still needs a movement packet.
-            Bot.INSTANCE.getSession().send(new ServerboundMovePlayerPosPacket(
+            sendIfConnected(new ServerboundMovePlayerPosPacket(
                     onGround, horizontalCollision,
                     position.x, position.y, position.z));
         }
@@ -118,7 +123,7 @@ public class updateMotionTask implements Runnable {
                 MovementSync.getLogger().error("Physics tick failed", error);
             } finally {
                 // Close the same atomic packet batch, including on failure.
-                Bot.INSTANCE.getSession().send(
+                sendIfConnected(
                     org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.ServerboundClientTickEndPacket.INSTANCE);
             }
         }
@@ -141,7 +146,7 @@ public class updateMotionTask implements Runnable {
                     boolean leftPaddle = forward > 0 || sideways > 0;
                     boolean rightPaddle = forward > 0 || sideways < 0;
                     if (leftPaddle || rightPaddle) {
-                        Bot.INSTANCE.getSession().send(new org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.level.ServerboundPaddleBoatPacket(leftPaddle, rightPaddle));
+                        sendIfConnected(new org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.level.ServerboundPaddleBoatPacket(leftPaddle, rightPaddle));
                     }
                 }
             }
@@ -150,7 +155,7 @@ public class updateMotionTask implements Runnable {
             boolean jump = MovementSync.INSTANCE.isRidingJump();
             boolean sneak = MovementSync.INSTANCE.isRidingSneak();
             
-            Bot.INSTANCE.getSession().send(new org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.level.ServerboundPlayerInputPacket(
+            sendIfConnected(new org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.level.ServerboundPlayerInputPacket(
                 sideways > 0, sideways < 0, forward > 0, forward < 0, jump, sneak, false));
             MovementSync.INSTANCE.applyPersistentGazeIfIdle();
             syncPositionToServer(false, true, true);
@@ -196,7 +201,7 @@ public class updateMotionTask implements Runnable {
                     deploying = true;
                     MovementSync.INSTANCE.setGliding(true);
                     input = input.withJump(true);
-                    Bot.INSTANCE.getSession().send(queuedAction);
+                    sendIfConnected(queuedAction);
                 }
             } else {
                 actions.add(queuedAction);
@@ -208,12 +213,12 @@ public class updateMotionTask implements Runnable {
             for (Packet action : deferredActions) MovementSync.INSTANCE.queueBeforeMovement(action);
         }
         if (!input.equals(lastInput)) {
-            Bot.INSTANCE.getSession().send(new ServerboundPlayerInputPacket(
+            sendIfConnected(new ServerboundPlayerInputPacket(
                     input.forward(), input.backward(), input.left(), input.right(), input.jump(), input.sneak(), input.sprint()));
             lastInput = input;
         }
         if (input.sprint() != lastSprinting) {
-            Bot.INSTANCE.getSession().send(new ServerboundPlayerCommandPacket(
+            sendIfConnected(new ServerboundPlayerCommandPacket(
                     MovementSync.INSTANCE.entityId, input.sprint()
                     ? PlayerState.START_SPRINTING
                     : PlayerState.STOP_SPRINTING));
@@ -225,7 +230,7 @@ public class updateMotionTask implements Runnable {
             if (action instanceof org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundUseItemPacket useItem) {
                 action = useItem.withYRot(tickYaw).withXRot(tickPitch);
             }
-            Bot.INSTANCE.getSession().send(action);
+            sendIfConnected(action);
         }
         Vector3d initialVelocity = MovementSync.INSTANCE.velocity.get();
         Vector3d velocity = new Vector3d(initialVelocity);

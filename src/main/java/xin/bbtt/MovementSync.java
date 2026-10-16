@@ -466,7 +466,7 @@ public class MovementSync implements Plugin {
     }
 
     public void startStaticNavigation(org.joml.Vector3i goal, boolean allowDigging) {
-        cancelNavigation();
+        cancelNavigation(false);
         planAndPublish(claimNavigationRequest(goal, -1, -1, allowDigging));
     }
 
@@ -478,7 +478,14 @@ public class MovementSync implements Plugin {
     }
 
     public void startFollowingNavigation(int entityId, double keepDistance, boolean allowDigging) {
-        cancelNavigation();
+        synchronized (navigationLock) {
+            if (isGliding()) {
+                cancelNavigation();
+                getLogger().warn("Follow not started while gliding: safe landing first; issue follow again on the ground");
+                return;
+            }
+            cancelNavigation(false);
+        }
         planAndPublish(claimNavigationRequest(null, entityId, keepDistance, allowDigging));
     }
 
@@ -565,13 +572,37 @@ public class MovementSync implements Plugin {
         }
     }
 
-    public void cancelNavigation() {
+    private xin.bbtt.movements.ElytraFlyMovement safetyLanding;
+
+    public boolean runIfSafetyMovementCurrent(xin.bbtt.movements.ElytraFlyMovement movement, Runnable action) {
         synchronized (navigationLock) {
+            if (safetyLanding != movement || movement.isFinished()) return false;
+            action.run();
+            return true;
+        }
+    }
+
+    public void cancelNavigation() {
+        cancelNavigation(true);
+    }
+
+    private void cancelNavigation(boolean land) {
+        synchronized (navigationLock) {
+            if (land && isGliding() && safetyLanding != null && !safetyLanding.isFinished()) {
+                getLogger().info("正在安全落地,落地后停止");
+                return;
+            }
             clearRecoverableGoto("cancelled or died");
             navigationGeneration.incrementAndGet();
             movementController.cancelAll();
             activeGoal = null;
             followTargetId = -1;
+            safetyLanding = null;
+            if (land && isGliding()) {
+                safetyLanding = new xin.bbtt.movements.ElytraFlyMovement(position.get()).forIndependentLanding();
+                getLogger().info("Navigation cancelled: safe landing takeover; 正在安全落地,落地后停止");
+                movementController.addMovement(safetyLanding);
+            }
         }
     }
 

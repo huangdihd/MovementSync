@@ -36,8 +36,8 @@ public final class MovementParametersPacketListener extends SessionAdapter {
         } else if (packet instanceof ClientboundSetHealthPacket health) {
             state.updateFood(health.getFood());
             if (health.getHealth() <= 0) {
-                movementSync.cancelNavigation();
                 movementSync.clearFlightState();
+                movementSync.cancelNavigation();
             }
         } else if (packet instanceof ClientboundPlayerAbilitiesPacket abilities) {
             state.updateAbilities(abilities.isCanFly());
