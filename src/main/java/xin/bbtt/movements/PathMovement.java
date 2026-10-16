@@ -18,6 +18,8 @@ public class PathMovement extends Movement {
     /** Ten seconds of execution opportunities without a new completed node is livelock. */
     private static final int MAX_TICKS_WITHOUT_NODE_PROGRESS = 200;
 
+    private Movement placement;
+    private int placementTicks;
     private List<PathStep> path;
     private int currentIndex = 0;
     private PlayerInput issuedInput;
@@ -147,6 +149,16 @@ public class PathMovement extends Movement {
     }
 
     private void onAuthorizedTick() {
+        if (placement != null) {
+            placement.onTick();
+            if (!placement.isFinished() && ++placementTicks < 100) return;
+            placement.onStop();
+            placement = null;
+            MovementSync.getLogger().info("Placement child returned; replan from updated world at {}",
+                    MovementSync.INSTANCE.position.get());
+            scheduleRepath();
+            return;
+        }
         if (isSuperseded()) {
             stopHorizontal();
             setFinished(true);
@@ -233,6 +245,13 @@ public class PathMovement extends Movement {
             if (customMovement != null) {
                 if (customMovement instanceof NavigationBoundMovement navigationBound) {
                     navigationBound.bindNavigationRequest(requestGeneration);
+                }
+                if (customMovement instanceof PlaceBlockMovement || customMovement instanceof PillarMovement) {
+                    stopHorizontal();
+                    placement = customMovement;
+                    placementTicks = 0;
+                    placement.init();
+                    return;
                 }
                 if (!MovementSync.INSTANCE.insertMovementIfNavigationRequestCurrent(
                         requestGeneration, customMovement)) {
@@ -657,12 +676,14 @@ public class PathMovement extends Movement {
 
     @Override
     public void onStop() {
+        if (placement != null) placement.onStop();
         stopHorizontal();
         progressWatchdog.pause();
     }
 
     @Override
     public void onPause() {
+        if (placement != null) placement.onPause();
         stopHorizontal();
         progressWatchdog.pause();
     }

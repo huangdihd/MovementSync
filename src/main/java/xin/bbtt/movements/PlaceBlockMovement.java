@@ -19,8 +19,8 @@ public class PlaceBlockMovement extends Movement implements NavigationBoundMovem
     private final int blockSlot;
     private Long navigationGeneration;
     
-    private long startTime;
-    private int step = 0;
+    private final BlockPlacementAction action = new BlockPlacementAction();
+    private long lastTick = -1;
 
     public PlaceBlockMovement(Vector3i pos, Vector3i targetPos, Direction side, boolean bridge) {
         this(pos, targetPos, side, bridge, -1);
@@ -43,23 +43,7 @@ public class PlaceBlockMovement extends Movement implements NavigationBoundMovem
     @Override
     public void init() {
         if (blockSlot >= 0) MovementSync.INSTANCE.getInventoryManager().switchToSlot(blockSlot);
-        startTime = System.currentTimeMillis();
-        // Calculate the center of the targeted face
-        double dx = 0, dy = 0, dz = 0;
-        switch (side) {
-            case DOWN -> dy = -0.5;
-            case UP -> dy = 0.5;
-            case NORTH -> dz = -0.5;
-            case SOUTH -> dz = 0.5;
-            case WEST -> dx = -0.5;
-            case EAST -> dx = 0.5;
-        }
-        
-        MovementSync.INSTANCE.directLookAt(new Vector3d(
-            targetPos.getX() + 0.5 + dx, 
-            targetPos.getY() + 0.5 + dy, 
-            targetPos.getZ() + 0.5 + dz
-        ));
+        action.aim(targetPos, side);
     }
 
     @Override
@@ -77,39 +61,21 @@ public class PlaceBlockMovement extends Movement implements NavigationBoundMovem
     }
 
     private void onAuthorizedTick() {
-        long elapsed = System.currentTimeMillis() - startTime;
-        
-        if (bridge) {
-            switch (step) {
-                case 0: // Sneak via input
-                    setBridgeInput(false);
-                    step = 1;
-                    break;
-                case 1: // Wait and move to edge
-                    if (elapsed > 100) {
-                        setBridgeInput(true);
-                        
-                        if (elapsed > 300) step = 2;
-                    }
-                    break;
-                case 2: // Place
-                    setBridgeInput(false);
-                    place();
-                    step = 3;
-                    break;
-                case 3: // Stop sneaking
-                    if (elapsed > 400) {
-                        onStop();
-                        setFinished(true);
-                    }
-                    break;
-            }
-        } else {
-            if (step == 0 && elapsed > 50) {
-                place();
-                step = 1;
+        synchronized (MovementSync.INSTANCE) {
+            var frame = MovementSync.INSTANCE.getPlacementFrame();
+            if (frame == null || frame.tick() == lastTick) return;
+            lastTick = frame.tick();
+            if (action.confirmed(pos)) {
+                MovementSync.getLogger().info("Placement confirmed: {} at tick={}", pos, frame.tick());
                 onStop();
                 setFinished(true);
+                return;
+            }
+            if (action.sent()) return;
+            if (bridge) setBridgeInput(false);
+            if (!action.tryQueue(targetPos, side) && bridge) {
+                // Sneaking physics clips motion to supported edges, not an elapsed-time guess.
+                setBridgeInput(true);
             }
         }
     }
@@ -132,18 +98,9 @@ public class PlaceBlockMovement extends Movement implements NavigationBoundMovem
             forward > threshold, forward < -threshold,
             strafe > threshold, strafe < -threshold, false, true, false));
     }
-    private void place() {
-        MovementSync.getLogger().info(xin.bbtt.mcbot.LangManager.get("movementsync.movement.placing.start", pos.getX(), pos.getY(), pos.getZ(), side));
-        // Send use item packet
-        Bot.INSTANCE.getSession().send(new ServerboundUseItemOnPacket(
-            targetPos, side, Hand.MAIN_HAND, 0.5f, 0.5f, 0.5f, false, false, Bot.INSTANCE.getAndIncreaseSequence()
-        ));
-        // Swing arm
-        Bot.INSTANCE.getSession().send(new ServerboundSwingPacket(Hand.MAIN_HAND));
-    }
     @Override
     public long getTime() {
-        return 1000;
+        return 5000;
     }
 
     @Override
@@ -158,6 +115,6 @@ public class PlaceBlockMovement extends Movement implements NavigationBoundMovem
 
     @Override
     public void onResume() {
-        if (bridge && !isFinished()) setBridgeInput(step == 1);
+        if (bridge && !isFinished()) setBridgeInput(false);
     }
 }

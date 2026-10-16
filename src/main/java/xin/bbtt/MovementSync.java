@@ -77,6 +77,19 @@ public class MovementSync implements Plugin {
         return jumpRequested.getAndSet(false) ? keys.withJump(true) : keys;
     }
 
+    /** Last completed physics tick, containing only the position/rotation reported to the server. */
+    public record PlacementFrame(long tick, double x, double y, double z,
+                                 float yaw, float pitch, double eyeHeight) {}
+    private volatile PlacementFrame placementFrame;
+
+    public PlacementFrame getPlacementFrame() { return placementFrame; }
+
+    public void publishPlacementFrame(double x, double y, double z, float yaw, float pitch, double eyeHeight) {
+        PlacementFrame previous = placementFrame;
+        placementFrame = new PlacementFrame(previous == null ? 1 : previous.tick() + 1,
+                x, y, z, yaw, pitch, eyeHeight);
+    }
+
     public void queueBeforeMovement(Packet packet) {
         beforeMovementPackets.add(Objects.requireNonNull(packet, "packet"));
     }

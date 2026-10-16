@@ -19,6 +19,8 @@ public final class PillarMovement extends Movement implements NavigationBoundMov
     private final int blockSlot;
     private Long navigationGeneration;
     private boolean jumped;
+    private final BlockPlacementAction action = new BlockPlacementAction();
+    private long lastTick = -1;
 
     public PillarMovement(
             Vector3i blockPos,
@@ -39,20 +41,7 @@ public final class PillarMovement extends Movement implements NavigationBoundMov
     @Override
     public void init() {
         if (blockSlot >= 0) MovementSync.INSTANCE.getInventoryManager().switchToSlot(blockSlot);
-        Vector3d aim = new Vector3d(
-            clickedBlock.getX() + 0.5,
-            clickedBlock.getY() + 0.5,
-            clickedBlock.getZ() + 0.5
-        );
-        switch (clickedFace) {
-            case DOWN -> aim.y -= 0.5;
-            case UP -> aim.y += 0.5;
-            case NORTH -> aim.z -= 0.5;
-            case SOUTH -> aim.z += 0.5;
-            case WEST -> aim.x -= 0.5;
-            case EAST -> aim.x += 0.5;
-        }
-        MovementSync.INSTANCE.directLookAt(aim);
+        action.aim(clickedBlock, clickedFace);
     }
 
     @Override
@@ -70,31 +59,28 @@ public final class PillarMovement extends Movement implements NavigationBoundMov
     }
 
     private void onAuthorizedTick() {
-        if (!jumped) {
-            if (MovementSync.INSTANCE.onGround.get()) {
-                MovementSync.INSTANCE.jump();
-                jumped = true;
+        synchronized (MovementSync.INSTANCE) {
+            var frame = MovementSync.INSTANCE.getPlacementFrame();
+            if (frame != null && frame.tick() == lastTick) return;
+            if (frame != null) lastTick = frame.tick();
+            if (action.confirmed(blockPos) && MovementSync.INSTANCE.onGround.get()) {
+                MovementSync.getLogger().info("Pillar placement confirmed: {}", blockPos);
+                onStop();
+                setFinished(true);
+                return;
             }
-            return;
+            if (action.sent()) return;
+            if (!jumped) {
+                if (MovementSync.INSTANCE.onGround.get()) {
+                    MovementSync.INSTANCE.jump();
+                    jumped = true;
+                }
+                return;
+            }
+            double requiredFeetY = blockPos.getY() + 1.0;
+            if (frame == null || frame.y() + CLEARANCE_EPSILON < requiredFeetY) return;
+            action.tryQueue(clickedBlock, clickedFace);
         }
-        double requiredFeetY = blockPos.getY() + 1.0;
-        if (MovementSync.INSTANCE.position.get().y + CLEARANCE_EPSILON < requiredFeetY) return;
-
-        MovementSync.getLogger().info(xin.bbtt.mcbot.LangManager.get(
-            "movementsync.pathfinding.pillaring",
-            blockPos.getX(), blockPos.getY(), blockPos.getZ()));
-        Bot.INSTANCE.getSession().send(new ServerboundUseItemOnPacket(
-            clickedBlock,
-            clickedFace,
-            Hand.MAIN_HAND,
-            0.5f, 0.5f, 0.5f,
-            false,
-            false,
-            Bot.INSTANCE.getAndIncreaseSequence()
-        ));
-        Bot.INSTANCE.getSession().send(new ServerboundSwingPacket(Hand.MAIN_HAND));
-        onStop();
-        setFinished(true);
     }
 
     @Override

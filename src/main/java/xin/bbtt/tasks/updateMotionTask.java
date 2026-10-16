@@ -294,5 +294,8 @@ public class updateMotionTask implements Runnable {
             lastHorizontalCollision = horizontalCollision;
             lastOnGround = MovementSync.INSTANCE.onGround.get();
         }
+        MovementSync.INSTANCE.publishPlacementFrame(lastPos.x, lastPos.y, lastPos.z, lastYaw, lastPitch,
+                pose == xin.bbtt.physics.PlayerPose.CROUCHING ? (double) 1.27f
+                        : pose == xin.bbtt.physics.PlayerPose.STANDING ? (double) 1.62f : (double) 0.4f);
     }
 }
