@@ -247,7 +247,7 @@ public class updateMotionTask implements Runnable {
         }
         PhysicsStepper physics = gliding
                 ? new GlidingPhysics(tickYaw, tickPitch,
-                        MovementSync.INSTANCE.hasAttachedFirework(), parameters.gravity(), parameters.slowFalling())
+                        MovementSync.INSTANCE.hasAttachedFirework(), input, parameters)
                 : new WalkingPhysics(input, tickYaw, jumpAllowed, parameters);
         PhysicsResult result = physics.step(
             MovementSync.INSTANCE.getWorld(),

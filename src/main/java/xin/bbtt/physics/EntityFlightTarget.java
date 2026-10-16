@@ -31,7 +31,8 @@ public final class EntityFlightTarget implements FlightTarget {
         Object flags = entity.getMetadata().get("shared_flags");
         // Yarn 1.21.11 Entity.GLIDING_FLAG_INDEX = 7.
         gliding = flags instanceof Number number && (number.intValue() & 0x80) != 0;
-        landed = !gliding && world.isOnGround(position);
+        landed = !gliding && (world.isOnGround(position)
+                || EnvironmentalPhysics.sample(world, position, (double) 0.6f / 2, (double) 1.8f).waterHeight() > 0);
     }
 
     public boolean gliding() { return gliding; }

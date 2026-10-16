@@ -21,17 +21,27 @@ public final class GlidingPhysics implements PhysicsStepper {
     private final boolean firework;
     private final double gravity;
     private final boolean slowFalling;
+    private final PlayerInput input;
+    private final MovementParameters parameters;
 
     public GlidingPhysics(float yaw, float pitch, boolean firework) {
         this(yaw, pitch, firework, 0.08, false);
     }
 
     public GlidingPhysics(float yaw, float pitch, boolean firework, double gravity, boolean slowFalling) {
+        this(yaw, pitch, firework, PlayerInput.NONE, new MovementParameters(
+                MovementParameters.DEFAULT.movementSpeed(), MovementParameters.DEFAULT.sprintingMovementSpeed(),
+                MovementParameters.DEFAULT.jumpStrength(), 0, gravity, 0.6, 0.3, slowFalling, -1, true));
+    }
+
+    public GlidingPhysics(float yaw, float pitch, boolean firework, PlayerInput input, MovementParameters parameters) {
+        this.input = input;
+        this.parameters = parameters;
         this.yaw = yaw;
         this.pitch = pitch;
         this.firework = firework;
-        this.gravity = gravity;
-        this.slowFalling = slowFalling;
+        this.gravity = parameters.gravity();
+        this.slowFalling = parameters.slowFalling();
     }
 
     private static float sin(float angle) {
@@ -44,6 +54,24 @@ public final class GlidingPhysics implements PhysicsStepper {
 
     @Override
     public PhysicsResult step(World world, PhysicsState state, double halfWidth, double height) {
+        // LivingEntity.travel gives water/lava priority over the persistent gliding flag.
+        var environment = EnvironmentalPhysics.sample(world, state.position(), halfWidth, height);
+        if (environment.waterHeight() > 0 || environment.lavaHeight() > 0) {
+            PhysicsResult fluid = new WalkingPhysics(input, yaw, true, parameters)
+                    .step(world, state, halfWidth, height);
+            Vector3d motion = fluid.velocity();
+            if (firework) {
+                float yawRadians = -yaw * DEGREES_TO_RADIANS;
+                float pitchRadians = pitch * DEGREES_TO_RADIANS;
+                Vector3d look = new Vector3d(sin(yawRadians) * cos(pitchRadians),
+                        -sin(pitchRadians), cos(yawRadians) * cos(pitchRadians));
+                motion.add(look.x * 0.1 + (look.x * 1.5 - motion.x) * 0.5,
+                        look.y * 0.1 + (look.y * 1.5 - motion.y) * 0.5,
+                        look.z * 0.1 + (look.z * 1.5 - motion.z) * 0.5);
+            }
+            return new PhysicsResult(fluid.position(), motion, fluid.collidedX(), fluid.collidedZ(),
+                    fluid.onGround(), fluid.fallDistance(), state.pose().afterTravel(world, fluid.position(), true, false, input.sneak()));
+        }
         Vector3d position = state.position();
         Vector3d velocity = state.velocity();
         // LivingEntity.tickMovement snaps player motion before travel.

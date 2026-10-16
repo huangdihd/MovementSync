@@ -80,6 +80,13 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
         })) setFinished(true);
     }
 
+    /** Entity fluid-height contact using the current player body, not a block-depth threshold. */
+    static boolean touchingWater() {
+        var sync = MovementSync.INSTANCE;
+        return xin.bbtt.physics.EnvironmentalPhysics.sample(sync.getWorld(), sync.position.get(),
+                (double) 0.6f / 2, sync.isGliding() ? (double) 0.6f : (double) 1.8f).waterHeight() > 0;
+    }
+
     @Override
     public void onTick() {
         if (isFinished()) return;
@@ -103,15 +110,16 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
         }
         airborne = true;
         PhysicsState state = new PhysicsState(movementSync.position.get(), movementSync.velocity.get(), movementSync.onGround.get(), movementSync.fallDistance.get());
-        if (state.onGround() || !movementSync.isGliding() || ++flightTicks > 12000) {
+        boolean landed = state.onGround() || touchingWater();
+        if (landed || !movementSync.isGliding() || ++flightTicks > 12000) {
             runIfCurrent(() -> {
                 if (isFinished()) return;
                 Vector3d position = state.position();
-                if (safeLandingLeg && state.onGround()) {
+                if (safeLandingLeg && landed) {
                     setFinished(true);
                     MovementSync.getLogger().info("Elytra safe landing complete at {}", position);
                 } else {
-                    finish(!emergencyLanding && state.onGround()
+                    finish(!emergencyLanding && landed
                             && Math.hypot(position.x - target.position().x, position.z - target.position().z) <= arrivalRadius);
                 }
             });

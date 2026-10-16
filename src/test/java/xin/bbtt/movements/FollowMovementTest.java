@@ -3,6 +3,7 @@ package xin.bbtt.movements;
 import org.joml.Vector3d;
 import org.junit.jupiter.api.Test;
 import xin.bbtt.ElytraCommandTestSupport;
+import xin.bbtt.MovementSync;
 import xin.bbtt.Entity.Entity;
 import xin.bbtt.world.World;
 import org.geysermc.mcprotocollib.protocol.data.game.entity.type.EntityType;
@@ -32,6 +33,33 @@ class FollowMovementTest extends ElytraCommandTestSupport {
         field.setAccessible(true);
         return field.get(follow);
     }
+    @Test void waterLandingReturnsToWalkingWhileGlidingFlagRemainsSet() throws Exception {
+        var entity = installTarget(true);
+        movementSync.setGliding(true);
+        movementSync.onGround.set(false);
+        var follow = new FollowMovement(99, 8, false, movementSync.beginNavigationRequest());
+        follow.init(); follow.onTick();
+        var water = java.util.stream.IntStream.range(0, xin.bbtt.Block.BlockStateParser.getBlockStateRegistrySize())
+                .mapToObj(xin.bbtt.Block.BlockStateParser.Instance::parseStateId)
+                .filter(block -> block.blockName().equals("water") && "0".equals(block.getProperty("level")))
+                .findFirst().orElseThrow();
+        World pool = new World() {
+            @Override public boolean chunkLoaded(int x, int z) { return true; }
+            @Override public xin.bbtt.Block.BlockState getBlockStateAt(Vector3d p) { return water; }
+        };
+        pool.getEntities().put(99, entity);
+        var worldField = MovementSync.class.getDeclaredField("world");
+        worldField.setAccessible(true); worldField.set(movementSync, pool);
+        follow.onTick();
+        var flying = FollowMovement.class.getDeclaredField("flying");
+        flying.setAccessible(true);
+        assertFalse(flying.getBoolean(follow));
+        assertTrue(movementSync.isGliding());
+        follow.onTick();
+        assertFalse(flying.getBoolean(follow), "water must not redeploy the persistent gliding flag");
+        assertFalse(child(follow) instanceof ElytraFlyMovement);
+    }
+
     @Test void glidingTargetLaunchesWithEquipment() throws Exception {
         installTarget(true);
         var follow = new FollowMovement(99, 8, false, movementSync.beginNavigationRequest());

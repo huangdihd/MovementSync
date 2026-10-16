@@ -40,8 +40,9 @@ public final class FollowMovement extends Movement {
         target.sample(sync.getWorld());
         // Touchdown precedes authoritative shared_flags clearing. Do not issue
         // walking input or a second deployment while that landing is pending.
-        if (flying && child == null && sync.onGround.get()) {
-            if (sync.isGliding()) return;
+        boolean water = ElytraFlyMovement.touchingWater();
+        if (flying && child == null && (sync.onGround.get() || water)) {
+            if (sync.isGliding() && !water) return;
             flying = false;
             landing = false;
             MovementSync.getLogger().info("Follow: landed; flying -> walking at {}", sync.position.get());
@@ -57,7 +58,7 @@ public final class FollowMovement extends Movement {
         double sprintSpeed = sync.getMovementParameters().movementSpeed(true) * 0.21600002
                 / (friction * friction * friction) * 0.98 / (1 - friction * 0.91);
         boolean needsFlight = target.gliding() || target.horizontalSpeed() > sprintSpeed;
-        if (!flying && (sync.isGliding() || needsFlight && !target.lost()
+        if (!flying && !water && (sync.isGliding() || needsFlight && !target.lost()
                 && sync.countHotbarFireworks() > 0
                 && sync.getInventoryManager().canStartFlight(sync.position.get().distance(target.position())))) {
             var preparation = sync.getInventoryManager().prepareElytra(sync.onGround.get(), sync::queueBeforeMovement);
@@ -94,7 +95,7 @@ public final class FollowMovement extends Movement {
         if (child.isFinished()) {
             child.onStop();
             child = null;
-            if (flying && sync.onGround.get() && !sync.isGliding()) {
+            if (flying && (water || sync.onGround.get() && !sync.isGliding())) {
                 flying = false;
                 landing = false;
                 MovementSync.getLogger().info("Follow: landed; flying -> walking at {}", sync.position.get());

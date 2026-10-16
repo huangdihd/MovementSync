@@ -151,7 +151,8 @@ public final class TravelMovement extends Movement {
             if (stopped || finished || !movementSync.isNavigationRequestCurrent(generation)) return;
             stage = Stage.LAND;
         }
-        if (stage == Stage.LAND && (movementSync.onGround.get() || environmental) && !movementSync.isGliding()) {
+        if (stage == Stage.LAND && (ElytraFlyMovement.touchingWater()
+                || (movementSync.onGround.get() || environmental) && !movementSync.isGliding())) {
             stage = Stage.WALK;
             List<PathStep> path = legs.plan(goal);
             if (stopped || finished || !movementSync.isNavigationRequestCurrent(generation)) return;

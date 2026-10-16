@@ -21,6 +21,10 @@ final class TravelMovementOrchestrationTest {
 
     private static final class LaunchWorld extends World {
         boolean open;
+        xin.bbtt.Block.BlockState water;
+        @Override public xin.bbtt.Block.BlockState getBlockStateAt(Vector3d p) {
+            return water == null ? super.getBlockStateAt(p) : water;
+        }
         boolean candidates = true;
         @Override public boolean chunkLoaded(int x, int z) { return true; }
         @Override public OptionalDouble findHighestCollisionTop(double minX, double minY, double minZ,
@@ -79,6 +83,23 @@ final class TravelMovementOrchestrationTest {
         @Override public Movement flight() { return create("flight"); }
         Leg current() { return children.get(children.size() - 1); }
         void complete() { current().setFinished(true); travel.onTick(); }
+    }
+
+    @Test void waterHandoffStartsWalkingWithoutWaitingForGlidingMetadata() {
+        Fixture fixture = new Fixture();
+        fixture.gliding = true;
+        fixture.movementSync.onGround.set(false);
+        fixture.travel.onTick();
+        assertEquals(List.of("flight"), fixture.events);
+        fixture.world.water = java.util.stream.IntStream.range(0, xin.bbtt.Block.BlockStateParser.getBlockStateRegistrySize())
+                .mapToObj(xin.bbtt.Block.BlockStateParser.Instance::parseStateId)
+                .filter(block -> block.blockName().equals("water") && "0".equals(block.getProperty("level")))
+                .findFirst().orElseThrow();
+        fixture.complete();
+        assertEquals(List.of("flight", "walk"), fixture.events);
+        assertTrue(fixture.gliding);
+        fixture.complete();
+        assertTrue(fixture.travel.isFinished());
     }
 
     @Test void threeLegsRunInOrderAndFinish() {

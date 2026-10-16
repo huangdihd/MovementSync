@@ -38,6 +38,38 @@ final class ElytraFlyMovementTest extends ElytraCommandTestSupport {
         messages.stop();
     }
 
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 2})
+    void waterCompletesNormalSafeAndIndependentLandingWithoutClearingFlag(int mode) throws Exception {
+        movementSync.getMovementController().pause();
+        var water = java.util.stream.IntStream.range(0, xin.bbtt.Block.BlockStateParser.getBlockStateRegistrySize())
+                .mapToObj(xin.bbtt.Block.BlockStateParser.Instance::parseStateId)
+                .filter(block -> block.blockName().equals("water") && "0".equals(block.getProperty("level")))
+                .findFirst().orElseThrow();
+        var world = new xin.bbtt.world.World() {
+            @Override public boolean chunkLoaded(int x, int z) { return true; }
+            @Override public xin.bbtt.Block.BlockState getBlockStateAt(Vector3d p) { return water; }
+        };
+        var field = MovementSync.class.getDeclaredField("world");
+        field.setAccessible(true);
+        field.set(movementSync, world);
+        movementSync.onGround.set(false);
+        movementSync.setGliding(true);
+        ElytraFlyMovement flight;
+        if (mode == 2) {
+            movementSync.cancelNavigation();
+            flight = (ElytraFlyMovement) movementSync.getMovementController().getMovements().getFirst();
+        } else {
+            flight = new ElytraFlyMovement(new Vector3d(movementSync.position.get()));
+            if (mode == 1) flight.forSafeLanding();
+        }
+        flight.init();
+        flight.onTick();
+        assertTrue(flight.isFinished());
+        assertTrue(movementSync.isGliding());
+        assertFalse(movementSync.onGround.get());
+    }
+
     @Test
     void cancellationOwnsIndependentLandingAndRepeatedStopsPreserveIt() {
         movementSync.getMovementController().pause();

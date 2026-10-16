@@ -27,6 +27,46 @@ final class GlidingPhysicsTest {
     }
 
     @Test
+    void waterTakesPriorityOverGlidingWithVanillaDragAndGravity() {
+        var water = java.util.stream.IntStream.range(0, xin.bbtt.Block.BlockStateParser.getBlockStateRegistrySize())
+                .mapToObj(xin.bbtt.Block.BlockStateParser.Instance::parseStateId)
+                .filter(block -> block.blockName().equals("water") && "0".equals(block.getProperty("level")))
+                .findFirst().orElseThrow();
+        World pool = new World() {
+            @Override public boolean chunkLoaded(int x, int z) { return true; }
+            @Override public xin.bbtt.Block.BlockState getBlockStateAt(Vector3d p) { return water; }
+            @Override public boolean isBoxColliding(double a, double b, double c, double d, double e, double f) { return false; }
+        };
+        var result = new GlidingPhysics(0, -30, false).step(pool,
+                new PhysicsState(new Vector3d(0, 10, 0), new Vector3d(0.2, -0.1, 0.5), false, 30), HALF_WIDTH, HEIGHT);
+        // Yarn LivingEntity.travelInWater: move first, multiply by 0.8F,
+        // then applyFluidMovingSpeed subtracts effective gravity / 16.
+        assertEquals(new Vector3d(0.2, 9.9, 0.5), result.position());
+        assertEquals(new Vector3d(0.2 * (double) 0.8f, -0.1 * (double) 0.8f - 0.08 / 16,
+                0.5 * (double) 0.8f), result.velocity());
+        assertEquals(0, result.fallDistance());
+    }
+
+    @Test
+    void dryFlightBitwiseCharacterization() {
+        long hash = 1;
+        for (boolean boost : new boolean[]{false, true}) {
+            for (float pitch : new float[]{-70, -15, 0, 35, 80}) {
+                PhysicsState state = new PhysicsState(new Vector3d(0, 1000, 0), new Vector3d(0.2, -0.1, 0.5), false, 3);
+                for (int tick = 0; tick < 40; tick++) {
+                    PhysicsResult result = new GlidingPhysics(37, pitch, boost).step(air, state, HALF_WIDTH, HEIGHT);
+                    for (double value : new double[]{result.position().x, result.position().y, result.position().z,
+                            result.velocity().x, result.velocity().y, result.velocity().z, result.fallDistance()}) {
+                        hash = 31 * hash + Double.doubleToLongBits(value);
+                    }
+                    state = new PhysicsState(result.position(), result.velocity(), result.onGround(), result.fallDistance());
+                }
+            }
+        }
+        assertEquals(6435935390763126004L, hash);
+    }
+
+    @Test
     void stationaryHandCalculatedTickMovesWithUpdatedVelocity() {
         PhysicsResult result = step(new PhysicsState(new Vector3d(0, 10, 0), new Vector3d(), false), 0, false);
         assertEquals(0, result.velocity().x, 1.0e-9);
