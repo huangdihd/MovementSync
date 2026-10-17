@@ -56,13 +56,10 @@ public final class TravelMovement extends Movement {
                 return intermediate ? movement.asIntermediateLeg(TravelMovement.this.goal) : movement;
             }
             @Override public xin.bbtt.inventory.InventoryManager.ElytraAction prepareFlight() {
-                MovementSync sync = MovementSync.INSTANCE;
-                return sync.getInventoryManager().prepareElytra(sync.onGround.get(), sync::queueBeforeMovement);
+                return VanillaGlideLifecycle.prepareFlight(MovementSync.INSTANCE);
             }
             @Override public boolean hasFlightBudget() {
-                Vector3d position = MovementSync.INSTANCE.position.get();
-                return MovementSync.INSTANCE.getInventoryManager().canStartFlight(
-                        Math.hypot(position.x - (TravelMovement.this.goal.x + 0.5), position.z - (TravelMovement.this.goal.z + 0.5)));
+                return VanillaGlideLifecycle.hasFlightBudget(MovementSync.INSTANCE, TravelMovement.this.goal);
             }
             @Override public Movement flight() {
                 Vector3i destination = TravelMovement.this.goal;
@@ -73,12 +70,12 @@ public final class TravelMovement extends Movement {
 
     public static boolean shouldFly(double distance, boolean elytra, boolean fireworks,
                                     boolean walk, boolean gliding) {
-        return !walk && elytra && (gliding || distance > FLIGHT_DISTANCE_THRESHOLD && fireworks);
+        return VanillaGlideLifecycle.shouldFly(distance, elytra, fireworks, walk, gliding);
     }
 
     public static boolean shouldFly(double distance, xin.bbtt.physics.ElytraDurability durability,
                                     boolean fireworks, boolean walk, boolean gliding) {
-        return durability.canStart(distance) && shouldFly(distance, durability.equipped(), fireworks, walk, gliding);
+        return VanillaGlideLifecycle.shouldFly(distance, durability, fireworks, walk, gliding);
     }
 
     /** A 3x3 launch column reserves clear sky and lateral room for the climb. */
@@ -129,11 +126,7 @@ public final class TravelMovement extends Movement {
                 return;
             }
             if (!movementSync.onGround.get() && !environmental) {
-                if (movementSync.hasEquippedElytra()
-                        && movementSync.inventoryManager.getElytraDurability().usable()
-                        && xin.bbtt.physics.FallPrediction.predict(movementSync.getWorld(),
-                            new xin.bbtt.physics.PhysicsState(movementSync.position.get(), movementSync.velocity.get(),
-                                    false, movementSync.fallDistance.get()), movementSync.getMovementParameters()).dangerous()) {
+                if (VanillaGlideLifecycle.eligibleForAirborneTakeoff(movementSync)) {
                     boolean cruise = fly && legs.hasFlightBudget();
                     ElytraFlyMovement flight = new ElytraFlyMovement(
                             new Vector3d(goal.x + 0.5, goal.y, goal.z + 0.5), generation);

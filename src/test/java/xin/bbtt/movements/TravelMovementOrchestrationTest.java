@@ -59,6 +59,11 @@ final class TravelMovementOrchestrationTest {
         boolean approachPath = true;
         boolean finalPath = true;
         boolean partialFinalPath;
+        xin.bbtt.inventory.InventoryManager.ElytraAction preparation = xin.bbtt.inventory.InventoryManager.ElytraAction.READY;
+        boolean flightBudget = true;
+        int preparations;
+        int budgetChecks;
+        Runnable preparing = () -> {};
         int approachPlans;
         Runnable planning = () -> {};
         final List<String> events = new ArrayList<>();
@@ -80,9 +85,88 @@ final class TravelMovementOrchestrationTest {
         @Override public Movement walk(List<PathStep> path, Vector3i destination, boolean intermediate) {
             return create(intermediate ? "approach" : "walk");
         }
+        @Override public xin.bbtt.inventory.InventoryManager.ElytraAction prepareFlight() {
+            preparations++;
+            preparing.run();
+            return preparation;
+        }
+        @Override public boolean hasFlightBudget() { budgetChecks++; return flightBudget; }
         @Override public Movement flight() { return create("flight"); }
         Leg current() { return children.get(children.size() - 1); }
         void complete() { current().setFinished(true); travel.onTick(); }
+    }
+
+    @Test void preparationWaitsWithoutCheckingBudgetThenStartsExactlyOneFlight() {
+        Fixture fixture = new Fixture();
+        fixture.world.open = true;
+        fixture.preparation = xin.bbtt.inventory.InventoryManager.ElytraAction.WAITING;
+        fixture.travel.onTick();
+        fixture.travel.onTick();
+        assertTrue(fixture.children.isEmpty());
+        assertEquals(2, fixture.preparations);
+        assertEquals(0, fixture.budgetChecks);
+        fixture.preparation = xin.bbtt.inventory.InventoryManager.ElytraAction.READY;
+        fixture.travel.onTick();
+        fixture.travel.onTick();
+        assertEquals(List.of("flight"), fixture.events);
+        assertEquals(3, fixture.preparations);
+        assertEquals(1, fixture.budgetChecks);
+    }
+
+    @Test void preparationFailureOrInsufficientBudgetFallsBackOnNextTickWithoutRetry() {
+        for (boolean equipmentFailure : new boolean[]{false, true}) {
+            Fixture fixture = new Fixture();
+            fixture.world.open = true;
+            fixture.preparation = equipmentFailure ? xin.bbtt.inventory.InventoryManager.ElytraAction.LAND
+                    : xin.bbtt.inventory.InventoryManager.ElytraAction.READY;
+            fixture.flightBudget = false;
+            fixture.travel.onTick();
+            assertTrue(fixture.events.isEmpty());
+            assertEquals(equipmentFailure ? 0 : 1, fixture.budgetChecks);
+            fixture.travel.onTick();
+            assertEquals(List.of("walk"), fixture.events);
+            assertEquals(1, fixture.preparations);
+        }
+    }
+
+    @Test void inheritedGlideBypassesPreparationAndBudget() {
+        Fixture fixture = new Fixture();
+        fixture.gliding = true;
+        fixture.preparation = xin.bbtt.inventory.InventoryManager.ElytraAction.LAND;
+        fixture.flightBudget = false;
+        fixture.travel.onTick();
+        assertEquals(List.of("flight"), fixture.events);
+        assertEquals(0, fixture.preparations);
+        assertEquals(0, fixture.budgetChecks);
+    }
+
+    @Test void approachPrecedesPreparationAndWaitingDoesNotRestartApproach() {
+        Fixture fixture = new Fixture();
+        fixture.preparation = xin.bbtt.inventory.InventoryManager.ElytraAction.WAITING;
+        fixture.travel.onTick();
+        assertEquals(0, fixture.preparations);
+        fixture.world.open = true;
+        fixture.complete();
+        fixture.travel.onTick();
+        assertEquals(List.of("approach"), fixture.events);
+        assertEquals(2, fixture.preparations);
+        fixture.preparation = xin.bbtt.inventory.InventoryManager.ElytraAction.READY;
+        fixture.travel.onTick();
+        assertEquals(List.of("approach", "flight"), fixture.events);
+        assertEquals(1, fixture.approachPlans);
+    }
+
+    @Test void cancellationOrReplacementDuringPreparationCannotInitializeFlight() {
+        for (boolean replace : new boolean[]{false, true}) {
+            Fixture fixture = new Fixture();
+            fixture.world.open = true;
+            fixture.preparing = replace ? () -> fixture.movementSync.beginNavigationRequest()
+                    : fixture.travel::onStop;
+            fixture.travel.onTick();
+            fixture.travel.onTick();
+            assertTrue(fixture.events.isEmpty());
+            assertEquals(1, fixture.preparations);
+        }
     }
 
     @Test void waterHandoffStartsWalkingWithoutWaitingForGlidingMetadata() {

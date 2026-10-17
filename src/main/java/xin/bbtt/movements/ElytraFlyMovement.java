@@ -13,10 +13,8 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
     private final double arrivalRadius;
     private final xin.bbtt.physics.FlightTarget target;
     private long generation;
-    private int takeoffTicks;
     private int flightTicks;
-    private int rocketCooldown;
-    private boolean airborne;
+    private final VanillaGlideLifecycle lifecycle = new VanillaGlideLifecycle();
     private boolean emergencyLanding;
     private boolean safeLandingLeg;
     private boolean emergencyHoldWarned;
@@ -75,11 +73,7 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
         MovementSync movementSync = MovementSync.INSTANCE;
         if (!runIfCurrent(() -> {
             if (isFinished()) return;
-            // Remember an inherited glide before physics can land it between action ticks.
-            movementSync.getLandingMemory().takeoff(movementSync.getWorld(), movementSync.position.get());
-            movementSync.getLandingMemory().observe(movementSync.getWorld(), movementSync.position.get());
-            airborne = movementSync.isGliding();
-            if (!airborne && movementSync.onGround.get()) movementSync.jump();
+            lifecycle.init(movementSync);
         })) setFinished(true);
     }
 
@@ -98,20 +92,14 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
             setFinished(true);
             return;
         }
-        if (!airborne && !movementSync.isGliding()) {
+        if (lifecycle.awaitingTakeoff(movementSync)) {
             runIfCurrent(() -> {
                 if (isFinished()) return;
-                if (++takeoffTicks > 60 || movementSync.isRiding()) {
-                    finish(false);
-                    return;
-                }
-                if (!movementSync.onGround.get() && movementSync.velocity.get().y <= 0) {
-                    airborne = movementSync.startGliding();
-                }
+                lifecycle.tickTakeoff(movementSync, () -> finish(false));
             });
             return;
         }
-        airborne = true;
+        lifecycle.markAirborne();
         PhysicsState state = new PhysicsState(movementSync.position.get(), movementSync.velocity.get(), movementSync.onGround.get(), movementSync.fallDistance.get());
         // One observation per second limits collision-column work during flight.
         if (state.onGround() || flightTicks % 20 == 0)
@@ -132,7 +120,7 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
             });
             return;
         }
-        if (rocketCooldown > 0) rocketCooldown--;
+        lifecycle.tickCooldown();
         var equipmentAction = movementSync.inventoryManager.tickElytraSwap(false,
                 movementSync::queueBeforeMovement, () -> xin.bbtt.mcbot.Bot.INSTANCE.getAndIncreaseSequence(),
                 movementSync.yaw.get(), movementSync.pitch.get());
@@ -148,9 +136,9 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
                 emergencyLanding = true;
                 MovementSync.getLogger().warn("Elytra durability low; seeking solid emergency landing ground");
             }
-            boolean attached = movementSync.hasAttachedFirework() || rocketCooldown > 35;
-            int fireworks = rocketCooldown == 0 ? movementSync.countHotbarFireworks() : 0;
-            int[] rocketFlights = rocketCooldown == 0
+            boolean attached = movementSync.hasAttachedFirework() || lifecycle.rocketCooldown() > 35;
+            int fireworks = lifecycle.rocketCooldown() == 0 ? movementSync.countHotbarFireworks() : 0;
+            int[] rocketFlights = lifecycle.rocketCooldown() == 0
                     ? movementSync.inventoryManager.getHotbarFireworkFlightDurations() : new int[0];
             if (!emergencyLanding && !attached && movementSync.countHotbarFireworks() == 0
                     && "minecraft:the_end".equals(movementSync.getRecoveryDimension())) {
@@ -199,7 +187,7 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
                             movementSync.getMovementParameterState().effectsSnapshot()),
                     movementSync.getMovementParameterState().health())
                     .emergencyHold(movementSync.getWorld(), state, movementSync.yaw.get(), movementSync.pitch.get(),
-                            movementSync.hasAttachedFirework() || rocketCooldown > 35);
+                            movementSync.hasAttachedFirework() || lifecycle.rocketCooldown() > 35);
         }
         if (emergencyLanding && flightTicks % 5 == 0) {
             MovementSync.getLogger().debug("Emergency steering at {} velocity {} fallDistance={} yaw={} pitch={}",
@@ -209,13 +197,7 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
         // Cancellation may happen while trajectory evaluation is running. Guard the actual writes too.
         runIfCurrent(() -> {
             if (isFinished()) return;
-            movementSync.setYawToward(applied.yaw());
-            movementSync.pitch.set(applied.pitch());
-            if (applied.firework() && !movementSync.hasAttachedFirework()
-                    && equipmentAction != xin.bbtt.inventory.InventoryManager.ElytraAction.WAITING) {
-                rocketCooldown = 40;
-                movementSync.useFirework();
-            }
+            lifecycle.execute(movementSync, applied, equipmentAction);
         });
     }
 
