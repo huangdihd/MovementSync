@@ -124,8 +124,15 @@ public class MovementSync implements Plugin {
     @Getter
     private final xin.bbtt.recovery.StaticGotoRecovery gotoRecovery =
             new xin.bbtt.recovery.StaticGotoRecovery();
-    @Getter @Setter
+    @Getter
+    private final xin.bbtt.movements.LandingMemory landingMemory = new xin.bbtt.movements.LandingMemory();
+    @Getter
     private volatile String recoveryDimension;
+
+    public void setRecoveryDimension(String dimension) {
+        landingMemory.dimension(dimension);
+        recoveryDimension = dimension;
+    }
 
     public void setActiveGoal(org.joml.Vector3i goal) {
         synchronized (navigationLock) {
@@ -143,6 +150,7 @@ public class MovementSync implements Plugin {
     public void suspendNavigationForRecovery() {
         synchronized (navigationLock) {
             gotoRecovery.suspend();
+            landingMemory.clear();
             inventoryManager.resetSession();
             reconnectAirRecovery.reset();
             if (gotoRecovery.isPending()) getLogger().info("Static goto suspended for reconnect");

@@ -1,14 +1,11 @@
 package xin.bbtt.physics;
 
 import java.util.Objects;
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.List;
 import java.util.OptionalDouble;
 import org.joml.Vector3d;
 import xin.bbtt.world.World;
 
-/** Stateless, bounded trajectory steering. The caller owns rocket lifetime and flight lifecycle. */
+/** Bounded trajectory steering. The caller owns rocket lifetime and flight lifecycle. */
 public final class ElytraFlightController {
     private static final int HORIZON = 24;
     private final double gravity;
@@ -41,6 +38,10 @@ public final class ElytraFlightController {
     // Cancellation freezes steering. Avoid dives whose unpowered terminal sink
     // exceeds limitFallDistance's -0.5 threshold; descend by a shallow glide instead.
     private static final float[] PITCHES = {-55, -30, -10, 0, 10};
+
+    static float[] landingPitches() { return PITCHES.clone(); }
+
+    private final LandingSearch landingSearch = new LandingSearch();
 
     public enum Phase { CLIMB, CRUISE, DESCENT, AVOIDANCE, LANDING, FORCED_LANDING, LANDED }
 
@@ -126,7 +127,26 @@ public final class ElytraFlightController {
     /** Explicit emergency entry point; normal cruise decisions are unchanged. */
     public Decision forceLand(World world, PhysicsState state, float yaw, float pitch,
             boolean attached, int fireworks, double radius) {
-        Vector3d target = selectForcedLandingTarget(world, state, fireworks, attached);
+        return forceLand(world, state, yaw, pitch, attached, fireworks, radius, null);
+    }
+
+    public Decision forceLand(World world, PhysicsState state, float yaw, float pitch,
+            boolean attached, int fireworks, double radius, xin.bbtt.movements.LandingMemory memory) {
+        if (fireworks < 0) throw new IllegalArgumentException("Fireworks must be nonnegative");
+        int[] flights = new int[fireworks];
+        java.util.Arrays.fill(flights, 1);
+        return forceLand(world, state, yaw, pitch, attached, flights, radius, memory, landingSearch);
+    }
+
+    /** Incremental search and actual inventory durations, owned by the flying movement. */
+    public Decision forceLand(World world, PhysicsState state, float yaw, float pitch,
+            boolean attached, int[] flights, double radius, xin.bbtt.movements.LandingMemory memory,
+            LandingSearch search) {
+        Vector3d target = search.select(world, state, flights, attached, movement, LandingSearch.BUDGET);
+        boolean remembered = target == null;
+        if (remembered) target = memory == null ? null : memory.nearest(state.position());
+        search.selectedMemory(remembered ? target : null);
+        if (target == null) throw new IllegalStateException("No known solid emergency landing ground in loaded terrain");
         if (!Float.isFinite(yaw) || !Float.isFinite(pitch) || !Double.isFinite(radius) || radius <= 0) {
             throw new IllegalArgumentException("Emergency controls must be finite and radius positive");
         }
@@ -138,11 +158,12 @@ public final class ElytraFlightController {
             return new Decision(normalize(yaw), 0, false, Phase.LANDED);
         }
         double distance = horizontalDistance(state.position(), target);
-        boolean needsBoost = state.position().y < target.y || distance > (state.position().y - target.y) * 5;
+        boolean needsBoost = distance > new GlideRange(state, movement, PITCHES).atHeight(target.y, 0, false);
         float heading = distance < 0.01 ? yaw
                 : (float) Math.toDegrees(Math.atan2(state.position().x - target.x, target.z - state.position().z));
         return emergencyDecision(world, state, yaw, pitch, attached, target, radius, heading,
-                needsBoost, needsBoost && !attached && fireworks > 0, false);
+                needsBoost, needsBoost && !attached && flights.length > 0, false,
+                remembered);
     }
 
     // Entity.limitFallDistance (Yarn 1.21.11): strictly greater than -0.5.
@@ -164,8 +185,17 @@ public final class ElytraFlightController {
     private Decision emergencyDecision(World world, PhysicsState state, float yaw, float pitch,
             boolean attached, Vector3d target, double radius, float heading,
             boolean needsBoost, boolean firework, boolean hold) {
+        return emergencyDecision(world, state, yaw, pitch, attached, target, radius, heading,
+                needsBoost, firework, hold, false);
+    }
+
+    private Decision emergencyDecision(World world, PhysicsState state, float yaw, float pitch,
+            boolean attached, Vector3d target, double radius, float heading,
+            boolean needsBoost, boolean firework, boolean hold, boolean rememberedTarget) {
+        boolean longestGlide = rememberedTarget && !attached && !firework;
         Decision best = null;
         EmergencyCost bestCost = null;
+        GlideRange glide = longestGlide ? new GlideRange(state, movement, PITCHES) : null;
         for (float offset : YAW_OFFSETS) {
             float candidateYaw = yaw + normalize(heading + offset - yaw);
             for (float candidatePitch : PITCHES) {
@@ -181,11 +211,18 @@ public final class ElytraFlightController {
                 }
                 if (!Double.isFinite(score)) {
                     approach = 2;
-                    score = Math.abs(normalize(candidateYaw - yaw)) * .015
+                    score = Math.abs(normalize(candidateYaw - (rememberedTarget ? heading : yaw))) * .015
                             + Math.abs(candidatePitch + 10) * .01;
                 } else if (approach == 0) {
                     score += Math.abs(normalize(candidateYaw - yaw)) * .015
                             + Math.abs(candidatePitch - pitch) * .01;
+                }
+                if (longestGlide) {
+                    // Damage classes/recovery stay first. Unknown approach terrain
+                    // cannot prevent best-effort steering toward remembered land.
+                    approach = 0;
+                    score = -glide.projectedRange(target.y, candidateYaw, candidatePitch)
+                            * Math.cos(Math.toRadians(normalize(candidateYaw - heading)));
                 }
                 EmergencyCost cost = new EmergencyCost(impact.rank(health),
                         impact.reduced(), approach, score);
@@ -313,55 +350,40 @@ public final class ElytraFlightController {
         return emergencyDecision(world, state, yaw, pitch, attached, state.position(), 1, yaw, false, false, true);
     }
 
-    /**
-     * Selects known collision-supported ground, never substituting world bottom for
-     * an empty column. Samples block centres every four blocks within 128 blocks.
-     * Prefers the nearest site in a conservative 5:1 glide envelope; with remaining
-     * or attached rockets, falls back to the nearest known site. This envelope is
-     * an estimate, not a guarantee of arrival. Call forceLand each tick to steer.
-     * @throws IllegalStateException if no known ground or no unpowered option exists
-     */
+    /** Selects the nearest physics-reachable sampled site in loaded terrain. */
     public static Vector3d selectForcedLandingTarget(World world, PhysicsState state,
             int fireworks, boolean attached) {
+        return selectForcedLandingTarget(world, state, fireworks, attached, MovementParameters.DEFAULT);
+    }
+
+    static Vector3d selectForcedLandingTarget(World world, PhysicsState state,
+            int fireworks, boolean attached, MovementParameters parameters) {
         Objects.requireNonNull(world, "world");
         Objects.requireNonNull(state, "state");
-        if (!state.position().isFinite() || !state.velocity().isFinite() || fireworks < 0) {
+        if (!state.position().isFinite() || !state.velocity().isFinite() || fireworks < 0)
             throw new IllegalArgumentException("Flight state must be finite and fireworks nonnegative");
-        }
-        Vector3d position = state.position();
-        OptionalDouble below = world.findHighestCollisionTop(position.x - HALF_WIDTH, World.getMinWorldY(),
-                position.z - HALF_WIDTH, position.x + HALF_WIDTH, position.y, position.z + HALF_WIDTH);
-        if (below.isPresent() && supportedLandingArea(world, position.x, below.getAsDouble(), position.z))
-            return new Vector3d(position.x, below.getAsDouble(), position.z);
-        List<Vector3d> sites = new ArrayList<>();
-        int originX = (int) Math.floor(position.x);
-        int originZ = (int) Math.floor(position.z);
-        for (int dx = -128; dx <= 128; dx += 4) {
-            for (int dz = -128; dz <= 128; dz += 4) {
-                if (dx * dx + dz * dz > 128 * 128) continue;
-                double x = originX + dx + 0.5;
-                double z = originZ + dz + 0.5;
-                if (!world.chunkLoaded((int) Math.floor(x) >> 4, (int) Math.floor(z) >> 4)) continue;
-                OptionalDouble top = world.findHighestCollisionTop(x - HALF_WIDTH, World.getMinWorldY(),
-                        z - HALF_WIDTH, x + HALF_WIDTH, World.getMaxWorldY(), z + HALF_WIDTH);
-                if (top.isEmpty() || top.getAsDouble() + HEIGHT > World.getMaxWorldY()) continue;
-                double y = top.getAsDouble();
-                if (!supportedLandingArea(world, x, y, z)) continue;
-                if (world.isBoxColliding(x - HALF_WIDTH, y, z - HALF_WIDTH,
-                        x + HALF_WIDTH, y + HEIGHT, z + HALF_WIDTH)) continue;
-                sites.add(new Vector3d(x, y, z));
-            }
-        }
-        sites.sort(Comparator.comparingDouble(site -> horizontalDistance(position, site)));
-        for (Vector3d site : sites) {
-            if (position.y >= site.y && horizontalDistance(position, site) <= (position.y - site.y) * 5) {
-                return site;
-            }
-        }
-        if (!sites.isEmpty() && (fireworks > 0 || attached)) return sites.get(0);
-        throw new IllegalStateException(sites.isEmpty()
-                ? "No known solid emergency landing ground within 128 blocks (void or unloaded terrain)"
-                : "Known emergency landing ground is outside glide range and no fireworks remain");
+        int[] flights = new int[fireworks];
+        java.util.Arrays.fill(flights, 1);
+        // Compatibility one-shot API. Live movements use the budgeted cursor overload.
+        Vector3d target = new LandingSearch().select(world, state, flights, attached, parameters, Integer.MAX_VALUE);
+        if (target != null) return target;
+        throw new IllegalStateException("No known solid emergency landing ground in loaded terrain or within glide range");
+    }
+
+    /** Shared verified standable column for selection and flight-only memory observations. */
+    public static Vector3d landingSite(World world, double x, double z, double ceiling) {
+        // Require the complete support footprint to be loaded, not just its centre.
+        for (int cx = (int) Math.floor(x - 2.1) >> 4; cx <= (int) Math.floor(x + 2.1) >> 4; cx++)
+            for (int cz = (int) Math.floor(z - 2.1) >> 4; cz <= (int) Math.floor(z + 2.1) >> 4; cz++)
+                if (!world.chunkLoaded(cx, cz)) return null;
+        OptionalDouble top = world.findHighestCollisionTop(x - HALF_WIDTH, World.getMinWorldY(),
+                z - HALF_WIDTH, x + HALF_WIDTH, ceiling, z + HALF_WIDTH);
+        if (top.isEmpty()) return null;
+        double y = top.getAsDouble();
+        if (y + HEIGHT > World.getMaxWorldY() || !supportedLandingArea(world, x, y, z)
+                || world.isBoxColliding(x - HALF_WIDTH, y, z - HALF_WIDTH, x + HALF_WIDTH, y + HEIGHT, z + HALF_WIDTH))
+            return null;
+        return new Vector3d(x, y, z);
     }
 
     private static boolean supportedLandingArea(World world, double x, double y, double z) {

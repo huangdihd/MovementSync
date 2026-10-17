@@ -21,6 +21,7 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
     private boolean safeLandingLeg;
     private boolean emergencyHoldWarned;
     private boolean independentLanding;
+    private final xin.bbtt.physics.LandingSearch landingSearch = new xin.bbtt.physics.LandingSearch();
 
     /** Safety control has no navigation request or destination intent. */
     public ElytraFlyMovement forIndependentLanding() {
@@ -75,6 +76,8 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
         if (!runIfCurrent(() -> {
             if (isFinished()) return;
             // Remember an inherited glide before physics can land it between action ticks.
+            movementSync.getLandingMemory().takeoff(movementSync.getWorld(), movementSync.position.get());
+            movementSync.getLandingMemory().observe(movementSync.getWorld(), movementSync.position.get());
             airborne = movementSync.isGliding();
             if (!airborne && movementSync.onGround.get()) movementSync.jump();
         })) setFinished(true);
@@ -110,11 +113,15 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
         }
         airborne = true;
         PhysicsState state = new PhysicsState(movementSync.position.get(), movementSync.velocity.get(), movementSync.onGround.get(), movementSync.fallDistance.get());
+        // One observation per second limits collision-column work during flight.
+        if (state.onGround() || flightTicks % 20 == 0)
+            runIfCurrent(() -> movementSync.getLandingMemory().observe(movementSync.getWorld(), state.position()));
         boolean landed = state.onGround() || touchingWater();
         if (landed || !movementSync.isGliding() || ++flightTicks > 12000) {
             runIfCurrent(() -> {
                 if (isFinished()) return;
                 Vector3d position = state.position();
+                if (state.onGround()) movementSync.getLandingMemory().landed(movementSync.getWorld(), position);
                 if (safeLandingLeg && landed) {
                     setFinished(true);
                     MovementSync.getLogger().info("Elytra safe landing complete at {}", position);
@@ -143,6 +150,8 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
             }
             boolean attached = movementSync.hasAttachedFirework() || rocketCooldown > 35;
             int fireworks = rocketCooldown == 0 ? movementSync.countHotbarFireworks() : 0;
+            int[] rocketFlights = rocketCooldown == 0
+                    ? movementSync.inventoryManager.getHotbarFireworkFlightDurations() : new int[0];
             if (!emergencyLanding && !attached && movementSync.countHotbarFireworks() == 0
                     && "minecraft:the_end".equals(movementSync.getRecoveryDimension())) {
                 Vector3d p = state.position();
@@ -156,7 +165,8 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
             ElytraFlightController.Decision selected;
             if (emergencyLanding) {
                 selected = controller.forceLand(movementSync.getWorld(), state,
-                        movementSync.yaw.get(), movementSync.pitch.get(), attached, fireworks, arrivalRadius);
+                        movementSync.yaw.get(), movementSync.pitch.get(), attached, rocketFlights, arrivalRadius,
+                        movementSync.getLandingMemory(), landingSearch);
             } else {
                 try {
                     selected = controller.decide(movementSync.getWorld(), state,
@@ -164,12 +174,14 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
                 } catch (IllegalStateException unavailable) {
                     emergencyLanding = true;
                     selected = controller.forceLand(movementSync.getWorld(), state,
-                            movementSync.yaw.get(), movementSync.pitch.get(), attached, fireworks, arrivalRadius);
+                            movementSync.yaw.get(), movementSync.pitch.get(), attached, rocketFlights, arrivalRadius,
+                            movementSync.getLandingMemory(), landingSearch);
                 }
-                if (selected.phase() == ElytraFlightController.Phase.FORCED_LANDING) {
+                if (!emergencyLanding && selected.phase() == ElytraFlightController.Phase.FORCED_LANDING) {
                     emergencyLanding = true;
                     selected = controller.forceLand(movementSync.getWorld(), state,
-                            movementSync.yaw.get(), movementSync.pitch.get(), attached, fireworks, arrivalRadius);
+                            movementSync.yaw.get(), movementSync.pitch.get(), attached, rocketFlights, arrivalRadius,
+                            movementSync.getLandingMemory(), landingSearch);
                 }
             }
             decision = selected;

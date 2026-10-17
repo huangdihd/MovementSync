@@ -344,6 +344,31 @@ public class InventoryManager {
         }
     }
 
+    /** One FIREWORKS flight component per hotbar rocket, in slot order (36..44).
+     * Missing patches inherit the ordinary item default of flight=1; explicit removal uses 0.
+     * Backpack and offhand rockets are excluded, matching MovementSync.countHotbarFireworks().
+     */
+    public int[] getHotbarFireworkFlightDurations() {
+        ItemStack[] inventory = getInventory();
+        if (inventory == null) return new int[0];
+        var flights = java.util.stream.IntStream.builder();
+        for (int slot = 36; slot < Math.min(45, inventory.length); slot++) {
+            ItemStack stack = inventory[slot];
+            if (stack == null || stack.getAmount() <= 0) continue;
+            ItemRegistry.ItemEntry item = ItemRegistry.Instance.getItem(stack.getId());
+            if (item == null || !"firework_rocket".equals(item.getName())) continue;
+            int flight = 1;
+            var patch = stack.getDataComponentsPatch();
+            var type = org.geysermc.mcprotocollib.protocol.data.game.item.component.DataComponentTypes.FIREWORKS;
+            if (patch != null && patch.getDataComponents().containsKey(type)) {
+                var fireworks = patch.get(type);
+                flight = fireworks == null ? 0 : fireworks.getFlightDuration();
+            }
+            for (int count = 0; count < stack.getAmount(); count++) flights.add(flight);
+        }
+        return flights.build().toArray();
+    }
+
     public ItemStack[] getInventory() {
         return containers.get(0);
     }

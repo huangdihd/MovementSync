@@ -15,6 +15,13 @@ final class ElytraEmergencyLandingTest {
         boolean solid = true;
         double start = 20;
         @Override public boolean chunkLoaded(int x, int z) { return loaded; }
+        @Override public Set<ChunkPosition> loadedChunks() {
+            if (!loaded) return Set.of();
+            var chunks = new java.util.HashSet<ChunkPosition>();
+            for (int x = -10; x <= 10; x++)
+                for (int z = -10; z <= 10; z++) chunks.add(new ChunkPosition(x, z));
+            return chunks;
+        }
         @Override public boolean isBoxColliding(double minX, double minY, double minZ,
                 double maxX, double maxY, double maxZ) {
             return solid && minY < 0 && maxZ >= start;
@@ -28,6 +35,13 @@ final class ElytraEmergencyLandingTest {
     private static PhysicsState state(double height) {
         return new PhysicsState(new Vector3d(0.5, height, 0.5), new Vector3d(0, -0.1, 0.5), false);
     }
+    @Test void loadedGroundBeyondOldRadiusIsSelectable() {
+        var world = new Islands();
+        world.start = 138;
+        var target = ElytraFlightController.selectForcedLandingTarget(world, state(100), 0, false);
+        assertTrue(target.z > 128 && target.z <= 160);
+    }
+
     @Test void flatGroundDecisionCharacterization() {
         var world = new Islands();
         world.start = -1000;
