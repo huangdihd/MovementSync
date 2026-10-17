@@ -228,7 +228,7 @@ final class FlightSelector {
     }
 
     /** Scan bounded route tiles, never treating unloaded terrain as known air. */
-    private static double routeAltitude(World world, Vector3d position, Vector3d target) {
+    static double routeAltitude(World world, Vector3d position, Vector3d target) {
         double distance = horizontalDistance(position, target);
         int tiles = Math.min(64, Math.max(1, (int) Math.ceil(distance / 16)));
         double scannedDistance = Math.min(distance, 1024);

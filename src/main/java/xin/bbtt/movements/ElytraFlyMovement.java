@@ -11,6 +11,7 @@ import xin.bbtt.physics.PhysicsState;
 public final class ElytraFlyMovement extends Movement implements NavigationBoundMovement {
     public static final double DEFAULT_ARRIVAL_RADIUS = 16;
     private final double arrivalRadius;
+    private final xin.bbtt.flight.FlightConfiguration flightConfiguration;
     private final xin.bbtt.physics.FlightTarget target;
     private long generation;
     private int flightTicks;
@@ -45,11 +46,30 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
         this(new xin.bbtt.physics.FixedFlightTarget(target), generation, arrivalRadius);
     }
 
+    public ElytraFlyMovement(Vector3d target, xin.bbtt.flight.FlightContextBuilder builder) {
+        this(target, MovementSync.INSTANCE.getNavigationGeneration(), DEFAULT_ARRIVAL_RADIUS, builder);
+    }
+
+    public ElytraFlyMovement(Vector3d target, long generation, xin.bbtt.flight.FlightContextBuilder builder) {
+        this(target, generation, DEFAULT_ARRIVAL_RADIUS, builder);
+    }
+
+    public ElytraFlyMovement(Vector3d target, long generation, double arrivalRadius,
+                             xin.bbtt.flight.FlightContextBuilder builder) {
+        this(new xin.bbtt.physics.FixedFlightTarget(target), generation, arrivalRadius, builder);
+    }
+
     public ElytraFlyMovement(xin.bbtt.physics.FlightTarget target, long generation, double arrivalRadius) {
+        this(target, generation, arrivalRadius, new xin.bbtt.flight.FlightContextBuilder().addStandard());
+    }
+
+    public ElytraFlyMovement(xin.bbtt.physics.FlightTarget target, long generation, double arrivalRadius,
+                             xin.bbtt.flight.FlightContextBuilder builder) {
         if (!Double.isFinite(arrivalRadius) || arrivalRadius <= 0) throw new IllegalArgumentException("Radius must be positive");
         this.arrivalRadius = arrivalRadius;
         this.target = java.util.Objects.requireNonNull(target);
         this.generation = generation;
+        this.flightConfiguration = java.util.Objects.requireNonNull(builder).build();
     }
 
     /** Deploy through takeoff, then use the existing solid-ground emergency landing controller. */
@@ -124,6 +144,9 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
         var equipmentAction = movementSync.inventoryManager.tickElytraSwap(false,
                 movementSync::queueBeforeMovement, () -> xin.bbtt.mcbot.Bot.INSTANCE.getAndIncreaseSequence(),
                 movementSync.yaw.get(), movementSync.pitch.get());
+        // Extended configurations arbitrate all owners before vanilla-only emergency checks.
+        // In particular, exhausted rockets or low elytra durability need not disable a plugin mode.
+        if (!flightConfiguration.isLegacy() && tickExtended(movementSync, state, equipmentAction)) return;
         ElytraFlightController.Decision decision;
         try {
             xin.bbtt.physics.MovementParameters parameters = movementSync.getMovementParameters();
@@ -199,6 +222,64 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
             if (isFinished()) return;
             lifecycle.execute(movementSync, applied, equipmentAction);
         });
+    }
+
+    /** Extensions never fall through to unchecked vanilla controls when their safety rules reject all candidates. */
+    private boolean tickExtended(MovementSync sync, PhysicsState state,
+                                 xin.bbtt.inventory.InventoryManager.ElytraAction equipmentAction) {
+        var inventory = new java.util.HashMap<String, Integer>();
+        var stacks = sync.inventoryManager.getInventory();
+        if (stacks != null) for (var stack : stacks) {
+            if (stack == null || stack.getAmount() <= 0) continue;
+            var item = xin.bbtt.inventory.ItemRegistry.Instance.getItem(stack.getId());
+            if (item != null) inventory.merge("minecraft:" + item.getName(), stack.getAmount(), Integer::sum);
+        }
+        var context = extendedContext(sync, state, inventory, emergencyLanding);
+        xin.bbtt.flight.FlightSelector.Selection selected;
+        try {
+            selected = flightConfiguration.select(context);
+        } catch (IllegalStateException unavailable) {
+            if (emergencyLanding) {
+                runIfCurrent(() -> finish(false));
+                return true;
+            }
+            // Retry every owner with damage-first emergency ranking before invoking vanilla fallback.
+            context = extendedContext(sync, state, inventory, true);
+            try {
+                selected = flightConfiguration.select(context);
+            } catch (IllegalStateException noEmergencyCandidate) {
+                runIfCurrent(() -> finish(false));
+                return true;
+            }
+        }
+        var appliedContext = context;
+        var applied = selected;
+        runIfCurrent(() -> {
+            if (isFinished()) return;
+            if (appliedContext.emergency()) emergencyLanding = true;
+            if (applied.mode() instanceof xin.bbtt.flight.VanillaGlideMode) {
+                var glide = (xin.bbtt.flight.FlightAction.Glide) applied.action();
+                // Standard execution must retain the existing equipment wait and rocket cooldown latch.
+                lifecycle.execute(sync, new ElytraFlightController.Decision(glide.yaw(), glide.pitch(),
+                        glide.firework(), emergencyLanding ? ElytraFlightController.Phase.FORCED_LANDING
+                                : ElytraFlightController.Phase.CRUISE), equipmentAction);
+            } else {
+                applied.mode().execute(appliedContext, applied.action(), sync);
+            }
+        });
+        return true;
+    }
+
+    private xin.bbtt.flight.FlightContext extendedContext(MovementSync sync, PhysicsState state,
+                                                         java.util.Map<String, Integer> inventory,
+                                                         boolean emergency) {
+        return new xin.bbtt.flight.FlightContext(sync.getWorld(), state, sync.getMovementParameters(),
+                xin.bbtt.physics.DamageParameters.fromPlayer(sync.inventoryManager,
+                        sync.getMovementParameterState().effectsSnapshot()),
+                sync.getMovementParameterState().health(), target.aim(state), sync.yaw.get(), sync.pitch.get(),
+                lifecycle.rocketCooldown() == 0 ? sync.countHotbarFireworks() : 0,
+                sync.hasAttachedFirework() || lifecycle.rocketCooldown() > 35, arrivalRadius,
+                emergency, null, inventory);
     }
 
     private void finish(boolean arrived) {
