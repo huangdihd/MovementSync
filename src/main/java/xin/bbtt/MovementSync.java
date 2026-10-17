@@ -174,9 +174,11 @@ public class MovementSync implements Plugin {
 
     /** Tick integration supplies whether the bot is in Game, not merely connected. */
     public void tickNavigationRecovery(boolean game) {
+        gotoRecovery.tick();
+        if (gotoRecovery.expire()) getLogger().info("Static goto expired after 30 minutes");
+        // The physics thread calls this every tick: wait for the navigation lock only to resume.
+        if (!gotoRecovery.isPending()) return;
         synchronized (navigationLock) {
-            gotoRecovery.tick();
-            if (gotoRecovery.expire()) getLogger().info("Static goto expired after 30 minutes");
             var task = gotoRecovery.claim(game, recoveryDimension);
             if (task == null) return;
             getLogger().info("Resuming static goto {}, {}, {} (walk={})", task.x(), task.y(), task.z(), task.walk());

@@ -24,7 +24,7 @@ final class FlightExtensionContractTest {
 
     static FlightContext context(World world, PhysicsState state) {
         return new FlightContext(world, state, MovementParameters.DEFAULT, DamageParameters.NONE,
-                20, new Vector3d(8, 100, 100), 0, 0, 0, false, 2, false, null, java.util.Map.of());
+                20, new Vector3d(8, 100, 100), 0, 0, 0, false, 2, false, java.util.Map.of());
     }
 
     @Test void exampleOwnsPhysicsExecutionAndExtensiblePhase() {
@@ -63,7 +63,7 @@ final class FlightExtensionContractTest {
         inventory.put("fuel", 2);
         var state = new PhysicsState(position, velocity, false);
         var context = new FlightContext(LOADED, state, MovementParameters.DEFAULT, DamageParameters.NONE,
-                20, target, 0, 0, 0, false, 2, false, null, inventory);
+                20, target, 0, 0, 0, false, 2, false, inventory);
         target.zero(); position.zero(); velocity.zero(); inventory.clear();
         context.target().zero(); context.state().position().zero(); context.state().velocity().zero();
         assertEquals(new Vector3d(1, 2, 3), context.target());

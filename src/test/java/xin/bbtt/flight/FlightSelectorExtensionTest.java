@@ -90,7 +90,7 @@ final class FlightSelectorExtensionTest {
                 new PhysicsState(new Vector3d(8, 100, 8), new Vector3d(2, 0, 0), false));
         var context = new FlightContext(base.world(), base.state(), base.movement(),
                 new xin.bbtt.physics.DamageParameters(0, 0, 4), 20, base.target(), 0, 0,
-                0, false, 2, true, null, java.util.Map.of());
+                0, false, 2, true, java.util.Map.of());
         var risky = new ScriptedMode(new Vector3d(), true, false);
         var safe = new LevelFlightModeExample();
         var selector = new FlightSelector(new FlightContextBuilder().addMode(risky).addMode(safe)

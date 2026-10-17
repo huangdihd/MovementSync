@@ -7,7 +7,13 @@ import xin.bbtt.flight.FlightContext;
 import xin.bbtt.flight.Trajectory;
 import xin.bbtt.flight.DamageRule;
 
-/** Adapter for the public extension API; the legacy controller remains untouched. */
+/**
+ * Internal cross-package adapter, not a plugin extension point. Plugins must use
+ * {@link xin.bbtt.flight.VanillaGlideMode}, built-in costs and damage rules instead.
+ * Public visibility is required only by the package boundary; no compatibility
+ * guarantee is made for this bridge. Methods synchronously query supplied inputs
+ * without mutating live physics and must run on the navigation decision thread.
+ */
 public final class PublicFlightBridge {
     private PublicFlightBridge() {}
     public static List<FlightAction.Glide> candidates(FlightContext c) {

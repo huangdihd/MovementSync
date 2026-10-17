@@ -15,6 +15,9 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
     private final xin.bbtt.physics.FlightTarget target;
     private long generation;
     private int flightTicks;
+    private xin.bbtt.flight.FlightMode controllingMode;
+    private xin.bbtt.flight.FlightTransitions.Selection transition;
+    private xin.bbtt.flight.FlightTransitions.Kind transitionKind;
     private final VanillaGlideLifecycle lifecycle = new VanillaGlideLifecycle();
     private boolean emergencyLanding;
     private boolean safeLandingLeg;
@@ -91,6 +94,16 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
     @Override
     public void init() {
         MovementSync movementSync = MovementSync.INSTANCE;
+        if (isFinished()) return;
+        if (!flightConfiguration.isLegacy() && !runIfCurrent(() -> {})) {
+            setFinished(true);
+            return;
+        }
+        if (!flightConfiguration.isLegacy() && !movementSync.isGliding()) {
+            var state = new PhysicsState(movementSync.position.get(), movementSync.velocity.get(),
+                    movementSync.onGround.get(), movementSync.fallDistance.get());
+            if (startTransition(movementSync, state, xin.bbtt.flight.FlightTransitions.Kind.TAKEOFF)) return;
+        }
         if (!runIfCurrent(() -> {
             if (isFinished()) return;
             lifecycle.init(movementSync);
@@ -109,10 +122,36 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
         if (isFinished()) return;
         MovementSync movementSync = MovementSync.INSTANCE;
         if (!runIfCurrent(() -> {})) {
-            setFinished(true);
+            onStop();
             return;
         }
-        if (lifecycle.awaitingTakeoff(movementSync)) {
+        if (transition != null) {
+            runIfCurrent(() -> {
+                if (isFinished() || transition == null) return;
+                var active = transition;
+                if (!active.movement().isFinished()) active.movement().onTick();
+                if (active.movement().isFinished()) {
+                    transition = null;
+                    active.movement().onStop();
+                    controllingMode = active.mode();
+                    if (transitionKind == xin.bbtt.flight.FlightTransitions.Kind.TAKEOFF) lifecycle.markAirborne();
+                }
+            });
+            return;
+        }
+        PhysicsState state = new PhysicsState(movementSync.position.get(), movementSync.velocity.get(), movementSync.onGround.get(), movementSync.fallDistance.get());
+        // The legacy policy keeps its per-tick work: no context snapshot, gliding ends the flight.
+        var airborneContext = flightConfiguration.isLegacy() ? null
+                : extendedContext(movementSync, state, inventorySnapshot(movementSync), emergencyLanding);
+        if (airborneContext != null && controllingMode == null && !state.onGround()) {
+            for (var mode : flightConfiguration.modes()) {
+                if (mode.isAvailable(airborneContext) && mode.isAirborne(airborneContext, movementSync)) {
+                    controllingMode = mode;
+                    break;
+                }
+            }
+        }
+        if (controllingMode == null && lifecycle.awaitingTakeoff(movementSync)) {
             runIfCurrent(() -> {
                 if (isFinished()) return;
                 lifecycle.tickTakeoff(movementSync, () -> finish(false));
@@ -120,12 +159,13 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
             return;
         }
         lifecycle.markAirborne();
-        PhysicsState state = new PhysicsState(movementSync.position.get(), movementSync.velocity.get(), movementSync.onGround.get(), movementSync.fallDistance.get());
         // One observation per second limits collision-column work during flight.
         if (state.onGround() || flightTicks % 20 == 0)
             runIfCurrent(() -> movementSync.getLandingMemory().observe(movementSync.getWorld(), state.position()));
         boolean landed = state.onGround() || touchingWater();
-        if (landed || !movementSync.isGliding() || ++flightTicks > 12000) {
+        boolean airborne = controllingMode == null || airborneContext == null ? movementSync.isGliding()
+                : controllingMode.isAirborne(airborneContext, movementSync);
+        if (landed || !airborne || ++flightTicks > 12000) {
             runIfCurrent(() -> {
                 if (isFinished()) return;
                 Vector3d position = state.position();
@@ -140,13 +180,18 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
             });
             return;
         }
+        if (!flightConfiguration.isLegacy() && (safeLandingLeg
+                || !emergencyLanding && Math.hypot(state.position().x - target.position().x,
+                        state.position().z - target.position().z) <= arrivalRadius)
+                && startTransition(movementSync, state, xin.bbtt.flight.FlightTransitions.Kind.LANDING)) return;
         lifecycle.tickCooldown();
         var equipmentAction = movementSync.inventoryManager.tickElytraSwap(false,
                 movementSync::queueBeforeMovement, () -> xin.bbtt.mcbot.Bot.INSTANCE.getAndIncreaseSequence(),
                 movementSync.yaw.get(), movementSync.pitch.get());
-        // Extended configurations arbitrate all owners before vanilla-only emergency checks.
-        // In particular, exhausted rockets or low elytra durability need not disable a plugin mode.
-        if (!flightConfiguration.isLegacy() && tickExtended(movementSync, state, equipmentAction)) return;
+        // Plugin-only configurations must never acquire implicit vanilla steering.
+        boolean hasVanilla = flightConfiguration.modes().stream()
+                .anyMatch(mode -> mode instanceof xin.bbtt.flight.VanillaGlideMode);
+        if (!hasVanilla && tickExtended(movementSync, state, equipmentAction, null)) return;
         ElytraFlightController.Decision decision;
         try {
             xin.bbtt.physics.MovementParameters parameters = movementSync.getMovementParameters();
@@ -216,37 +261,121 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
             MovementSync.getLogger().debug("Emergency steering at {} velocity {} fallDistance={} yaw={} pitch={}",
                     state.position(), state.velocity(), state.fallDistance(), decision.yaw(), decision.pitch());
         }
+        // Compute vanilla landing/memory/firework-budget decisions before plugin arbitration.
+        if (!flightConfiguration.isLegacy() && tickExtended(movementSync, state, equipmentAction, decision)) return;
         ElytraFlightController.Decision applied = decision;
         // Cancellation may happen while trajectory evaluation is running. Guard the actual writes too.
         runIfCurrent(() -> {
             if (isFinished()) return;
+            controllingMode = xin.bbtt.flight.VanillaGlideMode.INSTANCE;
             lifecycle.execute(movementSync, applied, equipmentAction);
         });
     }
 
+    /** Vanilla competes in ranking but executes through the retained lifecycle, never a recursive child. */
+    private boolean startTransition(MovementSync sync, PhysicsState state,
+                                    xin.bbtt.flight.FlightTransitions.Kind kind) {
+        var context = extendedContext(sync, state, inventorySnapshot(sync), emergencyLanding);
+        boolean hasPlugin = flightConfiguration.modes().stream().anyMatch(mode ->
+                !(mode instanceof xin.bbtt.flight.VanillaGlideMode) && mode.isAvailable(context));
+        if (!hasPlugin) return false;
+        var selected = xin.bbtt.flight.FlightTransitions.select(flightConfiguration, context, kind);
+        if (selected == null || selected.mode() instanceof xin.bbtt.flight.VanillaGlideMode) return false;
+        if (!runIfCurrent(() -> {
+            if (isFinished()) return;
+            transition = selected;
+            transitionKind = kind;
+            if (selected.movement() instanceof NavigationBoundMovement bound) bound.bindNavigationRequest(generation);
+            selected.movement().init();
+        })) setFinished(true);
+        return true;
+    }
+
     /** Extensions never fall through to unchecked vanilla controls when their safety rules reject all candidates. */
     private boolean tickExtended(MovementSync sync, PhysicsState state,
-                                 xin.bbtt.inventory.InventoryManager.ElytraAction equipmentAction) {
-        var inventory = new java.util.HashMap<String, Integer>();
-        var stacks = sync.inventoryManager.getInventory();
-        if (stacks != null) for (var stack : stacks) {
-            if (stack == null || stack.getAmount() <= 0) continue;
-            var item = xin.bbtt.inventory.ItemRegistry.Instance.getItem(stack.getId());
-            if (item != null) inventory.merge("minecraft:" + item.getName(), stack.getAmount(), Integer::sum);
-        }
+                                 xin.bbtt.inventory.InventoryManager.ElytraAction equipmentAction,
+                                 ElytraFlightController.Decision vanillaDecision) {
+        var inventory = inventorySnapshot(sync);
         var context = extendedContext(sync, state, inventory, emergencyLanding);
+        // An unavailable registration must not change even emergencyHold's exact controls.
+        var vanillaPolicy = new xin.bbtt.flight.FlightConfiguration(flightConfiguration.modes().stream()
+                .filter(mode -> mode instanceof xin.bbtt.flight.VanillaGlideMode).toList(),
+                flightConfiguration.costs(), flightConfiguration.damageRules(), flightConfiguration.cruiseDamageFirst());
+        if (vanillaDecision != null && vanillaPolicy.isLegacy()) {
+            boolean pluginAvailable = false;
+            for (var mode : flightConfiguration.modes()) {
+                if (!(mode instanceof xin.bbtt.flight.VanillaGlideMode) && mode.isAvailable(context)) {
+                    pluginAvailable = true;
+                    break;
+                }
+            }
+            if (!pluginAvailable) return false;
+        }
+        var configuration = flightConfiguration;
+        xin.bbtt.flight.FlightMode landingOwner = null;
+        if (vanillaDecision != null && emergencyLanding) {
+            var decision = vanillaDecision;
+            landingOwner = new xin.bbtt.flight.FlightMode() {
+                @Override public java.util.List<xin.bbtt.flight.FlightAction.Glide> candidates(xin.bbtt.flight.FlightContext c) {
+                    return java.util.List.of(new xin.bbtt.flight.FlightAction.Glide(decision.yaw(), decision.pitch(), decision.firework()));
+                }
+                @Override public xin.bbtt.flight.Trajectory predict(xin.bbtt.flight.FlightContext c, xin.bbtt.flight.FlightAction a) {
+                    return xin.bbtt.flight.VanillaGlideMode.INSTANCE.predict(c, a);
+                }
+                @Override public java.util.List<xin.bbtt.flight.Trajectory> recover(xin.bbtt.flight.FlightContext c,
+                        xin.bbtt.flight.FlightAction a, xin.bbtt.flight.Trajectory main) {
+                    return xin.bbtt.flight.VanillaGlideMode.INSTANCE.recover(c, a, main);
+                }
+                @Override public void execute(xin.bbtt.flight.FlightContext c, xin.bbtt.flight.FlightAction a, MovementSync client) {
+                    lifecycle.execute(client, decision, equipmentAction);
+                }
+            };
+            var owner = landingOwner;
+            configuration = new xin.bbtt.flight.FlightConfiguration(flightConfiguration.modes().stream()
+                    .map(mode -> mode instanceof xin.bbtt.flight.VanillaGlideMode ? owner : mode).toList(),
+                    flightConfiguration.costs(), flightConfiguration.damageRules(), flightConfiguration.cruiseDamageFirst());
+        }
         xin.bbtt.flight.FlightSelector.Selection selected;
         try {
-            selected = flightConfiguration.select(context);
+            selected = configuration.select(context);
         } catch (IllegalStateException unavailable) {
             if (emergencyLanding) {
+                // The legacy controller deliberately retains emergencyHold when terrain is unknown.
+                // Do not let an available but nonviable plugin remove that last-resort steering.
+                // Custom policy must still reject candidates rather than bypass its safety rules.
+                if (vanillaDecision != null && vanillaPolicy.isLegacy()) return false;
                 runIfCurrent(() -> finish(false));
                 return true;
             }
-            // Retry every owner with damage-first emergency ranking before invoking vanilla fallback.
+            if (vanillaDecision != null) {
+                emergencyLanding = true;
+                var controller = new ElytraFlightController(sync.getMovementParameters(),
+                        context.damage(), context.health());
+                ElytraFlightController.Decision landing;
+                boolean attached = sync.hasAttachedFirework() || lifecycle.rocketCooldown() > 35;
+                try {
+                    landing = controller.forceLand(sync.getWorld(), state, sync.yaw.get(), sync.pitch.get(),
+                            attached, lifecycle.rocketCooldown() == 0
+                                    ? sync.inventoryManager.getHotbarFireworkFlightDurations() : new int[0],
+                            arrivalRadius, sync.getLandingMemory(), landingSearch);
+                } catch (IllegalStateException noLanding) {
+                    landing = controller.emergencyHold(sync.getWorld(), state, sync.yaw.get(), sync.pitch.get(), attached);
+                }
+                // Rebuild arbitration around forceLand, never generic emergency vanilla candidates.
+                if (!tickExtended(sync, state, equipmentAction, landing)) {
+                    var fallback = landing;
+                    runIfCurrent(() -> {
+                        if (isFinished()) return;
+                        controllingMode = xin.bbtt.flight.VanillaGlideMode.INSTANCE;
+                        lifecycle.execute(sync, fallback, equipmentAction);
+                    });
+                }
+                return true;
+            }
+            // Plugin-only configurations retry their owners without acquiring vanilla controls.
             context = extendedContext(sync, state, inventory, true);
             try {
-                selected = flightConfiguration.select(context);
+                selected = configuration.select(context);
             } catch (IllegalStateException noEmergencyCandidate) {
                 runIfCurrent(() -> finish(false));
                 return true;
@@ -254,9 +383,12 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
         }
         var appliedContext = context;
         var applied = selected;
+        var vanillaLandingOwner = landingOwner;
         runIfCurrent(() -> {
             if (isFinished()) return;
             if (appliedContext.emergency()) emergencyLanding = true;
+            controllingMode = applied.mode() == vanillaLandingOwner
+                    ? xin.bbtt.flight.VanillaGlideMode.INSTANCE : applied.mode();
             if (applied.mode() instanceof xin.bbtt.flight.VanillaGlideMode) {
                 var glide = (xin.bbtt.flight.FlightAction.Glide) applied.action();
                 // Standard execution must retain the existing equipment wait and rocket cooldown latch.
@@ -270,6 +402,17 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
         return true;
     }
 
+    private static java.util.Map<String, Integer> inventorySnapshot(MovementSync sync) {
+        var inventory = new java.util.HashMap<String, Integer>();
+        var stacks = sync.inventoryManager.getInventory();
+        if (stacks != null) for (var stack : stacks) {
+            if (stack == null || stack.getAmount() <= 0) continue;
+            var item = xin.bbtt.inventory.ItemRegistry.Instance.getItem(stack.getId());
+            if (item != null) inventory.merge("minecraft:" + item.getName(), stack.getAmount(), Integer::sum);
+        }
+        return inventory;
+    }
+
     private xin.bbtt.flight.FlightContext extendedContext(MovementSync sync, PhysicsState state,
                                                          java.util.Map<String, Integer> inventory,
                                                          boolean emergency) {
@@ -279,7 +422,7 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
                 sync.getMovementParameterState().health(), target.aim(state), sync.yaw.get(), sync.pitch.get(),
                 lifecycle.rocketCooldown() == 0 ? sync.countHotbarFireworks() : 0,
                 sync.hasAttachedFirework() || lifecycle.rocketCooldown() > 35, arrivalRadius,
-                emergency, null, inventory);
+                emergency, inventory);
     }
 
     private void finish(boolean arrived) {
@@ -302,5 +445,10 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
     public void onStop() {
         // Cancelling steering must not fabricate a landing or switch off airborne physics.
         setFinished(true);
+        if (transition != null) {
+            var active = transition;
+            transition = null;
+            active.movement().onStop();
+        }
     }
 }

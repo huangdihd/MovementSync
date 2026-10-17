@@ -54,8 +54,10 @@ final class TravelMovementOrchestrationTest {
         final MovementSync movementSync = new MovementSync() {
             @Override public World getWorld() { return Fixture.this.world; }
             @Override public boolean isGliding() { return gliding; }
+            @Override public boolean hasEquippedElytra() { return equipped; }
         };
         boolean gliding;
+        boolean equipped;
         boolean approachPath = true;
         boolean finalPath = true;
         boolean partialFinalPath;
@@ -69,8 +71,12 @@ final class TravelMovementOrchestrationTest {
         final List<String> events = new ArrayList<>();
         final List<Leg> children = new ArrayList<>();
         final long generation = movementSync.beginStaticNavigationRequest(GOAL);
-        final TravelMovement travel = new TravelMovement(GOAL, generation, true, this);
-        Fixture() { movementSync.position.set(new Vector3d(0.5, 64, 0.5)); }
+        final TravelMovement travel;
+        Fixture() { this(new xin.bbtt.flight.FlightContextBuilder().addStandard()); }
+        Fixture(xin.bbtt.flight.FlightContextBuilder builder) {
+            travel = new TravelMovement(GOAL, generation, true, this, builder);
+            movementSync.position.set(new Vector3d(0.5, 64, 0.5));
+        }
         @Override public List<PathStep> plan(Vector3i destination) {
             planning.run();
             boolean terminal = destination.equals(GOAL);
@@ -94,6 +100,147 @@ final class TravelMovementOrchestrationTest {
         @Override public Movement flight() { return create("flight"); }
         Leg current() { return children.get(children.size() - 1); }
         void complete() { current().setFinished(true); travel.onTick(); }
+    }
+
+    @Test void unavailablePluginRetainsVanillaPreparationAndApproach() {
+        var unavailable = new xin.bbtt.flight.FlightMode() {
+            @Override public boolean isAvailable(xin.bbtt.flight.FlightContext c) { return false; }
+            @Override public List<? extends xin.bbtt.flight.FlightAction> candidates(xin.bbtt.flight.FlightContext c) {
+                fail("unavailable mode must not be queried"); return List.of();
+            }
+            @Override public xin.bbtt.flight.Trajectory predict(xin.bbtt.flight.FlightContext c,
+                    xin.bbtt.flight.FlightAction a) { throw new AssertionError(); }
+            @Override public void execute(xin.bbtt.flight.FlightContext c, xin.bbtt.flight.FlightAction a,
+                    MovementSync sync) { throw new AssertionError(); }
+        };
+        for (boolean open : new boolean[]{false, true}) {
+            Fixture legacy = new Fixture();
+            legacy.world.open = open;
+            legacy.movementSync.onGround.set(true);
+            legacy.travel.onTick();
+            Fixture mixed = new Fixture(new xin.bbtt.flight.FlightContextBuilder().addStandard().addMode(unavailable));
+            mixed.world.open = open;
+            mixed.movementSync.onGround.set(true);
+            mixed.travel.onTick();
+            assertEquals(legacy.events, mixed.events);
+            assertEquals(legacy.preparations, mixed.preparations);
+            assertEquals(legacy.budgetChecks, mixed.budgetChecks);
+            assertEquals(legacy.approachPlans, mixed.approachPlans);
+        }
+    }
+
+    @Test void vanillaMixedTransitionPreviewDoesNotDeployOrMutateMotion() {
+        Fixture fixture = new Fixture();
+        fixture.gliding = true;
+        fixture.movementSync.onGround.set(false);
+        var state = new xin.bbtt.physics.PhysicsState(new Vector3d(.5, 100, .5), new Vector3d(0, -.1, .5), false);
+        var context = new xin.bbtt.flight.FlightContext(fixture.world, state,
+                xin.bbtt.physics.MovementParameters.DEFAULT, xin.bbtt.physics.DamageParameters.NONE,
+                20, new Vector3d(200, 64, 0), 0, 0, 0, false, 3, false, java.util.Map.of());
+        var before = new Vector3d(fixture.movementSync.position.get());
+        var mode = xin.bbtt.flight.VanillaGlideMode.INSTANCE;
+        var preview = mode.previewTakeoff(context);
+        assertNotNull(preview);
+        assertFalse(preview.results().isEmpty());
+        assertEquals(state, preview.initial());
+        assertNotEquals(state.position(), preview.finalState().position());
+        assertNotNull(mode.createTakeoff(context));
+        assertNotNull(mode.createLanding(context));
+        var other = new xin.bbtt.flight.FlightMode() {
+            @Override public List<? extends xin.bbtt.flight.FlightAction> candidates(xin.bbtt.flight.FlightContext c) {
+                return List.of();
+            }
+            @Override public xin.bbtt.flight.Trajectory predict(xin.bbtt.flight.FlightContext c,
+                    xin.bbtt.flight.FlightAction a) { return preview; }
+            @Override public xin.bbtt.flight.Trajectory previewTakeoff(xin.bbtt.flight.FlightContext c) { return preview; }
+            @Override public Movement createTakeoff(xin.bbtt.flight.FlightContext c) {
+                throw new AssertionError("losing factory must not run");
+            }
+            @Override public void execute(xin.bbtt.flight.FlightContext c, xin.bbtt.flight.FlightAction a,
+                    MovementSync sync) {}
+        };
+        var configuration = new xin.bbtt.flight.FlightContextBuilder().addMode(mode).addMode(other).build();
+        var selection = xin.bbtt.flight.FlightTransitions.select(configuration, context,
+                xin.bbtt.flight.FlightTransitions.Kind.TAKEOFF);
+        assertNotNull(selection);
+        assertSame(mode, selection.mode());
+        assertEquals(before, fixture.movementSync.position.get());
+        assertTrue(fixture.gliding);
+    }
+
+    @Test void pluginTakeoffBypassesVanillaRoofEquipmentAndBudgetChecks() {
+        var transitions = new ArrayList<String>();
+        var takeoff = new Leg("takeoff", transitions);
+        var mode = new xin.bbtt.flight.FlightMode() {
+            final xin.bbtt.flight.FlightAction action = new xin.bbtt.flight.FlightAction() {};
+            @Override public List<? extends xin.bbtt.flight.FlightAction> candidates(xin.bbtt.flight.FlightContext c) {
+                return List.of(action);
+            }
+            @Override public xin.bbtt.flight.Trajectory predict(xin.bbtt.flight.FlightContext c,
+                    xin.bbtt.flight.FlightAction a) {
+                return new xin.bbtt.flight.Trajectory(c.state(), List.of(new xin.bbtt.physics.PhysicsResult(
+                        c.state().position(), new Vector3d(), false, false, false)), action);
+            }
+            @Override public xin.bbtt.flight.Trajectory previewTakeoff(xin.bbtt.flight.FlightContext c) {
+                return predict(c, action);
+            }
+            @Override public Movement createTakeoff(xin.bbtt.flight.FlightContext c) { return takeoff; }
+            @Override public void execute(xin.bbtt.flight.FlightContext c, xin.bbtt.flight.FlightAction a,
+                    MovementSync sync) {}
+        };
+        for (boolean airborne : new boolean[]{false, true}) {
+            transitions.clear();
+            takeoff.setFinished(false);
+            Fixture fixture = new Fixture(new xin.bbtt.flight.FlightContextBuilder().addMode(mode));
+            fixture.movementSync.onGround.set(!airborne);
+            fixture.flightBudget = false;
+            fixture.travel.onTick();
+            assertEquals(List.of("takeoff"), transitions);
+            assertEquals(0, fixture.preparations);
+            assertEquals(0, fixture.budgetChecks);
+            assertEquals(0, fixture.approachPlans);
+            takeoff.setFinished(true);
+            fixture.travel.onTick();
+            assertEquals(List.of("flight"), fixture.events);
+            fixture.travel.onStop();
+            assertTrue(fixture.current().isFinished());
+        }
+    }
+
+    @Test void declinedPluginTakeoffKeepsVanillaApproachForEquippedElytra() {
+        var mode = new xin.bbtt.flight.FlightMode() {
+            final xin.bbtt.flight.FlightAction action = new xin.bbtt.flight.FlightAction() {};
+            @Override public List<? extends xin.bbtt.flight.FlightAction> candidates(xin.bbtt.flight.FlightContext c) {
+                return List.of(action);
+            }
+            @Override public xin.bbtt.flight.Trajectory predict(xin.bbtt.flight.FlightContext c,
+                    xin.bbtt.flight.FlightAction a) {
+                return new xin.bbtt.flight.Trajectory(c.state(), List.of(new xin.bbtt.physics.PhysicsResult(
+                        c.state().position(), new Vector3d(), false, false, false)), action);
+            }
+            @Override public xin.bbtt.flight.Trajectory previewTakeoff(xin.bbtt.flight.FlightContext c) {
+                return predict(c, action);
+            }
+            // The plugin offers a transition but its factory declines this time.
+            @Override public Movement createTakeoff(xin.bbtt.flight.FlightContext c) { return null; }
+            @Override public void execute(xin.bbtt.flight.FlightContext c, xin.bbtt.flight.FlightAction a,
+                    MovementSync sync) {}
+        };
+        for (boolean equipped : new boolean[]{true, false}) {
+            Fixture fixture = new Fixture(new xin.bbtt.flight.FlightContextBuilder().addStandard().addMode(mode));
+            fixture.equipped = equipped;
+            fixture.movementSync.onGround.set(true);
+            fixture.travel.onTick();
+            if (equipped) {
+                assertEquals(List.of("approach"), fixture.events, "Under a roof the vanilla approach still runs");
+                fixture.world.open = true;
+                fixture.complete();
+                assertEquals(List.of("approach", "flight"), fixture.events);
+            } else {
+                assertEquals(0, fixture.approachPlans, "Without an elytra no takeoff approach is planned");
+                assertEquals(List.of("walk"), fixture.events);
+            }
+        }
     }
 
     @Test void preparationWaitsWithoutCheckingBudgetThenStartsExactlyOneFlight() {

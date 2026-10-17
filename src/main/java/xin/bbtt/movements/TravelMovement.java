@@ -32,19 +32,32 @@ public final class TravelMovement extends Movement {
     }
 
     private final Legs legs;
-    private enum Stage { PREPARE, APPROACH, FLIGHT, LAND, WALK }
+    private final xin.bbtt.flight.FlightConfiguration flightConfiguration;
+    private enum Stage { PREPARE, APPROACH, TAKEOFF, FLIGHT, LAND, WALK }
     private final Vector3i goal;
     private final long generation;
     private final boolean fly;
     private Stage stage = Stage.PREPARE;
     private volatile Movement child;
     private volatile boolean stopped;
+    private boolean takeoffForLanding;
 
     public TravelMovement(Vector3i goal, long generation, boolean fly) {
-        this(goal, generation, fly, null);
+        this(goal, generation, fly, null, new xin.bbtt.flight.FlightContextBuilder().addStandard());
+    }
+
+    public TravelMovement(Vector3i goal, long generation, boolean fly,
+                          xin.bbtt.flight.FlightContextBuilder builder) {
+        this(goal, generation, fly, null, builder);
     }
 
     TravelMovement(Vector3i goal, long generation, boolean fly, Legs legs) {
+        this(goal, generation, fly, legs, new xin.bbtt.flight.FlightContextBuilder().addStandard());
+    }
+
+    TravelMovement(Vector3i goal, long generation, boolean fly, Legs legs,
+                   xin.bbtt.flight.FlightContextBuilder builder) {
+        this.flightConfiguration = builder.build();
         this.goal = new Vector3i(goal);
         this.generation = generation;
         this.fly = fly;
@@ -63,7 +76,13 @@ public final class TravelMovement extends Movement {
             }
             @Override public Movement flight() {
                 Vector3i destination = TravelMovement.this.goal;
-                return new ElytraFlyMovement(new Vector3d(destination.x + 0.5, destination.y, destination.z + 0.5), generation);
+                var snapshot = new xin.bbtt.flight.FlightContextBuilder()
+                        .cruiseDamageFirst(flightConfiguration.cruiseDamageFirst());
+                flightConfiguration.modes().forEach(snapshot::addMode);
+                flightConfiguration.costs().forEach(snapshot::addCostTerm);
+                flightConfiguration.damageRules().forEach(snapshot::addDamageRule);
+                return new ElytraFlyMovement(new Vector3d(destination.x + 0.5, destination.y, destination.z + 0.5),
+                        generation, snapshot);
             }
         } : legs;
     }
@@ -94,6 +113,8 @@ public final class TravelMovement extends Movement {
 
     @Override
     public void onTick() {
+        // Not under the navigation lock: path planning and flight previews here can be slow,
+        // and cancellation must not wait for them. Children guard their own writes.
         MovementSync movementSync = MovementSync.INSTANCE;
         if (stopped || finished || !movementSync.isNavigationRequestCurrent(generation)) return;
         Movement currentChild = child;
@@ -110,6 +131,11 @@ public final class TravelMovement extends Movement {
                 finished = true;
                 return;
             }
+            if (stage == Stage.TAKEOFF) {
+                stage = takeoffForLanding ? Stage.LAND : Stage.FLIGHT;
+                startChild(takeoffForLanding ? extendedLanding() : legs.flight());
+                return;
+            }
             if (stage == Stage.APPROACH && isOpen(movementSync.getWorld(), movementSync.position.get())) {
                 startFlight();
                 return;
@@ -120,6 +146,14 @@ public final class TravelMovement extends Movement {
                 movementSync.getWorld(), movementSync.position.get())
                 || xin.bbtt.pathfinding.EnvironmentalTraversal.climbing(
                         movementSync.getWorld(), movementSync.position.get());
+        if (!flightConfiguration.isLegacy()) {
+            // Still compare the real vanilla preview when plugins are registered. If all
+            // plugins decline transitions, retain legacy preparation/approach behavior.
+            if (hasPluginTransition()) {
+                if (tickExtended(movementSync, environmental)) return;
+            } else if (stage == Stage.PREPARE && (fly || !movementSync.onGround.get())
+                    && startTransition(xin.bbtt.flight.FlightTransitions.Kind.TAKEOFF, !fly)) return;
+        }
         if (stage == Stage.PREPARE) {
             if (fly && movementSync.isGliding()) {
                 startFlight();
@@ -159,6 +193,80 @@ public final class TravelMovement extends Movement {
             }
             startChild(legs.walk(path, goal, false));
         }
+    }
+
+    /** Returns false to hand this tick to the vanilla preparation below. */
+    private boolean tickExtended(MovementSync sync, boolean environmental) {
+        boolean supported = sync.onGround.get() || environmental;
+        if (stage == Stage.PREPARE) {
+            if ((fly || !supported) && startTransition(xin.bbtt.flight.FlightTransitions.Kind.TAKEOFF, !fly)) return true;
+            // The vanilla preview needs open sky here. With no winner, an equipped elytra still
+            // gets the vanilla walk to an open launch spot instead of walking the whole route.
+            if (fly && supported && !environmental && sync.hasEquippedElytra()) return false;
+            stage = Stage.LAND;
+        }
+        if (stage == Stage.LAND && !supported) {
+            if (!startTransition(xin.bbtt.flight.FlightTransitions.Kind.LANDING, true)) {
+                // No transition is not permission to disable flight: retain mode-owned airborne control.
+                stage = Stage.LAND;
+                startChild(extendedLanding());
+            }
+            return true;
+        }
+        if (stage == Stage.LAND && supported) {
+            stage = Stage.WALK;
+            List<PathStep> path = legs.plan(goal);
+            if (stopped || finished || !sync.isNavigationRequestCurrent(generation)) return true;
+            if (path.isEmpty()) {
+                sync.abandonNavigationRequest(generation);
+                finished = true;
+            } else startChild(legs.walk(path, goal, false));
+        }
+        return true;
+    }
+
+    private Movement extendedLanding() {
+        Movement movement = legs.flight();
+        return movement instanceof ElytraFlyMovement flight ? flight.forSafeLanding() : movement;
+    }
+
+    private boolean hasPluginTransition() {
+        var context = transitionContext(!fly);
+        for (var mode : flightConfiguration.modes()) {
+            if (mode instanceof xin.bbtt.flight.VanillaGlideMode || !mode.isAvailable(context)) continue;
+            if (mode.previewTakeoff(context) != null || mode.previewLanding(context) != null) return true;
+        }
+        return false;
+    }
+
+    private xin.bbtt.flight.FlightContext transitionContext(boolean emergency) {
+        MovementSync sync = MovementSync.INSTANCE;
+        var inventory = new java.util.HashMap<String, Integer>();
+        var stacks = sync.inventoryManager.getInventory();
+        if (stacks != null) for (var stack : stacks) {
+            if (stack == null) continue;
+            var item = xin.bbtt.inventory.ItemRegistry.Instance.getItem(stack.getId());
+            if (item != null) inventory.merge("minecraft:" + item.getName(), stack.getAmount(), Integer::sum);
+        }
+        return new xin.bbtt.flight.FlightContext(sync.getWorld(),
+                new xin.bbtt.physics.PhysicsState(sync.position.get(), sync.velocity.get(),
+                        sync.onGround.get(), sync.fallDistance.get()), sync.getMovementParameters(),
+                xin.bbtt.physics.DamageParameters.fromPlayer(sync.inventoryManager,
+                        sync.getMovementParameterState().effectsSnapshot()),
+                sync.getMovementParameterState().health(), new Vector3d(goal.x + .5, goal.y, goal.z + .5),
+                sync.yaw.get(), sync.pitch.get(), sync.countHotbarFireworks(), sync.hasAttachedFirework(),
+                ElytraFlyMovement.DEFAULT_ARRIVAL_RADIUS, emergency, inventory);
+    }
+
+    private boolean startTransition(xin.bbtt.flight.FlightTransitions.Kind kind, boolean emergency) {
+        var context = transitionContext(emergency);
+        var selected = xin.bbtt.flight.FlightTransitions.select(flightConfiguration, context, kind);
+        if (selected == null) return false;
+        takeoffForLanding = emergency || selected.mode() instanceof xin.bbtt.flight.VanillaGlideMode
+                && !MovementSync.INSTANCE.onGround.get() && !legs.hasFlightBudget();
+        stage = kind == xin.bbtt.flight.FlightTransitions.Kind.TAKEOFF ? Stage.TAKEOFF : Stage.LAND;
+        startChild(selected.movement());
+        return true;
     }
 
     private void startFlight() {
