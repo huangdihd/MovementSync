@@ -144,7 +144,7 @@ class ElytraInventoryTest {
         sync.setInput(input);
         var packets = new ArrayList<Packet>();
         assertEquals(InventoryManager.ElytraAction.WAITING, manager.tickElytraSwap(false, packets::add, () -> 1, 0, 0));
-        var click = (ServerboundContainerClickPacket) packets.getFirst();
+        var click = (ServerboundContainerClickPacket) packets.get(0);
         assertEquals(0, click.getContainerId()); assertEquals(123, click.getStateId()); assertEquals(35, click.getSlot());
         assertNull(click.getCarriedItem()); assertTrue(click.getChangedSlots().isEmpty());
         assertEquals(xin.bbtt.physics.PlayerInput.NONE, sync.snapshotInput());
@@ -180,7 +180,7 @@ class ElytraInventoryTest {
         var items = new ItemStack[46]; items[6] = elytra(422); items[9] = elytra(0);
         items[36] = elytra(100); items[44] = elytra(50); manager.setContainerItems(0, items);
         var packets = new ArrayList<Packet>(); manager.tickElytraSwap(false, packets::add, () -> 1, 0, 0);
-        assertEquals(8, ((ServerboundSetCarriedItemPacket) packets.getFirst()).getSlot());
+        assertEquals(8, ((ServerboundSetCarriedItemPacket) packets.get(0)).getSlot());
     }
     @Test void vanillaBreakBoundaryAndUnbreakable() {
         assertFalse(new ElytraDurability(true, 432, 431, false).usable());

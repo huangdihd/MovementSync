@@ -107,7 +107,7 @@ final class FlightSelectorExtensionTest {
         var selector = new FlightSelector(new FlightContextBuilder().addMode(mode)
                 .addDamageRule((c, a, before, after) -> new DamageRule.Damage(2, 1))
                 .addDamageRule((c, a, before, after) -> new DamageRule.Damage(3, 2)).build());
-        var action = mode.candidates(context).getFirst();
+        var action = mode.candidates(context).get(0);
         var safety = selector.safety(context, mode, action, mode.predict(context, action));
         assertEquals(5, safety.raw());
         assertEquals(3, safety.reduced());

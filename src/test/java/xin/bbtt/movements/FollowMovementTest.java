@@ -171,7 +171,7 @@ class FollowMovementTest extends ElytraCommandTestSupport {
         movementSync.onGround.set(false);
         movementSync.startFollowingNavigation(99, 8, false);
         var follow = assertInstanceOf(FollowMovement.class,
-                movementSync.getMovementController().getMovements().getFirst());
+                movementSync.getMovementController().getMovements().get(0));
         follow.init(); follow.onTick();
         assertInstanceOf(ElytraFlyMovement.class, child(follow));
         var controller = movementSync.getMovementController();
@@ -181,7 +181,7 @@ class FollowMovementTest extends ElytraCommandTestSupport {
         movementSync.cancelNavigation();
         assertTrue(follow.isFinished());
         assertInstanceOf(ElytraFlyMovement.class,
-                movementSync.getMovementController().getMovements().getFirst());
+                movementSync.getMovementController().getMovements().get(0));
         assertNull(movementSync.getGotoRecovery().getTask());
     }
 

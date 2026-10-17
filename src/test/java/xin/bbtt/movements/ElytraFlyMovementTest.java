@@ -58,7 +58,7 @@ final class ElytraFlyMovementTest extends ElytraCommandTestSupport {
         ElytraFlyMovement flight;
         if (mode == 2) {
             movementSync.cancelNavigation();
-            flight = (ElytraFlyMovement) movementSync.getMovementController().getMovements().getFirst();
+            flight = (ElytraFlyMovement) movementSync.getMovementController().getMovements().get(0);
         } else {
             flight = new ElytraFlyMovement(new Vector3d(movementSync.position.get()));
             if (mode == 1) flight.forSafeLanding();
@@ -77,12 +77,12 @@ final class ElytraFlyMovementTest extends ElytraCommandTestSupport {
         movementSync.setActiveGoal(new org.joml.Vector3i(100, 0, 0));
         movementSync.cancelNavigation();
         var landing = assertInstanceOf(ElytraFlyMovement.class,
-                movementSync.getMovementController().getMovements().getFirst());
+                movementSync.getMovementController().getMovements().get(0));
         assertNull(movementSync.getActiveGoal());
         assertNull(movementSync.getGotoRecovery().getTask());
         movementSync.cancelNavigation();
         movementSync.cancelNavigation();
-        assertSame(landing, movementSync.getMovementController().getMovements().getFirst());
+        assertSame(landing, movementSync.getMovementController().getMovements().get(0));
         assertFalse(landing.isFinished());
         movementSync.beginGotoNavigationRequest(new org.joml.Vector3i(200, 0, 0), false, false);
         assertTrue(movementSync.getMovementController().getMovements().isEmpty());
