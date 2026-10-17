@@ -53,12 +53,13 @@ public class PlaceBlockMovement extends Movement implements NavigationBoundMovem
             onAuthorizedTick();
             return;
         }
-        synchronized (MovementSync.INSTANCE) {
-            if (!MovementSync.INSTANCE.runIfNavigationRequestCurrent(
-                    navigationGeneration, this::onAuthorizedTick)) {
+        // onAuthorizedTick takes MovementSync itself, inside the navigation lock.
+        if (!MovementSync.INSTANCE.runIfNavigationRequestCurrent(
+                navigationGeneration, this::onAuthorizedTick)) {
+            synchronized (MovementSync.INSTANCE) {
                 onStop();
-                setFinished(true);
             }
+            setFinished(true);
         }
     }
 

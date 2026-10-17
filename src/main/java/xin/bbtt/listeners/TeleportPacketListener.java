@@ -20,6 +20,12 @@ public class TeleportPacketListener extends SessionAdapter {
     @Override
     public synchronized void packetReceived(Session session, Packet packet) {
         if (!(packet instanceof ClientboundPlayerPositionPacket playerPositionPacket)) return;
+        if (!applyTeleport(session, playerPositionPacket)) return;
+        // Navigation lock before MovementSync: recovery may cancel navigation, so it runs outside.
+        MovementSync.INSTANCE.onRecoveryTeleport();
+    }
+
+    private boolean applyTeleport(Session session, ClientboundPlayerPositionPacket playerPositionPacket) {
         synchronized (MovementSync.INSTANCE) {
         boolean firstPosition = !MovementSync.INSTANCE.getGotoRecovery().hasPosition();
         // Resolve the packet like the vanilla client: every component may be relative to
@@ -52,7 +58,7 @@ public class TeleportPacketListener extends SessionAdapter {
                 (relatives.contains(PositionElement.DELTA_Z) ? velocity.z : 0) + playerPositionPacket.getDeltaMovement().getZ());
         TeleportEvent teleportEvent = new TeleportEvent(playerPositionPacket.getId(), position);
         Bot.INSTANCE.getPluginManager().events().callEvent(teleportEvent);
-        if (teleportEvent.isDefaultActionCancelled()) return;
+        if (teleportEvent.isDefaultActionCancelled()) return false;
         MovementSync.INSTANCE.position.set(position);
         MovementSync.INSTANCE.pitch.set(pitch);
         MovementSync.INSTANCE.yaw.set(yaw);
@@ -70,7 +76,7 @@ public class TeleportPacketListener extends SessionAdapter {
         // sends no metadata update, so clearing it here would leave the two sides out of sync.
         MovementSync.INSTANCE.velocity.set(velocity);
         checkOnGround();
-        MovementSync.INSTANCE.onRecoveryTeleport();
+        return true;
         }
     }
 }

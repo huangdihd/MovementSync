@@ -128,13 +128,19 @@ public class updateMotionTask implements Runnable {
                     org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.ServerboundClientTickEndPacket.INSTANCE);
             }
         }
+        // Lock order is navigation lock, then MovementSync: movement threads hold the navigation
+        // lock while they start a glide, so goto recovery must not run under the tick monitor.
+        try {
+            MovementSync.INSTANCE.tickNavigationRecovery(Bot.INSTANCE.getServer() == xin.bbtt.mcbot.Server.Game);
+        } catch (RuntimeException error) {
+            MovementSync.getLogger().error("Goto recovery tick failed", error);
+        }
     }
 
     private void tick() {
         boolean game = Bot.INSTANCE.getServer() == xin.bbtt.mcbot.Server.Game;
         MovementSync.INSTANCE.getReconnectAirRecovery().tick(MovementSync.INSTANCE, game,
                 MovementSync.INSTANCE.getGotoRecovery().isPending());
-        MovementSync.INSTANCE.tickNavigationRecovery(game);
         if (MovementSync.INSTANCE.isRiding()) {
             xin.bbtt.Entity.Entity vehicle = MovementSync.INSTANCE.getWorld().getEntity(MovementSync.INSTANCE.getVehicleId());
             if (vehicle != null) {

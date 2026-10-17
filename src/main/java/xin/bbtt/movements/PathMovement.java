@@ -136,13 +136,17 @@ public class PathMovement extends Movement {
 
     @Override
     public void onTick() {
-        synchronized (MovementSync.INSTANCE) {
-            if (!MovementSync.INSTANCE.runIfNavigationRequestCurrent(
-                    requestGeneration, this::onAuthorizedTick)) {
-                stopHorizontal();
-                setFinished(true);
-                return;
+        // Navigation lock before MovementSync, the order every navigation path uses.
+        if (!MovementSync.INSTANCE.runIfNavigationRequestCurrent(requestGeneration, () -> {
+            synchronized (MovementSync.INSTANCE) {
+                onAuthorizedTick();
             }
+        })) {
+            synchronized (MovementSync.INSTANCE) {
+                stopHorizontal();
+            }
+            setFinished(true);
+            return;
         }
         if (immediateRepathRequested) {
             immediateRepathRequested = false;
