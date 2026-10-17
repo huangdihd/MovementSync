@@ -20,10 +20,16 @@ import xin.bbtt.physics.PhysicsStepper;
 import xin.bbtt.physics.WalkingPhysics;
 
 public class updateMotionTask implements Runnable {
+    private static void sendIfConnected(Packet packet) {
+        var session = Bot.INSTANCE.getSession();
+        if (session != null && session.isConnected()) session.send(packet);
+    }
+
     private static final double PLAYER_HALF_WIDTH = (double) 0.6f / 2;
     private PlayerInput lastInput = PlayerInput.NONE;
     private boolean lastSprinting;
     private int jumpCooldown;
+    private xin.bbtt.physics.PlayerPose pose = xin.bbtt.physics.PlayerPose.STANDING;
 
     private record BodyDimensions(double halfWidth, double height) {}
     Vector3d lastPos = new Vector3d();
@@ -46,19 +52,19 @@ public class updateMotionTask implements Runnable {
         Vector3d position = MovementSync.INSTANCE.position.get();
 
         if (positionChanged && rotationChanged) {
-            Bot.INSTANCE.getSession().send(new ServerboundMovePlayerPosRotPacket(
+            sendIfConnected(new ServerboundMovePlayerPosRotPacket(
                     onGround, horizontalCollision,
                     position.x, position.y, position.z, yaw, pitch));
         } else if (positionChanged) {
-            Bot.INSTANCE.getSession().send(new ServerboundMovePlayerPosPacket(
+            sendIfConnected(new ServerboundMovePlayerPosPacket(
                     onGround, horizontalCollision,
                     position.x, position.y, position.z));
         } else if (rotationChanged) {
-            Bot.INSTANCE.getSession().send(new ServerboundMovePlayerRotPacket(
+            sendIfConnected(new ServerboundMovePlayerRotPacket(
                     onGround, horizontalCollision, yaw, pitch));
         } else {
             // A collision-state transition still needs a movement packet.
-            Bot.INSTANCE.getSession().send(new ServerboundMovePlayerPosPacket(
+            sendIfConnected(new ServerboundMovePlayerPosPacket(
                     onGround, horizontalCollision,
                     position.x, position.y, position.z));
         }
@@ -106,7 +112,7 @@ public class updateMotionTask implements Runnable {
 
     @Override
     public void run() {
-        if (!Bot.INSTANCE.isRunning()) return;
+        if (!Bot.INSTANCE.isRunning() || !MovementSync.INSTANCE.getGotoRecovery().hasPosition()) return;
 
         // A start request must not change flight physics or enqueue its action
         // between this tick's input snapshot and movement/tick-end packets.
@@ -118,13 +124,23 @@ public class updateMotionTask implements Runnable {
                 MovementSync.getLogger().error("Physics tick failed", error);
             } finally {
                 // Close the same atomic packet batch, including on failure.
-                Bot.INSTANCE.getSession().send(
+                sendIfConnected(
                     org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.ServerboundClientTickEndPacket.INSTANCE);
             }
+        }
+        // Lock order is navigation lock, then MovementSync: movement threads hold the navigation
+        // lock while they start a glide, so goto recovery must not run under the tick monitor.
+        try {
+            MovementSync.INSTANCE.tickNavigationRecovery(Bot.INSTANCE.getServer() == xin.bbtt.mcbot.Server.Game);
+        } catch (RuntimeException error) {
+            MovementSync.getLogger().error("Goto recovery tick failed", error);
         }
     }
 
     private void tick() {
+        boolean game = Bot.INSTANCE.getServer() == xin.bbtt.mcbot.Server.Game;
+        MovementSync.INSTANCE.getReconnectAirRecovery().tick(MovementSync.INSTANCE, game,
+                MovementSync.INSTANCE.getGotoRecovery().isPending());
         if (MovementSync.INSTANCE.isRiding()) {
             xin.bbtt.Entity.Entity vehicle = MovementSync.INSTANCE.getWorld().getEntity(MovementSync.INSTANCE.getVehicleId());
             if (vehicle != null) {
@@ -137,7 +153,7 @@ public class updateMotionTask implements Runnable {
                     boolean leftPaddle = forward > 0 || sideways > 0;
                     boolean rightPaddle = forward > 0 || sideways < 0;
                     if (leftPaddle || rightPaddle) {
-                        Bot.INSTANCE.getSession().send(new org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.level.ServerboundPaddleBoatPacket(leftPaddle, rightPaddle));
+                        sendIfConnected(new org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.level.ServerboundPaddleBoatPacket(leftPaddle, rightPaddle));
                     }
                 }
             }
@@ -146,7 +162,7 @@ public class updateMotionTask implements Runnable {
             boolean jump = MovementSync.INSTANCE.isRidingJump();
             boolean sneak = MovementSync.INSTANCE.isRidingSneak();
             
-            Bot.INSTANCE.getSession().send(new org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.level.ServerboundPlayerInputPacket(
+            sendIfConnected(new org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.level.ServerboundPlayerInputPacket(
                 sideways > 0, sideways < 0, forward > 0, forward < 0, jump, sneak, false));
             MovementSync.INSTANCE.applyPersistentGazeIfIdle();
             syncPositionToServer(false, true, true);
@@ -167,7 +183,8 @@ public class updateMotionTask implements Runnable {
         xin.bbtt.physics.EnvironmentalPhysics.Environment environment =
                 xin.bbtt.physics.EnvironmentalPhysics.sample(MovementSync.INSTANCE.getWorld(), position,
                         inputDimensions.halfWidth(), inputDimensions.height());
-        if (environment.waterHeight() > 0 || environment.lavaHeight() > 0) {
+        if (environment.waterHeight() > 0 || environment.lavaHeight() > 0
+                || pose.shouldSlowDown(MovementSync.INSTANCE.isGliding(), environment.waterHeight() > 0, input.sneak())) {
             input = new PlayerInput(input.forward(), input.backward(), input.left(), input.right(),
                     input.jump(), input.sneak(), false);
         }
@@ -178,6 +195,7 @@ public class updateMotionTask implements Runnable {
         java.util.List<Packet> actions = new java.util.ArrayList<>();
         java.util.List<Packet> deferredActions = new java.util.ArrayList<>();
         boolean releaseBeforeDeployment = false;
+        boolean deploying = false;
         Packet queuedAction;
         while ((queuedAction = MovementSync.INSTANCE.pollBeforeMovementPacket()) != null) {
             if (queuedAction instanceof ServerboundPlayerCommandPacket command
@@ -188,9 +206,10 @@ public class updateMotionTask implements Runnable {
                     MovementSync.INSTANCE.setGliding(false);
                     input = input.withJump(false);
                 } else {
+                    deploying = true;
                     MovementSync.INSTANCE.setGliding(true);
                     input = input.withJump(true);
-                    Bot.INSTANCE.getSession().send(queuedAction);
+                    sendIfConnected(queuedAction);
                 }
             } else {
                 actions.add(queuedAction);
@@ -202,12 +221,12 @@ public class updateMotionTask implements Runnable {
             for (Packet action : deferredActions) MovementSync.INSTANCE.queueBeforeMovement(action);
         }
         if (!input.equals(lastInput)) {
-            Bot.INSTANCE.getSession().send(new ServerboundPlayerInputPacket(
+            sendIfConnected(new ServerboundPlayerInputPacket(
                     input.forward(), input.backward(), input.left(), input.right(), input.jump(), input.sneak(), input.sprint()));
             lastInput = input;
         }
         if (input.sprint() != lastSprinting) {
-            Bot.INSTANCE.getSession().send(new ServerboundPlayerCommandPacket(
+            sendIfConnected(new ServerboundPlayerCommandPacket(
                     MovementSync.INSTANCE.entityId, input.sprint()
                     ? PlayerState.START_SPRINTING
                     : PlayerState.STOP_SPRINTING));
@@ -219,11 +238,12 @@ public class updateMotionTask implements Runnable {
             if (action instanceof org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundUseItemPacket useItem) {
                 action = useItem.withYRot(tickYaw).withXRot(tickPitch);
             }
-            Bot.INSTANCE.getSession().send(action);
+            sendIfConnected(action);
         }
         Vector3d initialVelocity = MovementSync.INSTANCE.velocity.get();
         Vector3d velocity = new Vector3d(initialVelocity);
-        BodyDimensions dimensions = getBodyDimensions();
+        // PlayerEntity.tick updates pose after travel: deployment still uses the standing box.
+        BodyDimensions dimensions = deploying ? new BodyDimensions(PLAYER_HALF_WIDTH, (double) 1.8f) : getBodyDimensions();
         boolean gliding = MovementSync.INSTANCE.isGliding();
         if (jumpCooldown > 0) jumpCooldown--;
         if (!input.jump()) jumpCooldown = 0;
@@ -233,13 +253,13 @@ public class updateMotionTask implements Runnable {
         }
         PhysicsStepper physics = gliding
                 ? new GlidingPhysics(tickYaw, tickPitch,
-                        MovementSync.INSTANCE.hasAttachedFirework(), parameters.gravity(), parameters.slowFalling())
+                        MovementSync.INSTANCE.hasAttachedFirework(), input, parameters)
                 : new WalkingPhysics(input, tickYaw, jumpAllowed, parameters);
         PhysicsResult result = physics.step(
             MovementSync.INSTANCE.getWorld(),
             new PhysicsState(position, velocity, MovementSync.INSTANCE.onGround.get(),
                     parameters.slowFalling() || parameters.levitationAmplifier() >= 0
-                            ? 0 : MovementSync.INSTANCE.fallDistance.get()),
+                            ? 0 : MovementSync.INSTANCE.fallDistance.get(), pose),
             dimensions.halfWidth(), dimensions.height());
         MovementSync.INSTANCE.fallDistance.set(result.fallDistance());
         position = result.position();
@@ -258,6 +278,7 @@ public class updateMotionTask implements Runnable {
             MovementSync.INSTANCE.velocity.compareAndSet(initialVelocity, velocity);
         }
         if (!gliding) MovementSync.INSTANCE.onGround.set(result.onGround());
+        pose = pose.afterTravel(MovementSync.INSTANCE.getWorld(), position, gliding, false, input.sneak());
         MovementSync.INSTANCE.position.set(position);
         MovementSync.INSTANCE.applyPersistentGazeIfIdle();
 
@@ -279,5 +300,8 @@ public class updateMotionTask implements Runnable {
             lastHorizontalCollision = horizontalCollision;
             lastOnGround = MovementSync.INSTANCE.onGround.get();
         }
+        MovementSync.INSTANCE.publishPlacementFrame(lastPos.x, lastPos.y, lastPos.z, lastYaw, lastPitch,
+                pose == xin.bbtt.physics.PlayerPose.CROUCHING ? (double) 1.27f
+                        : pose == xin.bbtt.physics.PlayerPose.STANDING ? (double) 1.62f : (double) 0.4f);
     }
 }

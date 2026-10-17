@@ -76,6 +76,10 @@ final class PillarMovementTest {
         assertFalse(movement.isFinished());
 
         World world = new World() {
+            @Override public xin.bbtt.Block.BlockState getBlockStateAt(Vector3d p) {
+                return new xin.bbtt.Block.BlockState("stone", p.y < 64 ? 1 : 0,
+                        java.util.Map.of(), p.y < 64 ? "block" : "empty", 1, true, "stone");
+            }
             @Override public boolean chunkLoaded(int chunkX, int chunkZ) { return true; }
             @Override
             public boolean isBoxColliding(double minX, double minY, double minZ,
@@ -83,6 +87,9 @@ final class PillarMovementTest {
                 return minY < 64.0;
             }
         };
+        Field worldField = MovementSync.class.getDeclaredField("world");
+        worldField.setAccessible(true);
+        worldField.set(movementSync, world);
         for (int tick = 0; tick < 3; tick++) {
             PhysicsResult result = new WalkingPhysics(input, movementSync.yaw.get()).step(
                     world, new PhysicsState(movementSync.position.get(), movementSync.velocity.get(),
@@ -95,6 +102,8 @@ final class PillarMovementTest {
                 assertEquals(64 + (double) 0.42F, result.position().y, 1.0e-9);
                 assertEquals(((double) 0.42F - 0.08) * 0.9800000190734863D, result.velocity().y, 1.0e-9);
             }
+            movementSync.publishPlacementFrame(result.position().x, result.position().y, result.position().z,
+                    movementSync.yaw.get(), movementSync.pitch.get(), 1.62);
             movement.onTick();
             if (tick < 2) {
                 assertTrue(result.position().y < 65.0);
@@ -106,10 +115,13 @@ final class PillarMovementTest {
         }
         assertTrue(movementSync.position.get().y >= 65.0);
 
+        assertTrue(packets.isEmpty(), "placement is queued, never sent by the movement thread");
+        Object queued;
+        while ((queued = movementSync.pollBeforeMovementPacket()) != null) packets.add(queued);
         assertEquals(2, packets.size());
         assertTrue(packets.get(0) instanceof ServerboundUseItemOnPacket);
         assertTrue(packets.get(1) instanceof ServerboundSwingPacket);
-        assertTrue(movement.isFinished());
+        assertFalse(movement.isFinished(), "wait for authoritative block update and landing");
     }
 
     private static void setBotField(String name, Object value) throws Exception {

@@ -38,6 +38,68 @@ final class ElytraFlyMovementTest extends ElytraCommandTestSupport {
         messages.stop();
     }
 
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 2})
+    void waterCompletesNormalSafeAndIndependentLandingWithoutClearingFlag(int mode) throws Exception {
+        movementSync.getMovementController().pause();
+        var water = java.util.stream.IntStream.range(0, xin.bbtt.Block.BlockStateParser.getBlockStateRegistrySize())
+                .mapToObj(xin.bbtt.Block.BlockStateParser.Instance::parseStateId)
+                .filter(block -> block.blockName().equals("water") && "0".equals(block.getProperty("level")))
+                .findFirst().orElseThrow();
+        var world = new xin.bbtt.world.World() {
+            @Override public boolean chunkLoaded(int x, int z) { return true; }
+            @Override public xin.bbtt.Block.BlockState getBlockStateAt(Vector3d p) { return water; }
+        };
+        var field = MovementSync.class.getDeclaredField("world");
+        field.setAccessible(true);
+        field.set(movementSync, world);
+        movementSync.onGround.set(false);
+        movementSync.setGliding(true);
+        ElytraFlyMovement flight;
+        if (mode == 2) {
+            movementSync.cancelNavigation();
+            flight = (ElytraFlyMovement) movementSync.getMovementController().getMovements().get(0);
+        } else {
+            flight = new ElytraFlyMovement(new Vector3d(movementSync.position.get()));
+            if (mode == 1) flight.forSafeLanding();
+        }
+        flight.init();
+        flight.onTick();
+        assertTrue(flight.isFinished());
+        assertTrue(movementSync.isGliding());
+        assertFalse(movementSync.onGround.get());
+    }
+
+    @Test
+    void cancellationOwnsIndependentLandingAndRepeatedStopsPreserveIt() {
+        movementSync.getMovementController().pause();
+        movementSync.setGliding(true);
+        movementSync.setActiveGoal(new org.joml.Vector3i(100, 0, 0));
+        movementSync.cancelNavigation();
+        var landing = assertInstanceOf(ElytraFlyMovement.class,
+                movementSync.getMovementController().getMovements().get(0));
+        assertNull(movementSync.getActiveGoal());
+        assertNull(movementSync.getGotoRecovery().getTask());
+        movementSync.cancelNavigation();
+        movementSync.cancelNavigation();
+        assertSame(landing, movementSync.getMovementController().getMovements().get(0));
+        assertFalse(landing.isFinished());
+        movementSync.beginGotoNavigationRequest(new org.joml.Vector3i(200, 0, 0), false, false);
+        assertTrue(movementSync.getMovementController().getMovements().isEmpty());
+    }
+
+    @Test
+    void groundAndDeathCancellationDoNotLand() {
+        movementSync.getMovementController().pause();
+        movementSync.cancelNavigation();
+        assertTrue(movementSync.getMovementController().getMovements().isEmpty());
+        movementSync.setGliding(true);
+        new xin.bbtt.listeners.MovementParametersPacketListener().packetReceived(null,
+                new org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.entity.player.ClientboundSetHealthPacket(0, 20, 5));
+        assertTrue(movementSync.getMovementController().getMovements().isEmpty());
+        assertFalse(movementSync.isGliding());
+    }
+
     @Test
     void forcedLandingFinishesAsFailureWithoutPredictionFailure() throws Exception {
         xin.bbtt.world.World world = new xin.bbtt.world.World() {
@@ -95,6 +157,101 @@ final class ElytraFlyMovementTest extends ElytraCommandTestSupport {
         stopped.onTick();
         assertEquals(71f, movementSync.yaw.get());
         assertTrue(movementSync.isGliding());
+    }
+
+    @Test
+    void takeoffWaitsForAirborneApexAndQueuesOnlyOneDeployment() {
+        ElytraFlyMovement flight = new ElytraFlyMovement(new Vector3d(400, 0, 0));
+        Vector3d velocity = new Vector3d(0.12, 0, -0.2);
+        movementSync.velocity.set(new Vector3d(velocity));
+        flight.init();
+        assertTrue(movementSync.snapshotInput().jump());
+        assertFalse(movementSync.snapshotInput().jump());
+        assertEquals(velocity, movementSync.velocity.get());
+        flight.onTick();
+        assertNull(movementSync.pollBeforeMovementPacket());
+        movementSync.onGround.set(false);
+        movementSync.velocity.set(new Vector3d(0.12, 0.1, -0.2));
+        flight.onTick();
+        assertNull(movementSync.pollBeforeMovementPacket());
+        movementSync.velocity.set(new Vector3d(0.12, 0, -0.2));
+        movementSync.yaw.set(71f);
+        movementSync.pitch.set(-12f);
+        flight.onTick();
+        assertTrue(movementSync.isGliding());
+        assertFalse(flight.isFinished());
+        assertEquals(71f, movementSync.yaw.get());
+        assertEquals(-12f, movementSync.pitch.get());
+        var packet = assertInstanceOf(
+                org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundPlayerCommandPacket.class,
+                movementSync.pollBeforeMovementPacket());
+        assertEquals(org.geysermc.mcprotocollib.protocol.data.game.entity.player.PlayerState.START_ELYTRA_FLYING,
+                packet.getState());
+        assertEquals(42, packet.getEntityId());
+        assertNull(movementSync.pollBeforeMovementPacket());
+        assertTrue(packets.isEmpty());
+        flight.onStop();
+        flight.onTick();
+        assertNull(movementSync.pollBeforeMovementPacket());
+        assertTrue(movementSync.isGliding());
+    }
+
+    @Test
+    void rejectedFlightTakeoffRetriesUntilEquipmentReturnsUnlikeStandaloneTakeoff() {
+        movementSync.onGround.set(false);
+        movementSync.velocity.set(new Vector3d(0, -0.2, 0));
+        inventory[6] = null;
+        ElytraFlyMovement flight = new ElytraFlyMovement(new Vector3d(400, 0, 0));
+        flight.init();
+        assertFalse(movementSync.snapshotInput().jump());
+        flight.onTick();
+        flight.onTick();
+        assertFalse(flight.isFinished());
+        assertFalse(movementSync.isGliding());
+        assertNull(movementSync.pollBeforeMovementPacket());
+        inventory[6] = item("elytra", 1);
+        flight.onTick();
+        assertFalse(flight.isFinished());
+        assertTrue(movementSync.isGliding());
+        assertNotNull(movementSync.pollBeforeMovementPacket());
+        assertNull(movementSync.pollBeforeMovementPacket());
+    }
+
+    @Test
+    void takeoffTimeoutAllowsSixtyTicksButRejectsDeploymentOnSixtyFirst() {
+        ElytraFlyMovement flight = new ElytraFlyMovement(new Vector3d(400, 0, 0));
+        flight.init();
+        movementSync.snapshotInput();
+        for (int tick = 0; tick < 60; tick++) {
+            flight.onTick();
+            assertFalse(flight.isFinished());
+            assertNull(movementSync.pollBeforeMovementPacket());
+            assertFalse(movementSync.snapshotInput().jump());
+        }
+        movementSync.onGround.set(false);
+        movementSync.velocity.set(new Vector3d(0, -0.2, 0));
+        flight.onTick();
+        assertTrue(flight.isFinished());
+        assertFalse(movementSync.isGliding());
+        assertNull(movementSync.pollBeforeMovementPacket());
+    }
+
+    @Test
+    void staleInitializationAndCancellationDuringAscentNeverDeploy() {
+        for (boolean staleBeforeInit : new boolean[]{false, true}) {
+            ElytraFlyMovement flight = new ElytraFlyMovement(new Vector3d(400, 0, 0));
+            if (staleBeforeInit) movementSync.beginNavigationRequest();
+            flight.init();
+            assertEquals(!staleBeforeInit, movementSync.snapshotInput().jump());
+            if (!staleBeforeInit) flight.onStop();
+            movementSync.onGround.set(false);
+            movementSync.velocity.set(new Vector3d(0, -0.2, 0));
+            flight.onTick();
+            assertTrue(flight.isFinished());
+            assertFalse(movementSync.isGliding());
+            assertNull(movementSync.pollBeforeMovementPacket());
+            movementSync.onGround.set(true);
+        }
     }
 
     @Test

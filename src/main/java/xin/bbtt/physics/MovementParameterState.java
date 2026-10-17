@@ -17,6 +17,14 @@ public final class MovementParameterState {
     private final Map<AttributeType.Builtin, AttributeValue> attributes = new EnumMap<>(AttributeType.Builtin.class);
     private final Map<Effect, Integer> effects = new EnumMap<>(Effect.class);
     private int food = 20;
+    private volatile float health = 20;
+
+    public float health() { return health; }
+
+    public void updateHealth(float health) { this.health = health; }
+
+    /** Immutable authoritative effects for damage prediction; absent effects grant no reduction. */
+    public synchronized Map<Effect, Integer> effectsSnapshot() { return Map.copyOf(effects); }
     private boolean canFly;
     private volatile MovementParameters snapshot = MovementParameters.DEFAULT;
 
@@ -28,6 +36,7 @@ public final class MovementParameterState {
         attributes.clear();
         effects.clear();
         food = 20;
+        health = 20;
         canFly = false;
         publish();
     }
@@ -39,6 +48,7 @@ public final class MovementParameterState {
         }
         effects.clear();
         food = 20;
+        health = 20;
         publish();
     }
 
@@ -86,7 +96,9 @@ public final class MovementParameterState {
                 value(AttributeType.Builtin.SNEAKING_SPEED, false),
                 effects.containsKey(Effect.SLOW_FALLING),
                 effects.getOrDefault(Effect.LEVITATION, -1),
-                (food > 6 || canFly) && !effects.containsKey(Effect.BLINDNESS));
+                (food > 6 || canFly) && !effects.containsKey(Effect.BLINDNESS),
+                value(AttributeType.Builtin.SAFE_FALL_DISTANCE, false),
+                value(AttributeType.Builtin.FALL_DAMAGE_MULTIPLIER, false));
     }
 
     private double value(AttributeType.Builtin type, boolean sprinting) {

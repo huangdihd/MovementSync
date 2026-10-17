@@ -22,6 +22,39 @@ final class WalkingPhysicsTest {
     };
 
     @Test
+    void clearedGlidingFlagRetainsCrawlingInputUntilPoseUpdate() {
+        PlayerInput forward = input(true, false, false, false, true);
+        WalkingPhysics physics = new WalkingPhysics(forward, 0);
+        PhysicsState landing = new PhysicsState(new Vector3d(), new Vector3d(), true, 0, PlayerPose.GLIDING);
+        PhysicsResult slow = physics.step(EMPTY_WORLD, landing, PLAYER_HALF_WIDTH, 0.6);
+        assertEquals(GROUND_ACCELERATION * MovementParameters.DEFAULT.sneakingSpeed(), slow.position().z, 1.0e-12);
+        PlayerPose next = landing.pose().afterTravel(EMPTY_WORLD, slow.position(), false, false, false);
+        assertEquals(PlayerPose.STANDING, next);
+        PhysicsResult normal = physics.step(EMPTY_WORLD,
+                new PhysicsState(new Vector3d(), new Vector3d(), true, 0, next), PLAYER_HALF_WIDTH, 1.8);
+        assertEquals(GROUND_ACCELERATION * (1 + (double) 0.3f), normal.position().z, 1.0e-12);
+        assertFalse(PlayerPose.GLIDING.shouldSlowDown(true, false, false));
+        assertFalse(PlayerPose.GLIDING.shouldSlowDown(false, true, false));
+        assertTrue(PlayerPose.CROUCHING.shouldSlowDown(false, false, true));
+    }
+
+    @Test
+    void sneakInputChangesPoseAfterTravelNotBeforeAcceleration() {
+        World floor = supportWorld(-2, 2, -2, 2, 0);
+        PlayerInput keys = input(true, false, false, true, false);
+        PhysicsResult first = new WalkingPhysics(keys, -90).step(floor,
+                state(new Vector3d(), true), PLAYER_HALF_WIDTH, 1.8);
+        assertEquals(GROUND_ACCELERATION, first.position().x, 1.0e-12);
+        assertEquals(0, first.position().z);
+        assertEquals(PlayerPose.CROUCHING, first.pose());
+        PhysicsResult second = new WalkingPhysics(keys, -90).step(floor,
+                new PhysicsState(first.position(), new Vector3d(first.velocity().x, 0, 0), true, 0, first.pose()),
+                PLAYER_HALF_WIDTH, 1.5);
+        assertEquals(first.velocity().x + GROUND_ACCELERATION * 0.3,
+                second.position().x - first.position().x, 1.0e-12);
+    }
+
+    @Test
     void forwardStartsAtVanillaAccelerationAndConvergesToWalkingSpeed() {
         WalkingPhysics physics = new WalkingPhysics(input(true, false, false, false, false), 0);
         PhysicsState state = state(new Vector3d(), true);
@@ -148,19 +181,21 @@ final class WalkingPhysicsTest {
             for (boolean sneak : new boolean[]{false, true}) {
                 for (boolean sprint : new boolean[]{false, true}) {
                     double acceleration = onGround
-                        ? GROUND_ACCELERATION / 0.98 * (sprint ? 1 + (double) 0.3F : 1)
-                        : (sprint ? 0.026 : 0.02);
+                        ? GROUND_ACCELERATION / 0.98 * (sprint && !sneak ? 1 + (double) 0.3F : 1)
+                        : (sprint && !sneak ? 0.026 : 0.02);
                     double expectedAxis = acceleration * (sneak ? 0.294 : 1 / Math.sqrt(2));
                     double drag = onGround ? GROUND_DRAG : 0.91;
                     PhysicsResult result = new WalkingPhysics(input(true, true, false, sneak, sprint), 0)
-                        .step(floor, state(new Vector3d(), onGround), PLAYER_HALF_WIDTH, 1.8);
+                        .step(floor, new PhysicsState(new Vector3d(), new Vector3d(), onGround, 0,
+                                sneak ? PlayerPose.CROUCHING : PlayerPose.STANDING), PLAYER_HALF_WIDTH, 1.8);
                     assertEquals(expectedAxis, result.position().x, 1.0e-12);
                     assertEquals(expectedAxis, result.position().z, 1.0e-12);
                     assertEquals(expectedAxis * drag, result.velocity().x, 1.0e-12);
                     assertEquals(expectedAxis * drag, result.velocity().z, 1.0e-12);
 
                     PhysicsResult rotated = new WalkingPhysics(input(true, true, false, sneak, sprint), 45)
-                        .step(floor, state(new Vector3d(), onGround), PLAYER_HALF_WIDTH, 1.8);
+                        .step(floor, new PhysicsState(new Vector3d(), new Vector3d(), onGround, 0,
+                                sneak ? PlayerPose.CROUCHING : PlayerPose.STANDING), PLAYER_HALF_WIDTH, 1.8);
                     assertEquals(0, rotated.position().x, 1.0e-12);
                     assertEquals(expectedAxis * Math.sqrt(2), rotated.position().z, 1.0e-12);
                 }
@@ -172,7 +207,9 @@ final class WalkingPhysicsTest {
     void sneakAndSprintScaleGroundAcceleration() {
         PhysicsState state = state(new Vector3d(), true);
         PhysicsResult sneak = new WalkingPhysics(input(true, false, false, true, false), 0)
-            .step(supportWorld(-1, 1, -1, 1, 0), state, PLAYER_HALF_WIDTH, 1.8);
+            .step(supportWorld(-1, 1, -1, 1, 0),
+                    new PhysicsState(state.position(), state.velocity(), true, 0, PlayerPose.CROUCHING),
+                    PLAYER_HALF_WIDTH, 1.8);
         PhysicsResult sprint = new WalkingPhysics(input(true, false, false, false, true), 0)
             .step(EMPTY_WORLD, state, PLAYER_HALF_WIDTH, 1.8);
         assertEquals(GROUND_ACCELERATION * 0.3, sneak.position().z, 1.0e-12);

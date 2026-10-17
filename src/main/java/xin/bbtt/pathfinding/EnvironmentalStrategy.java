@@ -33,7 +33,9 @@ public final class EnvironmentalStrategy implements MovementStrategy {
                     if (deltaX == 0 && deltaZ == 0 && !climb) continue;
                     if (!EnvironmentalTraversal.canTraverse(world, source, target)) continue;
                     double distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ);
-                    edges.add(new Edge(target, distance * (climb ? 3 : 2),
+                    // Surface swimming is well under half of walking speed; weight it so
+                    // routes over land are preferred whenever a reasonable detour exists.
+                    edges.add(new Edge(target, distance * 3,
                             climb ? BuiltinMovementType.CLIMB : BuiltinMovementType.SWIM));
                 }
             }

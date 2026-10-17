@@ -72,8 +72,22 @@ public class MovementSync implements Plugin {
 
     /** Consumes only the one-shot request; held jump remains held. */
     public PlayerInput snapshotInput() {
+        if (inventoryManager.isInventorySwapOpen()) return PlayerInput.NONE;
         PlayerInput keys = input.get();
         return jumpRequested.getAndSet(false) ? keys.withJump(true) : keys;
+    }
+
+    /** Last completed physics tick, containing only the position/rotation reported to the server. */
+    public record PlacementFrame(long tick, double x, double y, double z,
+                                 float yaw, float pitch, double eyeHeight) {}
+    private volatile PlacementFrame placementFrame;
+
+    public PlacementFrame getPlacementFrame() { return placementFrame; }
+
+    public void publishPlacementFrame(double x, double y, double z, float yaw, float pitch, double eyeHeight) {
+        PlacementFrame previous = placementFrame;
+        placementFrame = new PlacementFrame(previous == null ? 1 : previous.tick() + 1,
+                x, y, z, yaw, pitch, eyeHeight);
     }
 
     public void queueBeforeMovement(Packet packet) {
@@ -104,8 +118,89 @@ public class MovementSync implements Plugin {
     @Getter @Setter
     private int vehicleId = -1;
     
-    @Setter @Getter
+    @Getter
     private org.joml.Vector3i activeGoal = null;
+
+    @Getter
+    private final xin.bbtt.recovery.StaticGotoRecovery gotoRecovery =
+            new xin.bbtt.recovery.StaticGotoRecovery();
+    @Getter
+    private final xin.bbtt.movements.LandingMemory landingMemory = new xin.bbtt.movements.LandingMemory();
+    @Getter
+    private volatile String recoveryDimension;
+
+    public void setRecoveryDimension(String dimension) {
+        landingMemory.dimension(dimension);
+        recoveryDimension = dimension;
+    }
+
+    public void setActiveGoal(org.joml.Vector3i goal) {
+        synchronized (navigationLock) {
+            activeGoal = goal;
+            if (goal == null) clearRecoverableGoto("arrived");
+        }
+    }
+
+    private void clearRecoverableGoto(String reason) {
+        if (gotoRecovery.getTask() != null) getLogger().info("Static goto cleared: {}", reason);
+        gotoRecovery.clear();
+    }
+
+    /** Session reset: invalidate paths, but retain the static goto intent. */
+    public void suspendNavigationForRecovery() {
+        synchronized (navigationLock) {
+            gotoRecovery.suspend();
+            landingMemory.clear();
+            inventoryManager.resetSession();
+            reconnectAirRecovery.reset();
+            if (gotoRecovery.isPending()) getLogger().info("Static goto suspended for reconnect");
+            navigationGeneration.incrementAndGet();
+            movementController.cancelAll();
+            activeGoal = null;
+            followTargetId = -1;
+            clearInput();
+        }
+    }
+
+    /** Called after the authoritative first position has been applied. */
+    public void onRecoveryTeleport() {
+        if (gotoRecovery.onTeleport()) reconnectAirRecovery.positioned();
+        else if (!gotoRecovery.isPending()) cancelNavigation();
+    }
+
+    @Getter
+    private final xin.bbtt.physics.ReconnectAirRecovery reconnectAirRecovery =
+            new xin.bbtt.physics.ReconnectAirRecovery();
+
+    /** Tick integration supplies whether the bot is in Game, not merely connected. */
+    public void tickNavigationRecovery(boolean game) {
+        gotoRecovery.tick();
+        if (gotoRecovery.expire()) getLogger().info("Static goto expired after 30 minutes");
+        // The physics thread calls this every tick: wait for the navigation lock only to resume.
+        if (!gotoRecovery.isPending()) return;
+        synchronized (navigationLock) {
+            var task = gotoRecovery.claim(game, recoveryDimension);
+            if (task == null) return;
+            getLogger().info("Resuming static goto {}, {}, {} (walk={})", task.x(), task.y(), task.z(), task.walk());
+            long generation = getNavigationGeneration();
+            Runnable resume = () -> {
+                if (isNavigationRequestCurrent(generation)) new xin.bbtt.commands.GotoCommandExecutor().resume(task);
+            };
+            if (movementService == null) resume.run();
+            else movementService.execute(resume);
+        }
+    }
+
+    public long beginGotoNavigationRequest(org.joml.Vector3i goal, boolean walk, boolean recovering) {
+        synchronized (navigationLock) {
+            if (!recovering) {
+                clearRecoverableGoto("replaced by goto");
+                gotoRecovery.remember(goal, walk, recoveryDimension);
+                getLogger().info("Static goto remembered: {} (walk={})", goal, walk);
+            }
+            return claimNavigationRequest(goal, -1, -1, false).generation();
+        }
+    }
     
     @Getter @Setter
     private int followTargetId = -1;
@@ -159,6 +254,8 @@ public class MovementSync implements Plugin {
     @Override
     public void onEnable() {
         getLogger().info(LangManager.get("movementsync.plugin.enabling"));
+        suspendNavigationForRecovery();
+        recoveryDimension = null;
         movementParameterState.reset();
         position.set(new Vector3d(0, 0, 0));
         velocity.set(new Vector3d(0, 0, 0));
@@ -188,8 +285,9 @@ public class MovementSync implements Plugin {
     public void onDisable() {
         getLogger().info(LangManager.get("movementsync.plugin.disabling"));
         movementParameterState.reset();
-        physicalSimulationService.shutdown();
-        movementService.shutdown();
+        suspendNavigationForRecovery();
+        if (physicalSimulationService != null) physicalSimulationService.shutdown();
+        if (movementService != null) movementService.shutdown();
     }
 
     public boolean isGliding() {
@@ -204,7 +302,7 @@ public class MovementSync implements Plugin {
     /** Returns whether a start request was sent, not whether the server accepted it. */
     public synchronized boolean startGliding() {
         if (isGliding() || onGround.get() || isRiding() || entityId < 0) return false;
-        if (!hasEquippedElytra()) return false;
+        if (!inventoryManager.canStartFlight(0)) return false;
         if (Bot.INSTANCE == null || Bot.INSTANCE.getSession() == null || !Bot.INSTANCE.getSession().isConnected()) return false;
         jump();
         setGliding(true);
@@ -391,15 +489,28 @@ public class MovementSync implements Plugin {
     }
 
     public void startStaticNavigation(org.joml.Vector3i goal, boolean allowDigging) {
+        cancelNavigation(false);
         planAndPublish(claimNavigationRequest(goal, -1, -1, allowDigging));
     }
 
     public long beginStaticNavigationRequest(org.joml.Vector3i goal) {
-        return claimNavigationRequest(goal, -1, -1, false).generation();
+        synchronized (navigationLock) {
+            clearRecoverableGoto("replaced by static navigation");
+            return claimNavigationRequest(goal, -1, -1, false).generation();
+        }
     }
 
     public void startFollowingNavigation(int entityId, double keepDistance, boolean allowDigging) {
-        planAndPublish(claimNavigationRequest(null, entityId, keepDistance, allowDigging));
+        synchronized (navigationLock) {
+            cancelNavigation(false);
+        }
+        NavigationRequest request = claimNavigationRequest(null, entityId, keepDistance, allowDigging);
+        synchronized (navigationLock) {
+            if (isNavigationRequestCurrent(request.generation())) {
+                movementController.addMovement(new xin.bbtt.movements.FollowMovement(
+                        entityId, keepDistance, allowDigging, request.generation()));
+            }
+        }
     }
 
     private NavigationRequest claimNavigationRequest(
@@ -440,7 +551,7 @@ public class MovementSync implements Plugin {
                 targetNodePos.x, targetNodePos.y, targetNodePos.z);
         if (start.equals(goalNode) && request.followTargetId() == -1) {
             synchronized (navigationLock) {
-                if (isNavigationRequestCurrent(request.generation())) activeGoal = null;
+                if (isNavigationRequestCurrent(request.generation())) setActiveGoal(null);
             }
             return;
         }
@@ -470,6 +581,7 @@ public class MovementSync implements Plugin {
     /** Invalidates and stops every older navigation request before a new one starts. */
     public long beginNavigationRequest() {
         synchronized (navigationLock) {
+            clearRecoverableGoto("replaced by navigation");
             long generation = navigationGeneration.incrementAndGet();
             movementController.cancelAll();
             return generation;
@@ -484,12 +596,37 @@ public class MovementSync implements Plugin {
         }
     }
 
-    public void cancelNavigation() {
+    private xin.bbtt.movements.ElytraFlyMovement safetyLanding;
+
+    public boolean runIfSafetyMovementCurrent(xin.bbtt.movements.ElytraFlyMovement movement, Runnable action) {
         synchronized (navigationLock) {
+            if (safetyLanding != movement || movement.isFinished()) return false;
+            action.run();
+            return true;
+        }
+    }
+
+    public void cancelNavigation() {
+        cancelNavigation(true);
+    }
+
+    private void cancelNavigation(boolean land) {
+        synchronized (navigationLock) {
+            if (land && isGliding() && safetyLanding != null && !safetyLanding.isFinished()) {
+                getLogger().info("正在安全落地,落地后停止");
+                return;
+            }
+            clearRecoverableGoto("cancelled or died");
             navigationGeneration.incrementAndGet();
             movementController.cancelAll();
             activeGoal = null;
             followTargetId = -1;
+            safetyLanding = null;
+            if (land && isGliding()) {
+                safetyLanding = new xin.bbtt.movements.ElytraFlyMovement(position.get()).forIndependentLanding();
+                getLogger().info("Navigation cancelled: safe landing takeover; 正在安全落地,落地后停止");
+                movementController.addMovement(safetyLanding);
+            }
         }
     }
 

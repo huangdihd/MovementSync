@@ -21,17 +21,27 @@ public final class GlidingPhysics implements PhysicsStepper {
     private final boolean firework;
     private final double gravity;
     private final boolean slowFalling;
+    private final PlayerInput input;
+    private final MovementParameters parameters;
 
     public GlidingPhysics(float yaw, float pitch, boolean firework) {
         this(yaw, pitch, firework, 0.08, false);
     }
 
     public GlidingPhysics(float yaw, float pitch, boolean firework, double gravity, boolean slowFalling) {
+        this(yaw, pitch, firework, PlayerInput.NONE, new MovementParameters(
+                MovementParameters.DEFAULT.movementSpeed(), MovementParameters.DEFAULT.sprintingMovementSpeed(),
+                MovementParameters.DEFAULT.jumpStrength(), 0, gravity, 0.6, 0.3, slowFalling, -1, true));
+    }
+
+    public GlidingPhysics(float yaw, float pitch, boolean firework, PlayerInput input, MovementParameters parameters) {
+        this.input = input;
+        this.parameters = parameters;
         this.yaw = yaw;
         this.pitch = pitch;
         this.firework = firework;
-        this.gravity = gravity;
-        this.slowFalling = slowFalling;
+        this.gravity = parameters.gravity();
+        this.slowFalling = parameters.slowFalling();
     }
 
     private static float sin(float angle) {
@@ -44,6 +54,24 @@ public final class GlidingPhysics implements PhysicsStepper {
 
     @Override
     public PhysicsResult step(World world, PhysicsState state, double halfWidth, double height) {
+        // LivingEntity.travel gives water/lava priority over the persistent gliding flag.
+        var environment = EnvironmentalPhysics.sample(world, state.position(), halfWidth, height);
+        if (environment.waterHeight() > 0 || environment.lavaHeight() > 0) {
+            PhysicsResult fluid = new WalkingPhysics(input, yaw, true, parameters)
+                    .step(world, state, halfWidth, height);
+            Vector3d motion = fluid.velocity();
+            if (firework) {
+                float yawRadians = -yaw * DEGREES_TO_RADIANS;
+                float pitchRadians = pitch * DEGREES_TO_RADIANS;
+                Vector3d look = new Vector3d(sin(yawRadians) * cos(pitchRadians),
+                        -sin(pitchRadians), cos(yawRadians) * cos(pitchRadians));
+                motion.add(look.x * 0.1 + (look.x * 1.5 - motion.x) * 0.5,
+                        look.y * 0.1 + (look.y * 1.5 - motion.y) * 0.5,
+                        look.z * 0.1 + (look.z * 1.5 - motion.z) * 0.5);
+            }
+            return new PhysicsResult(fluid.position(), motion, fluid.collidedX(), fluid.collidedZ(),
+                    fluid.onGround(), fluid.fallDistance(), state.pose().afterTravel(world, fluid.position(), true, false, input.sneak()));
+        }
         Vector3d position = state.position();
         Vector3d velocity = state.velocity();
         // LivingEntity.tickMovement snaps player motion before travel.
@@ -85,31 +113,12 @@ public final class GlidingPhysics implements PhysicsStepper {
         double fallDistance = slowFalling ? 0 : state.fallDistance();
         // Gliding limits accumulated fall damage while descending slowly.
         if (state.velocity().y > -0.5 && fallDistance > 1) fallDistance = 1;
-        boolean collidedX = false;
-        boolean collidedZ = false;
-        if (velocity.x != 0) {
-            Vector3d candidate = new Vector3d(position).add(velocity.x, 0, 0);
-            if (collides(world, candidate, halfWidth, height)) {
-                velocity.x = 0;
-                collidedX = true;
-            } else {
-                position.x = candidate.x;
-            }
-        }
-        if (velocity.z != 0) {
-            Vector3d candidate = new Vector3d(position).add(0, 0, velocity.z);
-            if (collides(world, candidate, halfWidth, height)) {
-                velocity.z = 0;
-                collidedZ = true;
-            } else {
-                position.z = candidate.z;
-            }
-        }
+        // Entity.move clips Y first, then the larger horizontal component. In
+        // particular, falling below a platform must happen before testing its side.
         boolean onGround = false;
         if (velocity.y < 0) {
             double desiredY = position.y + velocity.y;
             double resolvedY = VerticalCollisionResolver.resolveDownwardY(world, position, halfWidth, velocity.y, fallDistance);
-            // Include exact contact, not just motion clipped short of the destination.
             onGround = resolvedY > desiredY + 1.0e-9
                     || world.findHighestCollisionTop(position.x - halfWidth, desiredY - 1.0e-9,
                             position.z - halfWidth, position.x + halfWidth, desiredY + 1.0e-9,
@@ -117,12 +126,17 @@ public final class GlidingPhysics implements PhysicsStepper {
             position.y = resolvedY;
             if (onGround) velocity.y = 0;
         } else if (velocity.y > 0) {
-            Vector3d candidate = new Vector3d(position).add(0, velocity.y, 0);
-            if (collides(world, candidate, halfWidth, height)) {
-                velocity.y = 0;
-            } else {
-                position.y = candidate.y;
-            }
+            moveAxis(world, position, velocity, halfWidth, height, 1);
+        }
+        boolean zFirst = Math.abs(velocity.x) < Math.abs(velocity.z);
+        boolean collidedX;
+        boolean collidedZ;
+        if (zFirst) {
+            collidedZ = moveAxis(world, position, velocity, halfWidth, height, 2);
+            collidedX = moveAxis(world, position, velocity, halfWidth, height, 0);
+        } else {
+            collidedX = moveAxis(world, position, velocity, halfWidth, height, 0);
+            collidedZ = moveAxis(world, position, velocity, halfWidth, height, 2);
         }
 
         // FireworkRocketEntity ticks after player travel. Contact does not clear
@@ -136,8 +150,15 @@ public final class GlidingPhysics implements PhysicsStepper {
         return new PhysicsResult(position, velocity, collidedX, collidedZ, onGround, fallDistance);
     }
 
-    private static boolean collides(World world, Vector3d position, double halfWidth, double height) {
-        return world.isBoxColliding(position.x - halfWidth, position.y, position.z - halfWidth,
-                position.x + halfWidth, position.y + height, position.z + halfWidth);
+    private static boolean moveAxis(World world, Vector3d position, Vector3d velocity,
+            double halfWidth, double height, int axis) {
+        double requested = velocity.get(axis);
+        // Sweep the entire displacement, not just its endpoint: a fast glide
+        // can cross a thin collision shape and end in clear air.
+        double clipped = WalkingPhysics.clipMovement(world, position, halfWidth, height, axis, requested);
+        position.setComponent(axis, position.get(axis) + clipped);
+        boolean collided = clipped != requested;
+        if (collided) velocity.setComponent(axis, 0);
+        return collided;
     }
 }

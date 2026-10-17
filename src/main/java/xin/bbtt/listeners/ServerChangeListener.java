@@ -9,7 +9,8 @@ import xin.bbtt.mcbot.events.ServerChangeEvent;
 public class ServerChangeListener implements Listener {
     @EventHandler
     public void onServerChange(ServerChangeEvent event) {
-        MovementSync.INSTANCE.cancelNavigation();
+        MovementSync.INSTANCE.suspendNavigationForRecovery();
+        MovementSync.INSTANCE.setRecoveryDimension(null);
         MovementSync.INSTANCE.clearFlightState();
         MovementSync.INSTANCE.getMovementParameterState().reset();
         MovementSync.INSTANCE.onGround.set(true);

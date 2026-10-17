@@ -17,12 +17,21 @@ public class InventoryPacketListener extends SessionAdapter {
     public void packetReceived(Session session, Packet packet) {
         if (packet instanceof ClientboundContainerSetContentPacket p) {
             MovementSync.INSTANCE.getInventoryManager().setContainerItems(p.getContainerId(), p.getItems());
-            MovementSync.INSTANCE.getInventoryManager().setCurrentStateId(p.getStateId());
+            if (p.getContainerId() == 0) MovementSync.INSTANCE.getInventoryManager().setCarriedItem(p.getCarriedItem());
+            if (p.getContainerId() == 0) MovementSync.INSTANCE.getInventoryManager().setCurrentStateId(p.getStateId());
+        }
+
+        if (packet instanceof org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.inventory.ClientboundSetCursorItemPacket p) {
+            MovementSync.INSTANCE.getInventoryManager().setCarriedItem(p.getContents());
         }
 
         if (packet instanceof ClientboundContainerSetSlotPacket p) {
             MovementSync.INSTANCE.getInventoryManager().setSlot(p.getContainerId(), p.getSlot(), p.getItem());
-            MovementSync.INSTANCE.getInventoryManager().setCurrentStateId(p.getStateId());
+            if (p.getContainerId() == 0) MovementSync.INSTANCE.getInventoryManager().setCurrentStateId(p.getStateId());
+        }
+
+        if (packet instanceof org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.inventory.ClientboundSetPlayerInventoryPacket p) {
+            MovementSync.INSTANCE.getInventoryManager().setSlot(-2, p.getSlot(), p.getContents());
         }
 
         if (packet instanceof ClientboundOpenScreenPacket p) {

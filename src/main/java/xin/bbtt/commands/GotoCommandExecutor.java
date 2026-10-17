@@ -17,6 +17,16 @@ import java.util.List;
 public class GotoCommandExecutor extends TabHighlightExecutor {
     @Override
     public void onCommand(Command command, String label, String[] args) {
+        execute(command, args, false);
+    }
+
+    public void resume(xin.bbtt.recovery.StaticGotoRecovery.Task task) {
+        execute(null, task.walk()
+                ? new String[] {"" + task.x(), "" + task.y(), "" + task.z(), "walk"}
+                : new String[] {"" + task.x(), "" + task.y(), "" + task.z()}, true);
+    }
+
+    private void execute(Command command, String[] args, boolean recovering) {
         if (args.length < 3 || args.length > 4 || args.length == 4 && !"walk".equalsIgnoreCase(args[3])) {
             MovementSync.getLogger().info(LangManager.get("movementsync.command.common.usage", command.getUsage()));
             return;
@@ -50,16 +60,22 @@ public class GotoCommandExecutor extends TabHighlightExecutor {
             MovementSync.getLogger().info(LangManager.get("movementsync.command.goto.searching", tx, ty, tz));
 
             org.joml.Vector3i requestedGoal = new org.joml.Vector3i(tx, ty, tz);
-            requestGeneration = MovementSync.INSTANCE.beginStaticNavigationRequest(requestedGoal);
+            requestGeneration = MovementSync.INSTANCE.beginGotoNavigationRequest(
+                    requestedGoal, args.length == 4, recovering);
 
             boolean fly = xin.bbtt.movements.TravelMovement.shouldFly(
                     Math.hypot(currentPos.x - (tx + 0.5), currentPos.z - (tz + 0.5)),
                     MovementSync.INSTANCE.hasEquippedElytra(),
                     MovementSync.INSTANCE.countHotbarFireworks() > 0,
                     args.length == 4, MovementSync.INSTANCE.isGliding());
-            if (fly || !MovementSync.INSTANCE.onGround.get()) {
+            var flightBuilder = new xin.bbtt.flight.FlightContextBuilder().addStandard();
+            boolean pluginFlight = args.length != 4 && flightBuilder.build().modes().stream()
+                    .anyMatch(mode -> !(mode instanceof xin.bbtt.flight.VanillaGlideMode));
+            // Equipped walkers need a travel parent to receive an unexpected-fall result.
+            // The flight decision is unchanged: short/walk-only routes still pass fly=false.
+            if (fly || pluginFlight || !MovementSync.INSTANCE.onGround.get() || MovementSync.INSTANCE.hasEquippedElytra()) {
                 movementPublished = MovementSync.INSTANCE.addMovementIfNavigationRequestCurrent(
-                        requestGeneration, new xin.bbtt.movements.TravelMovement(requestedGoal, requestGeneration, fly));
+                        requestGeneration, new xin.bbtt.movements.TravelMovement(requestedGoal, requestGeneration, fly || pluginFlight, flightBuilder));
                 return;
             }
 
@@ -67,6 +83,10 @@ public class GotoCommandExecutor extends TabHighlightExecutor {
             List<xin.bbtt.pathfinding.PathStep> path = pathfinder.findPath(5000);
 
             if (path.size() <= 1) {
+                if (start.equals(goal)) {
+                    MovementSync.INSTANCE.runIfNavigationRequestCurrent(requestGeneration,
+                            () -> MovementSync.INSTANCE.setActiveGoal(null));
+                }
                 MovementSync.getLogger().info(LangManager.get("movementsync.command.goto.no_path", tx, ty, tz));
                 return;
             }

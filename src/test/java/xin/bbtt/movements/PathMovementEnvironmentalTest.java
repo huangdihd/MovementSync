@@ -127,7 +127,7 @@ final class PathMovementEnvironmentalTest {
                 xin.bbtt.pathfinding.StandablePositionResolver.nodeY(start.y), (int) Math.floor(start.z));
         var context = new xin.bbtt.pathfinding.PathfindingContextBuilder(world)
                 .addDefaultStrategies().build();
-        List<PathStep> path = new xin.bbtt.pathfinding.DStarLite(source, goal, context).findPath(200);
+        List<PathStep> path = new xin.bbtt.pathfinding.DStarLite(source, goal, context).findPath(2000);
         assertEquals(goal, path.get(path.size() - 1).getNode());
         assertTrue(path.stream().anyMatch(step -> step.getType() == type));
         xin.bbtt.movement.Movement movement = travel

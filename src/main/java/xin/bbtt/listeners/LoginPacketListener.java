@@ -28,10 +28,17 @@ public class LoginPacketListener extends SessionAdapter {
             session.send(new ServerboundClientInformationPacket(
                     "en_us", 12, ChatVisibility.FULL, true, List.of(SkinPart.values()),
                     HandPreference.RIGHT_HAND, false, true, ParticleStatus.ALL));
+            if (MovementSync.INSTANCE != null) {
+                MovementSync.INSTANCE.setRecoveryDimension(login.getCommonPlayerSpawnInfo().getWorldName().asString());
+            }
             int dim = login.getCommonPlayerSpawnInfo().getDimension();
             RegistryDataListener.setCurrentDimension(dim);
             MovementSync.getLogger().debug("Login: dimension index = {}", dim);
         } else if (packet instanceof ClientboundRespawnPacket respawn) {
+            if (MovementSync.INSTANCE != null) {
+                MovementSync.INSTANCE.suspendNavigationForRecovery();
+                MovementSync.INSTANCE.setRecoveryDimension(respawn.getCommonPlayerSpawnInfo().getWorldName().asString());
+            }
             int dim = respawn.getCommonPlayerSpawnInfo().getDimension();
             RegistryDataListener.setCurrentDimension(dim);
             MovementSync.getLogger().debug("Respawn: dimension index = {}", dim);

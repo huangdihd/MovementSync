@@ -36,6 +36,19 @@ public class EntityPacketListener implements Listener {
     }
 
     @EventHandler
+    public void onEntityPositionSync(ReceivePacketEvent<ClientboundEntityPositionSyncPacket> event) {
+        var packet = event.getPacket();
+        var entity = MovementSync.INSTANCE.getWorld().getEntity(packet.getId());
+        if (entity == null) return;
+        var p = packet.getPosition();
+        entity.moveTo(new org.joml.Vector3d(p.getX(), p.getY(), p.getZ()));
+        var v = packet.getDeltaMovement();
+        entity.setMovement(new org.joml.Vector3d(v.getX(), v.getY(), v.getZ()));
+        entity.setYaw(packet.getYRot());
+        entity.setPitch(packet.getXRot());
+    }
+
+    @EventHandler
     public void OnMoveEntityPosition(ReceivePacketEvent<ClientboundMoveEntityPosPacket> receivePacketEvent) {
         MovementSync.INSTANCE.getWorld().handleMoveEntityPosPacket(receivePacketEvent.getPacket());
     }
@@ -66,6 +79,16 @@ public class EntityPacketListener implements Listener {
         MovementSync.INSTANCE.getWorld().handleSetEntityMetadataPacket(packet);
 
         if (packet.getEntityId() == MovementSync.INSTANCE.entityId) {
+            // Entity shared flags are protocol metadata index zero, even before registry loading.
+            for (var entry : packet.getMetadata()) {
+                if (entry.getId() == 0 && entry.getValue() instanceof Byte flags) {
+                    boolean gliding = (flags & 0x80) != 0;
+                    if (gliding && !MovementSync.INSTANCE.isGliding()) {
+                        MovementSync.getLogger().info("Server metadata: adopting authoritative gliding state");
+                    }
+                    MovementSync.INSTANCE.setGliding(gliding);
+                }
+            }
             EntityRegistry.EntityEntry registryEntry = EntityRegistry.Instance.getEntity("PLAYER");
             if (registryEntry != null && registryEntry.getMetadataKeys() != null) {
                 List<String> keys = registryEntry.getMetadataKeys();

@@ -44,6 +44,7 @@ final class UpdateMotionGlidingTest {
     @BeforeEach
     void setUp() throws Exception {
         movementSync = new MovementSync();
+        movementSync.onRecoveryTeleport();
         movementSync.entityId = 7;
         World world = new World() {
             @Override
@@ -62,6 +63,7 @@ final class UpdateMotionGlidingTest {
         setBotField("session", Proxy.newProxyInstance(
             ClientSession.class.getClassLoader(), new Class<?>[]{ClientSession.class},
             (proxy, method, arguments) -> {
+                if (method.getName().equals("isConnected")) return true;
                 // The per-tick end marker is asserted separately; keep it out of movement-packet counts.
                 if (method.getName().equals("send") && !(arguments[0] instanceof org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.ServerboundClientTickEndPacket)) sentPackets.add(arguments[0]);
                 Class<?> returnType = method.getReturnType();
@@ -85,6 +87,14 @@ final class UpdateMotionGlidingTest {
         Bot.INSTANCE.setServer(null);
         setBotField("session", null);
         MovementSync.INSTANCE = null;
+    }
+
+    @Test
+    void disconnectedSessionSkipsPositionAndTickEnd() throws Exception {
+        setBotField("session", null);
+        org.junit.jupiter.api.Assertions.assertDoesNotThrow(() -> task.syncPositionToServer(false, true, true));
+        org.junit.jupiter.api.Assertions.assertDoesNotThrow(task::run);
+        assertTrue(sentPackets.isEmpty());
     }
 
     @Test

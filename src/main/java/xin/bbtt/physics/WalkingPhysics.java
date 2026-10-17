@@ -48,6 +48,9 @@ public final class WalkingPhysics implements PhysicsStepper {
         boolean water = environment.waterHeight() > 0;
         boolean lava = !water && environment.lavaHeight() > 0;
         boolean fluid = water || lava;
+        // ClientPlayerEntity computes inSneakingPose before polling this tick's keys.
+        boolean slowDown = state.pose().shouldSlowDown(false, water, false);
+        boolean sprint = input.sprint() && !state.pose().shouldSlowDown(false, water, false);
         addFluidPush(velocity, environment.waterPush());
         addFluidPush(velocity, environment.lavaPush());
         // Since 1.21.5 the horizontal threshold applies to the vector, not each axis.
@@ -66,12 +69,12 @@ public final class WalkingPhysics implements PhysicsStepper {
         if (input.jump() && swimJump) velocity.y += (double) 0.04f;
         if (groundedAtTickStart && input.jump() && jumpAllowed && !swimJump) {
             velocity.y = parameters.jumpVelocity(EnvironmentalPhysics.jumpMultiplier(world, position));
-            if (input.sprint() && !fluid) {
+            if (sprint && !fluid) {
                 velocity.x -= Math.sin(yawRadians) * 0.2;
                 velocity.z += Math.cos(yawRadians) * 0.2;
             }
         }
-        accelerate(velocity, groundedAtTickStart, yawRadians, fluid, slipperiness);
+        accelerate(velocity, groundedAtTickStart, yawRadians, fluid, slipperiness, slowDown, sprint);
         if (!fluid && environment.climbing()) {
             fallDistance = 0;
             velocity.x = Math.max(-(double) 0.15f, Math.min((double) 0.15f, velocity.x));
@@ -181,7 +184,8 @@ public final class WalkingPhysics implements PhysicsStepper {
                 }
             }
             EnvironmentalPhysics.applyContactVelocity(world, position, velocity, halfWidth, height, downwardCollision);
-            return new PhysicsResult(position, velocity, collidedX, collidedZ, downwardCollision, fallDistance);
+            return new PhysicsResult(position, velocity, collidedX, collidedZ, downwardCollision, fallDistance,
+                    state.pose().afterTravel(world, position, false, false, input.sneak()));
         }
         if ((collidedX || collidedZ || input.jump()) && climbingAfterMove) velocity.y = 0.2;
 
@@ -202,7 +206,8 @@ public final class WalkingPhysics implements PhysicsStepper {
         EnvironmentalPhysics.applyContactVelocity(world, position, velocity, halfWidth, height, downwardCollision);
         return new PhysicsResult(position, velocity, collidedX, collidedZ,
                 downwardCollision || (state.onGround() && state.velocity().y == 0
-                        && !input.jump() && world.isOnGround(position)), fallDistance);
+                        && !input.jump() && world.isOnGround(position)), fallDistance,
+                state.pose().afterTravel(world, position, false, false, input.sneak()));
     }
 
     private boolean moveHorizontal(
@@ -224,7 +229,7 @@ public final class WalkingPhysics implements PhysicsStepper {
         return true;
     }
 
-    private static double clipMovement(
+    static double clipMovement(
             World world, Vector3d position, double halfWidth, double height, int axis, double movement) {
         if (!isSweepColliding(world, position, halfWidth, height, axis, movement)) return movement;
         // World exposes overlap queries rather than collision boxes. A swept AABB
@@ -309,7 +314,7 @@ public final class WalkingPhysics implements PhysicsStepper {
         return verticalVelocity - gravity / 16;
     }
 
-    private void accelerate(Vector3d velocity, boolean onGround, double yawRadians, boolean fluid, double slipperiness) {
+    private void accelerate(Vector3d velocity, boolean onGround, double yawRadians, boolean fluid, double slipperiness, boolean slowDown, boolean sprint) {
         double forward = (input.forward() ? 1 : 0) - (input.backward() ? 1 : 0);
         double strafe = (input.left() ? 1 : 0) - (input.right() ? 1 : 0);
         double length = Math.hypot(forward, strafe);
@@ -319,15 +324,18 @@ public final class WalkingPhysics implements PhysicsStepper {
         strafe /= length;
         // Since 1.21.5, scaled input expands to the unit square, capped at unit length.
         double distanceToUnitSquare = 1 / Math.max(Math.abs(forward), Math.abs(strafe));
-        double keyScale = Math.min(0.98 * (input.sneak() && !fluid ? parameters.sneakingSpeed() : 1) * distanceToUnitSquare, 1);
+        double keyScale = Math.min(0.98 * (slowDown ? parameters.sneakingSpeed() : 1) * distanceToUnitSquare, 1);
         forward *= keyScale;
         strafe *= keyScale;
         double acceleration = fluid ? (double) 0.02f : onGround
-            ? parameters.movementSpeed(input.sprint()) * 0.21600002
+            ? parameters.movementSpeed(sprint) * 0.21600002
                 / (slipperiness * slipperiness * slipperiness)
-            : (input.sprint() ? 0.026 : 0.02);
-        double sine = Math.sin(yawRadians);
-        double cosine = Math.cos(yawRadians);
+            : (sprint ? 0.026 : 0.02);
+        // Vanilla's sine lookup has exact zeros at cardinal headings. Avoid
+        // microscopic sideways travel (and extra position packets) on bridges.
+        float heading = yaw % 360.0f;
+        double sine = heading % 180.0f == 0 ? 0 : Math.sin(yawRadians);
+        double cosine = Math.abs(heading) % 180.0f == 90.0f ? 0 : Math.cos(yawRadians);
         velocity.x += (strafe * cosine - forward * sine) * acceleration;
         velocity.z += (forward * cosine + strafe * sine) * acceleration;
     }

@@ -33,6 +33,7 @@ final class UpdateMotionInputTest {
     @BeforeEach
     void setUp() throws Exception {
         movementSync = new MovementSync();
+        movementSync.onRecoveryTeleport();
         movementSync.entityId = 7;
         Field world = MovementSync.class.getDeclaredField("world");
         world.setAccessible(true);
