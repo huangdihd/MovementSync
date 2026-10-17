@@ -27,6 +27,10 @@ public final class LandingSearch {
         if (!state.position().isFinite() || !state.velocity().isFinite())
             throw new IllegalArgumentException("Flight state must be finite");
         Vector3d position = state.position();
+        // Do not choose the far side of a solid roof from inside a ceiling dimension.
+        double searchCeiling = xin.bbtt.listeners.RegistryDataListener.hasCeiling()
+                && !CeilingCollision.isAboveRoof(world, position)
+                ? position.y : World.getMaxWorldY();
         Vector3d below = VanillaGlideMode.landingSite(world, position.x, position.z, position.y);
         if (below != null) { complete = true; previous = below; return below; }
         // Finish a sweep while moving to avoid starving distant islands at
@@ -60,7 +64,7 @@ public final class LandingSearch {
                         pending.add(new Entry(Math.hypot(x + .5 - origin.x, z + .5 - origin.z), x, z, false));
                 continue;
             }
-            Vector3d site = VanillaGlideMode.landingSite(world, e.x + .5, e.z + .5, World.getMaxWorldY());
+            Vector3d site = VanillaGlideMode.landingSite(world, e.x + .5, e.z + .5, searchCeiling);
             if (site == null) continue;
             if (nearest == null) nearest = site;
             if (Math.hypot(position.x - site.x, position.z - site.z)
@@ -72,14 +76,14 @@ public final class LandingSearch {
         }
         complete = pending.isEmpty();
         if (complete && nearest != null && (flights.length > 0 || attached)) {
-            Vector3d valid = VanillaGlideMode.landingSite(world, nearest.x, nearest.z, World.getMaxWorldY());
+            Vector3d valid = VanillaGlideMode.landingSite(world, nearest.x, nearest.z, searchCeiling);
             if (valid != null) {
                 previous = valid;
                 return valid;
             }
         }
         if (!complete && previous != null) {
-            Vector3d valid = VanillaGlideMode.landingSite(world, previous.x, previous.z, World.getMaxWorldY());
+            Vector3d valid = VanillaGlideMode.landingSite(world, previous.x, previous.z, searchCeiling);
             if (valid != null && valid.y == previous.y) return valid;
         }
         return null;

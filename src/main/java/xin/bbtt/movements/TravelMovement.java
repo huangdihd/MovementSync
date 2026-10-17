@@ -124,6 +124,14 @@ public final class TravelMovement extends Movement {
             child = null;
             currentChild.onStop();
             if (stopped || finished || !movementSync.isNavigationRequestCurrent(generation)) return;
+            if (currentChild instanceof ElytraFlyMovement flight && flight.completedAboveRoof()) {
+                movementSync.runIfNavigationRequestCurrent(generation, () -> {
+                    MovementSync.getLogger().info(LangManager.get("movementsync.command.goto.target_below_roof"));
+                    movementSync.abandonNavigationRequest(generation);
+                    finished = true;
+                });
+                return;
+            }
             if (currentChild instanceof PathMovement path
                     && path.completion() == PathMovement.Completion.UNEXPECTED_FALL) {
                 stage = Stage.PREPARE;
@@ -146,7 +154,13 @@ public final class TravelMovement extends Movement {
                 movementSync.getWorld(), movementSync.position.get())
                 || xin.bbtt.pathfinding.EnvironmentalTraversal.climbing(
                         movementSync.getWorld(), movementSync.position.get());
-        if (!flightConfiguration.isLegacy()) {
+        boolean belowRoof = xin.bbtt.listeners.RegistryDataListener.hasCeiling()
+                && !isOpen(movementSync.getWorld(), movementSync.position.get());
+        // This segment deliberately has no underground flight planner. Do not
+        // approach a launch column or ask plugins for ordinary underground takeoff.
+        if (belowRoof && stage == Stage.PREPARE && (movementSync.onGround.get() || environmental))
+            stage = Stage.LAND;
+        if (!belowRoof && !flightConfiguration.isLegacy()) {
             // Still compare the real vanilla preview when plugins are registered. If all
             // plugins decline transitions, retain legacy preparation/approach behavior.
             if (hasPluginTransition()) {
@@ -156,12 +170,17 @@ public final class TravelMovement extends Movement {
         }
         if (stage == Stage.PREPARE) {
             if (fly && movementSync.isGliding()) {
+                if (belowRoof) {
+                    stage = Stage.LAND;
+                    startChild(extendedLanding());
+                    return;
+                }
                 startFlight();
                 return;
             }
             if (!movementSync.onGround.get() && !environmental) {
                 if (VanillaGlideLifecycle.eligibleForAirborneTakeoff(movementSync)) {
-                    boolean cruise = fly && legs.hasFlightBudget();
+                    boolean cruise = fly && !belowRoof && legs.hasFlightBudget();
                     ElytraFlyMovement flight = new ElytraFlyMovement(
                             new Vector3d(goal.x + 0.5, goal.y, goal.z + 0.5), generation);
                     stage = Stage.FLIGHT;

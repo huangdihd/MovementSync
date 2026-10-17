@@ -1,3 +1,4 @@
+movementsync.command.goto.target_below_roof=目标在屋顶下,无法到达
 movementsync.plugin.loading=正在加载 MovementSync
 movementsync.plugin.unloading=正在卸载 MovementSync
 movementsync.plugin.enabling=正在启用 MovementSync
@@ -95,7 +96,7 @@ movementsync.command.elytra.fly.no_fireworks=请先在快捷栏放入烟花火�
 movementsync.command.elytra.fly.not_ready=请先站在地面上或进入滑翔，再开始飞行导航。
 movementsync.command.elytra.fly.started=正在飞往 (%.2f, %.2f, %.2f)。
 movementsync.command.elytra.fly.arrived=已到达飞行目标；仍保持滑翔。
-movementsync.command.elytra.fly.failed=飞行已停止：起飞失败、已着地或飞行超时。
+movementsync.command.elytra.fly.failed=飞行已停止：起飞失败或未到达就已着地。
 movementsync.command.elytra.start.riding=骑乘实体时无法起飞。
 movementsync.command.elytra.start.gliding=当前已经在滑翔。
 movementsync.command.elytra.start.no_elytra=请先在胸甲栏装备鞘翅。

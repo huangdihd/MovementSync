@@ -44,6 +44,7 @@ public record FlightConfiguration(List<FlightMode> modes, List<FlightCostTerm> c
     public boolean isLegacy() {
         return !cruiseDamageFirst && modes.size() == 1 && modes.get(0) instanceof VanillaGlideMode
                 && costs.equals(List.of(BuiltinFlightCost.APPROACH, BuiltinFlightCost.CONTROLS))
-                && damageRules.equals(List.of(BuiltinDamageRule.WALL, BuiltinDamageRule.FALL));
+                && damageRules.equals(List.of(BuiltinDamageRule.WALL, BuiltinDamageRule.FALL,
+                        BuiltinDamageRule.LAVA, BuiltinDamageRule.FIRE));
     }
 }

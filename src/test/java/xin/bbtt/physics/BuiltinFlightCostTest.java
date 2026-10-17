@@ -55,6 +55,21 @@ final class BuiltinFlightCostTest {
         }
     }
 
+    @Test void trajectoryCutShortByAChunkThatLoadedSinceIsRejectedNotOverrun() {
+        var world = new Terrain();
+        world.loaded = false;
+        var initial = new PhysicsState(new Vector3d(8, 50, 8), new Vector3d(0, -.1, .2), false);
+        var trajectory = FlightTrajectory.simulate(world, initial, (w, state, width, height) ->
+                new PhysicsResult(state.position().add(0, 0, .2, new Vector3d()), state.velocity(), false, false, false),
+                24, (state, result) -> !w(world));
+        assertEquals(1, trajectory.size());
+        // Network thread streams the chunk in before scoring reads the same trajectory.
+        world.loaded = true;
+        assertEquals(Double.POSITIVE_INFINITY, BuiltinFlightCost.evaluate(world, trajectory,
+                new Vector3d(8, 50, 100), 2, 50, 0, 0, false, false, false, 24, false));
+    }
+    private static boolean w(Terrain world) { return world.loaded; }
+
     @Test void finiteScoringReusesTheEntireTrajectory() {
         var world = new Terrain();
         var calls = new AtomicInteger();

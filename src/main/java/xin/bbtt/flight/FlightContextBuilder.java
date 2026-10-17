@@ -73,7 +73,7 @@ public final class FlightContextBuilder {
      */
     public FlightContextBuilder cruiseDamageFirst(boolean enabled) { cruiseDamageFirst = enabled; return this; }
     /**
-     * Appends standard glide, approach/control costs, and wall/fall rules once.
+     * Appends standard glide, approach/control costs, and wall/fall/lava/fire rules once.
      * Also enables inclusion of global hooks at each subsequent build, after local
      * hooks. Repeated calls do not append another standard set or execute hooks.
      * @return this mutable builder
@@ -83,7 +83,8 @@ public final class FlightContextBuilder {
             standard = true;
             addMode(VanillaGlideMode.INSTANCE);
             addCostTerm(BuiltinFlightCost.APPROACH).addCostTerm(BuiltinFlightCost.CONTROLS);
-            addDamageRule(BuiltinDamageRule.WALL).addDamageRule(BuiltinDamageRule.FALL);
+            addDamageRule(BuiltinDamageRule.WALL).addDamageRule(BuiltinDamageRule.FALL)
+                    .addDamageRule(BuiltinDamageRule.LAVA).addDamageRule(BuiltinDamageRule.FIRE);
         }
         return this;
     }

@@ -67,6 +67,24 @@ public class RegistryDataListener extends SessionAdapter {
         currentDimensionIndex = index;
     }
 
+    /** Dimension metadata selected by the existing login/respawn registry index. */
+    public static boolean hasCeiling() {
+        NbtMap data = currentDimensionData();
+        return data != null && data.getBoolean("has_ceiling", false);
+    }
+
+    /** Gameplay/portal height limit, NOT a collision surface or roof altitude. */
+    public static int getLogicalHeight() {
+        NbtMap data = currentDimensionData();
+        return data != null && data.containsKey("logical_height")
+                ? data.getInt("logical_height") : getMaxWorldY() - getMinWorldY() + 1;
+    }
+
+    private static NbtMap currentDimensionData() {
+        return currentDimensionIndex >= 0 && currentDimensionIndex < dimensionTypes.size()
+                ? dimensionTypes.get(currentDimensionIndex) : null;
+    }
+
     public static int getMinWorldY() {
         if (currentDimensionIndex >= 0 && currentDimensionIndex < dimensionTypes.size()) {
             NbtMap data = dimensionTypes.get(currentDimensionIndex);

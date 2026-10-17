@@ -77,7 +77,8 @@ final class VanillaGlideMode implements FlightMode {
         if (y + HEIGHT > World.getMaxWorldY() || !supportedLandingArea(world, x, y, z)
                 || world.isBoxColliding(x - HALF_WIDTH, y, z - HALF_WIDTH, x + HALF_WIDTH, y + HEIGHT, z + HALF_WIDTH))
             return null;
-        return new Vector3d(x, y, z);
+        Vector3d site = new Vector3d(x, y, z);
+        return FlightHazards.safeLanding(world, site) ? site : null;
     }
 
     static boolean supportedLandingArea(World world, double x, double y, double z) {

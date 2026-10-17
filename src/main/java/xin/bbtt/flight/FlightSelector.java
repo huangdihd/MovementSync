@@ -154,6 +154,9 @@ public final class FlightSelector {
                     Math.max(from.z, to.z) + .299)) return UNKNOWN;
             for (DamageRule rule : configuration.damageRules()) {
                 var damage = Objects.requireNonNull(rule.damage(context, action, state, result));
+                // Environmental hazards are forbidden cells, not an impact trade-off.
+                if ((rule == BuiltinDamageRule.LAVA || rule == BuiltinDamageRule.FIRE) && damage.raw() > 0)
+                    return UNKNOWN;
                 raw += damage.raw(); reduced += damage.reduced();
             }
             if (!Double.isFinite(raw) || !Double.isFinite(reduced)) return UNKNOWN;

@@ -229,10 +229,19 @@ final class FlightSelector {
 
     /** Scan bounded route tiles, never treating unloaded terrain as known air. */
     static double routeAltitude(World world, Vector3d position, Vector3d target) {
+        // Below a ceiling, the roof is an obstacle, not terrain to cruise over.
+        // Keep the non-ceiling path (including arithmetic order) unchanged.
+        boolean belowRoof = xin.bbtt.listeners.RegistryDataListener.hasCeiling()
+                && !CeilingCollision.isAboveRoof(world, position);
+        double scanTop = belowRoof ? Math.max(position.y, target.y) : World.getMaxWorldY();
+        double scanBottom = !belowRoof && xin.bbtt.listeners.RegistryDataListener.hasCeiling()
+                ? CeilingCollision.roofTop(world, position.x, position.z).orElse(World.getMinWorldY())
+                : World.getMinWorldY();
         double distance = horizontalDistance(position, target);
         int tiles = Math.min(64, Math.max(1, (int) Math.ceil(distance / 16)));
         double scannedDistance = Math.min(distance, 1024);
-        double highest = target.y;
+        double highest = !belowRoof && xin.bbtt.listeners.RegistryDataListener.hasCeiling()
+                ? Math.max(target.y, scanBottom) : target.y;
         boolean unknown = distance > scannedDistance;
         for (int tile = 0; tile < tiles; tile++) {
             double start = distance == 0 ? 0 : scannedDistance * tile / tiles / distance;
@@ -252,15 +261,16 @@ final class FlightSelector {
                         continue;
                     }
                     highest = Math.max(highest, world.findHighestCollisionTop(
-                            Math.max(minX, chunkX * 16.0), World.getMinWorldY(),
+                            Math.max(minX, chunkX * 16.0), scanBottom,
                             Math.max(minZ, chunkZ * 16.0), Math.min(maxX, chunkX * 16.0 + 16),
-                            World.getMaxWorldY(), Math.min(maxZ, chunkZ * 16.0 + 16)).orElse(highest));
+                            scanTop, Math.min(maxZ, chunkZ * 16.0 + 16)).orElse(highest));
                 }
             }
         }
         // Distant unknown terrain raises the overworld reserve, not a global stop.
         // evaluate still rejects any trajectory entering an unloaded chunk at any altitude.
         double altitude = highest + 16;
+        if (belowRoof) return Math.min(scanTop, altitude);
         if (unknown) altitude = Math.max(altitude, Math.max(128, target.y + 32));
         return Math.min(World.getMaxWorldY() - HEIGHT - 2, altitude);
     }

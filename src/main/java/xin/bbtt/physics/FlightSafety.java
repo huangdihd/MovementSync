@@ -91,6 +91,12 @@ final class FlightSafety {
                 terminal[0] = Impact.UNKNOWN;
                 return true;
             }
+            var lava = FlightHazards.damage(world, state, result, mitigation, true);
+            var fire = FlightHazards.damage(world, state, result, mitigation, false);
+            if (lava.raw() > 0 || fire.raw() > 0) {
+                terminal[0] = Impact.UNKNOWN; // Forbidden cells even during emergency ranking.
+                return true;
+            }
             if (collision(result)) {
                 Impact impact = collisionDamage(world, state, result, yaw, pitch, attached);
                 if (result.onGround() || impact.raw() > 0) {

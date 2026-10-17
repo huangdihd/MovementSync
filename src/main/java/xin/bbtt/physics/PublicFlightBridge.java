@@ -79,6 +79,10 @@ public final class PublicFlightBridge {
                 multiplier, c.movement(), c.damage());
         return new DamageRule.Damage(d.raw(), d.reduced());
     }
+    public static DamageRule.Damage hazard(FlightContext c, PhysicsState before, PhysicsResult after, boolean lava) {
+        var d = FlightHazards.damage(c.world(), before, after, c.damage(), lava);
+        return new DamageRule.Damage(d.raw(), d.reduced());
+    }
     public static double controls(FlightContext c, FlightAction.Glide a) {
         return BuiltinFlightCost.controls(a.yaw(), a.pitch(), c.yaw(), c.pitch(), a.firework());
     }

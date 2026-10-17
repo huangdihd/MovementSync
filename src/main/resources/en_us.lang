@@ -1,3 +1,4 @@
+movementsync.command.goto.target_below_roof=Target is below the roof and cannot be reached.
 movementsync.plugin.loading=Loading MovementSync
 movementsync.plugin.unloading=Unloading MovementSync
 movementsync.plugin.enabling=Enabling MovementSync
@@ -95,7 +96,7 @@ movementsync.command.elytra.fly.no_fireworks=Put firework rockets in the hotbar 
 movementsync.command.elytra.fly.not_ready=Stand on the ground or start gliding before flying to a target.
 movementsync.command.elytra.fly.started=Flying toward (%.2f, %.2f, %.2f).
 movementsync.command.elytra.fly.arrived=Arrived at the flight target; glide remains active.
-movementsync.command.elytra.fly.failed=Flight stopped: takeoff failed, landed, or flight timed out.
+movementsync.command.elytra.fly.failed=Flight stopped: takeoff failed or landed before arrival.
 movementsync.command.elytra.start.riding=Cannot launch while riding an entity.
 movementsync.command.elytra.start.gliding=Already gliding.
 movementsync.command.elytra.start.no_elytra=Equip an elytra in the chest slot before launching.

@@ -12,7 +12,13 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
     public static final double DEFAULT_ARRIVAL_RADIUS = 16;
     private final double arrivalRadius;
     private final xin.bbtt.flight.FlightConfiguration flightConfiguration;
-    private final xin.bbtt.physics.FlightTarget target;
+    private xin.bbtt.physics.FlightTarget target;
+    private boolean targetBelowRoof;
+    private xin.bbtt.physics.FlightTarget roofGoal;
+    private boolean completedAboveRoof;
+
+    /** Whether this leg landed at the roof substitute for an inaccessible static goal. */
+    boolean completedAboveRoof() { return completedAboveRoof; }
     private long generation;
     private int flightTicks;
     private xin.bbtt.flight.FlightMode controllingMode;
@@ -125,6 +131,7 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
             onStop();
             return;
         }
+        projectRoofTarget(movementSync);
         if (transition != null) {
             runIfCurrent(() -> {
                 if (isFinished() || transition == null) return;
@@ -165,7 +172,9 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
         boolean landed = state.onGround() || touchingWater();
         boolean airborne = controllingMode == null || airborneContext == null ? movementSync.isGliding()
                 : controllingMode.isAirborne(airborneContext, movementSync);
-        if (landed || !airborne || ++flightTicks > 12000) {
+        // No time limit: a long route ends on arrival, landing, or the durability and rocket budget.
+        flightTicks++;
+        if (landed || !airborne) {
             runIfCurrent(() -> {
                 if (isFinished()) return;
                 Vector3d position = state.position();
@@ -425,7 +434,54 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
                 emergency, inventory);
     }
 
+    void projectRoofTarget(MovementSync sync) {
+        if (targetBelowRoof || safeLandingLeg || !(target instanceof xin.bbtt.physics.FixedFlightTarget)
+                || !xin.bbtt.listeners.RegistryDataListener.hasCeiling()) return;
+        var world = sync.getWorld();
+        var position = sync.position.get();
+        if (roofGoal == null) roofGoal = target;
+        var goal = roofGoal.position();
+        // Collision geometry, not logical_height, defines the roof surface. Unknown
+        // columns are deferred until loaded; never invent a landing at the target Y.
+        if (!xin.bbtt.physics.CeilingCollision.isAboveRoof(world, position)) return;
+        var top = xin.bbtt.physics.CeilingCollision.roofTop(world, goal.x, goal.z);
+        if (top.isEmpty()) {
+            // Until the target column loads, approach no lower than the roof under us:
+            // descending toward a goal Y that may lie below the roof ends on the roof early.
+            double roof = xin.bbtt.physics.CeilingCollision.roofTop(world, position.x, position.z).orElse(goal.y);
+            if (roof > goal.y && target.position().y < roof)
+                target = new xin.bbtt.physics.FixedFlightTarget(new Vector3d(goal.x, roof, goal.z));
+            return;
+        }
+        if (top.getAsDouble() <= goal.y) {
+            target = roofGoal;
+            return;
+        }
+        Vector3d best = null;
+        double distance = Double.POSITIVE_INFINITY;
+        // Use the existing arrival radius as the search extent, with block-centre
+        // samples; landingSite retains the standard support/clearance/hazard rules.
+        int radius = (int) Math.ceil(arrivalRadius);
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dz = -radius; dz <= radius; dz++) {
+                double squared = (double) dx * dx + (double) dz * dz;
+                if (squared > arrivalRadius * arrivalRadius || squared >= distance) continue;
+                var site = ElytraFlightController.landingSite(world, goal.x + dx, goal.z + dz,
+                        xin.bbtt.world.World.getMaxWorldY() + 1.0);
+                if (site != null && site.y >= top.getAsDouble()) {
+                    best = site;
+                    distance = squared;
+                }
+            }
+        }
+        if (best != null) {
+            target = new xin.bbtt.physics.FixedFlightTarget(best);
+            targetBelowRoof = true;
+        }
+    }
+
     private void finish(boolean arrived) {
+        completedAboveRoof = arrived && targetBelowRoof;
         setFinished(true);
         MovementSync.getLogger().info(LangManager.get(arrived
                 ? "movementsync.command.elytra.fly.arrived" : "movementsync.command.elytra.fly.failed"));

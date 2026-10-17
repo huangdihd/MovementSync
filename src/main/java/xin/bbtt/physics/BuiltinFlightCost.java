@@ -33,6 +33,9 @@ final class BuiltinFlightCost {
         PhysicsState state = trajectory.initial();
         double score = 0;
         for (int tick = 0; tick < horizon; tick++) {
+            // The prediction stopped for a reason the world no longer shows (a chunk loaded
+            // in between): treat the unexplained remainder as unknown, not as free air.
+            if (tick >= trajectory.size()) return Double.POSITIVE_INFINITY;
             PhysicsResult result = trajectory.result(tick);
             Vector3d previous = state.position();
             Vector3d position = result.position();
@@ -47,6 +50,9 @@ final class BuiltinFlightCost {
                 }
             }
             if (result.collidedX() || result.collidedZ()) return Double.POSITIVE_INFINITY;
+            if (FlightHazards.damage(world, state, result, DamageParameters.NONE, true).raw() > 0
+                    || FlightHazards.damage(world, state, result, DamageParameters.NONE, false).raw() > 0)
+                return Double.POSITIVE_INFINITY;
             // Physics clips axes independently. Check the swept envelope too, so a fast
             // candidate cannot tunnel through thin obstacles between tick endpoints.
             if (world.isBoxColliding(Math.min(previous.x, position.x) - HALF_WIDTH,

@@ -12,7 +12,11 @@ public enum BuiltinDamageRule implements DamageRule {
     /** Horizontal impact damage, with vanilla glide/firework impact handling. */
     WALL,
     /** Ground-impact damage including landing-block and movement-effect mitigation. */
-    FALL;
+    FALL,
+    /** Conservative swept lava/lava-cauldron contact estimate, independent of flight mode. */
+    LAVA,
+    /** Conservative swept fire, lit campfire and hot magma contact estimate. */
+    FIRE;
     /**
      * Evaluates this rule for one predicted transition, including a terminating tick.
      * @param c non-null planning snapshot
@@ -22,7 +26,11 @@ public enum BuiltinDamageRule implements DamageRule {
      * @return non-null raw and mitigated damage contribution in health points
      */
     @Override public Damage damage(FlightContext c, FlightAction a, PhysicsState before, PhysicsResult after) {
-        return this == WALL ? PublicFlightBridge.wall(c, a, before, after)
-                : PublicFlightBridge.fall(c, a, before, after);
+        return switch (this) {
+            case WALL -> PublicFlightBridge.wall(c, a, before, after);
+            case FALL -> PublicFlightBridge.fall(c, a, before, after);
+            case LAVA -> PublicFlightBridge.hazard(c, before, after, true);
+            case FIRE -> PublicFlightBridge.hazard(c, before, after, false);
+        };
     }
 }

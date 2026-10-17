@@ -21,7 +21,7 @@ final class VanillaGlideLifecycle {
         sync.getLandingMemory().takeoff(sync.getWorld(), sync.position.get());
         sync.getLandingMemory().observe(sync.getWorld(), sync.position.get());
         airborne = sync.isGliding();
-        if (!airborne && sync.onGround.get()) sync.jump();
+        if (!airborne && sync.onGround.get() && !underCeiling(sync)) sync.jump();
     }
 
     boolean awaitingTakeoff(MovementSync sync) {
@@ -30,7 +30,9 @@ final class VanillaGlideLifecycle {
 
     /** Flight legs retry deployment; the standalone takeoff movement remains one-shot. */
     void tickTakeoff(MovementSync sync, Runnable fail) {
-        if (++takeoffTicks > 60 || sync.isRiding()) {
+        // Revalidate at deployment: a preview can become stale while waiting for descent.
+        if (++takeoffTicks > 60 || sync.isRiding()
+                || !sync.isGliding() && underCeiling(sync) && !eligibleForAirborneTakeoff(sync)) {
             fail.run();
             return;
         }
@@ -90,6 +92,30 @@ final class VanillaGlideLifecycle {
                 && sync.inventoryManager.getElytraDurability().usable()
                 && FallPrediction.predict(sync.getWorld(),
                     new PhysicsState(sync.position.get(), sync.velocity.get(),
-                            false, sync.fallDistance.get()), sync.getMovementParameters()).dangerous();
+                            false, sync.fallDistance.get()), sync.getMovementParameters()).dangerous()
+                // Under a roof, deploy only while descending and when the glide itself is proven safe.
+                && (!underCeiling(sync) || !sync.onGround.get() && sync.velocity.get().y <= 0 && safeRescue(sync));
+    }
+
+    /** A ceiling dimension alone is not a veto when the launch column really is open. */
+    private static boolean underCeiling(MovementSync sync) {
+        return xin.bbtt.listeners.RegistryDataListener.hasCeiling()
+                && !TravelMovement.isOpen(sync.getWorld(), sync.position.get());
+    }
+
+    /** Use the deployed controls and shared glide prediction, recovery and damage rules. */
+    private static boolean safeRescue(MovementSync sync) {
+        var state = new PhysicsState(sync.position.get(), sync.velocity.get(), false, sync.fallDistance.get());
+        var context = new xin.bbtt.flight.FlightContext(sync.getWorld(), state, sync.getMovementParameters(),
+                xin.bbtt.physics.DamageParameters.fromPlayer(sync.inventoryManager,
+                        sync.getMovementParameterState().effectsSnapshot()),
+                sync.getMovementParameterState().health(), state.position(), sync.yaw.get(), sync.pitch.get(),
+                0, sync.hasAttachedFirework(), 1, true, java.util.Map.of());
+        var mode = xin.bbtt.flight.VanillaGlideMode.INSTANCE;
+        var action = new xin.bbtt.flight.FlightAction.Glide(context.yaw(), context.pitch(), false);
+        var selector = new xin.bbtt.flight.FlightSelector(
+                new xin.bbtt.flight.FlightContextBuilder().addStandard().build());
+        return selector.safety(context, mode, action, mode.predict(context, action)).damageClass()
+                == xin.bbtt.flight.FlightSelector.DamageClass.SAFE;
     }
 }

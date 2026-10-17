@@ -26,6 +26,14 @@ English / [简体中文](README_CN.md)
 
 ---
 
+## Flight in ceiling dimensions
+
+The dimension registry's `has_ceiling` enables roof handling. `min_y` / `height` define world bounds; `logical_height` is not a roof altitude. Loaded collision surfaces determine the roof, without a hard-coded bedrock Y.
+
+- Above the roof, flight retains terrain-clearing cruise. A static goal beneath a roof is replaced by a safe roof landing near its horizontal position; landing reports that the target cannot be reached, ends goto and clears its recovery goal.
+- Below the roof, goto walks. There is no automatic roof ascent, drilling or underground corridor flight in this stage. Dangerous falling may deploy rescue gliding only after the existing bounded shared-physics prediction and recovery checks prove it safe; otherwise normal falling handling remains.
+- In every dimension, standard flight rules reject trajectories through lava, fire and soul fire. Landing excludes hot supports (including magma blocks and lit campfires) and lava near the standing body. Checks conservatively use whole cells, without modeling ongoing burning or damage cooldowns.
+
 ## Quick Start
 
 1. **Download**  

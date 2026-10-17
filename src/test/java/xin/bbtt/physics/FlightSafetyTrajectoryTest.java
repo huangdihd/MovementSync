@@ -93,6 +93,23 @@ final class FlightSafetyTrajectoryTest {
         assertEquals(15, checked.finalState().fallDistance());
     }
 
+    @Test void lavaWithoutCollisionStopsLegacyPredictionBeforeRecovery() {
+        World lava = new World() {
+            @Override public boolean chunkLoaded(int x, int z) { return true; }
+            @Override public xin.bbtt.Block.BlockState getBlockStateAt(Vector3d position) {
+                return new xin.bbtt.Block.BlockState("lava", 0, java.util.Map.of(), "empty", 0, false, "");
+            }
+        };
+        AtomicInteger ticks = new AtomicInteger();
+        Impact impact = safety.predictEmergencyImpact(lava, initial(-1), 0, 0, false,
+                (w, state, width, height) -> {
+                    ticks.incrementAndGet();
+                    return advance(state, false, false);
+                }, (w, state, yaw, attached) -> fail("Hazard cannot be recovered as safe"));
+        assertTrue(impact.unknown(), "Forbidden lava cells must never win emergency ranking");
+        assertEquals(1, ticks.get());
+    }
+
     @Test void exhaustionIsNotRecoveryButEmergencyHorizonCanBeSafe() {
         FlightSafety.CheckedTrajectory checked = safety.simulate(world, initial(-.5),
                 (w, state, width, height) -> advance(state, false, false), 60, 0, 0, false, true);
