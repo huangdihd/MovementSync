@@ -28,6 +28,43 @@ final class ElytraEmergencyLandingTest {
     private static PhysicsState state(double height) {
         return new PhysicsState(new Vector3d(0.5, height, 0.5), new Vector3d(0, -0.1, 0.5), false);
     }
+    @Test void flatGroundDecisionCharacterization() {
+        var world = new Islands();
+        world.start = -1000;
+        double[] heights = {.6, 8, 20};
+        float[] pitches = {-10, -30, -55};
+        for (int i = 0; i < heights.length; i++) {
+            var initial = new PhysicsState(new Vector3d(.5, heights[i], .5), new Vector3d(0, -.4, .8), false);
+            assertEquals(new ElytraFlightController.Decision(-180, pitches[i], false,
+                    ElytraFlightController.Phase.FORCED_LANDING),
+                    controller.forceLand(world, initial, 0, 0, false, 0, 16));
+        }
+    }
+
+    @Test void steepDescentResetsFallDistanceBeforeTouchdown() {
+        var world = new Islands();
+        world.start = -1000;
+        var state = new PhysicsState(new Vector3d(.5, 16, .5), new Vector3d(.21, -.8, .5), false, 50);
+        float yaw = 0;
+        float pitch = 10;
+        for (int tick = 0; tick < 400 && !state.onGround(); tick++) {
+            ElytraFlightController.Decision decision;
+            try {
+                decision = controller.forceLand(world, state, yaw, pitch, false, 0, 16);
+            } catch (IllegalStateException unavailable) {
+                decision = controller.emergencyHold(world, state, yaw, pitch, false);
+            }
+            yaw = decision.yaw();
+            pitch = decision.pitch();
+            var result = new GlidingPhysics(yaw, pitch, false).step(world, state, .299, .6);
+            if (result.onGround()) {
+                assertTrue(state.velocity().y > -.5 || state.fallDistance() < 3);
+            }
+            state = new PhysicsState(result.position(), result.velocity(), result.onGround(), result.fallDistance());
+        }
+        assertTrue(state.onGround());
+    }
+
     @Test void prefersNearestGlidableSolidIslandWithoutSpendingRocket() {
         var world = new Islands();
         assertEquals(new Vector3d(0.5, 0, 24.5), controller.selectForcedLandingTarget(world, state(20), 8, false));

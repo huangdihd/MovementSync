@@ -48,8 +48,7 @@ public final class FallPrediction {
 
     /** 1.21.11 LivingEntity.computeFallDamage; jump boost is a safe-fall attribute modifier. */
     public static int damage(double distance, double blockMultiplier, MovementParameters parameters) {
-        return Math.max(0, (int) Math.floor((distance + 1.0e-6 - parameters.safeFallDistance())
-                * blockMultiplier * parameters.fallDamageMultiplier()));
+        return DamageModel.rawFall(distance, blockMultiplier, parameters);
     }
 
     private static boolean loaded(World world, Vector3d p) {

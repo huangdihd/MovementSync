@@ -5,8 +5,6 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.OptionalDouble;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.joml.Vector3d;
 import xin.bbtt.world.World;
 
@@ -15,14 +13,27 @@ public final class ElytraFlightController {
     private static final int HORIZON = 24;
     private final double gravity;
     private final boolean slowFalling;
+    private final MovementParameters movement;
+    private final DamageParameters mitigation;
+    private final double health;
 
     public ElytraFlightController() {
         this(0.08, false);
     }
 
     public ElytraFlightController(double gravity, boolean slowFalling) {
-        this.gravity = gravity;
-        this.slowFalling = slowFalling;
+        this(new MovementParameters(MovementParameters.DEFAULT.movementSpeed(),
+                MovementParameters.DEFAULT.sprintingMovementSpeed(), MovementParameters.DEFAULT.jumpStrength(),
+                0, gravity, .6, .3, slowFalling, -1, true), DamageParameters.NONE, 20);
+    }
+
+    /** Damage-aware emergency prediction; unknown absorption is conservatively ignored. */
+    public ElytraFlightController(MovementParameters movement, DamageParameters mitigation, double health) {
+        this.movement = Objects.requireNonNull(movement);
+        this.mitigation = Objects.requireNonNull(mitigation);
+        this.health = health;
+        this.gravity = movement.gravity();
+        this.slowFalling = movement.slowFalling();
     }
     private static final double HALF_WIDTH = 0.299;
     private static final double HEIGHT = 0.6;
@@ -130,66 +141,176 @@ public final class ElytraFlightController {
         boolean needsBoost = state.position().y < target.y || distance > (state.position().y - target.y) * 5;
         float heading = distance < 0.01 ? yaw
                 : (float) Math.toDegrees(Math.atan2(state.position().x - target.x, target.z - state.position().z));
+        return emergencyDecision(world, state, yaw, pitch, attached, target, radius, heading,
+                needsBoost, needsBoost && !attached && fireworks > 0, false);
+    }
+
+    // Entity.limitFallDistance (Yarn 1.21.11): strictly greater than -0.5.
+    private static final double FALL_RESET_SPEED = -0.5;
+    // Three seconds covers transient pull-up response without requiring a complete
+    // landing. Exhaustion is UNKNOWN, never a fabricated numeric damage penalty.
+    private static final int RECOVERY_TICKS = 60;
+
+    private record EmergencyCost(int damageClass, double damage, int approachClass, double score)
+            implements Comparable<EmergencyCost> {
+        @Override public int compareTo(EmergencyCost other) {
+            int order = Integer.compare(damageClass, other.damageClass);
+            if (order == 0) order = Double.compare(damage, other.damage);
+            if (order == 0) order = Integer.compare(approachClass, other.approachClass);
+            return order == 0 ? Double.compare(score, other.score) : order;
+        }
+    }
+
+    private Decision emergencyDecision(World world, PhysicsState state, float yaw, float pitch,
+            boolean attached, Vector3d target, double radius, float heading,
+            boolean needsBoost, boolean firework, boolean hold) {
         Decision best = null;
-        double bestScore = Double.POSITIVE_INFINITY;
+        EmergencyCost bestCost = null;
         for (float offset : YAW_OFFSETS) {
             float candidateYaw = yaw + normalize(heading + offset - yaw);
             for (float candidatePitch : PITCHES) {
-                boolean firework = needsBoost && !attached && fireworks > 0;
+                Impact impact = predictEmergencyImpact(world, state, candidateYaw, candidatePitch, attached || firework);
                 double score = evaluate(world, state, target, Math.min(radius, 1),
-                        target.y + (needsBoost ? distance / 5 + 8 : 0), candidateYaw, candidatePitch,
-                        attached || firework, !needsBoost, false, HORIZON, true);
-                score += Math.abs(normalize(candidateYaw - yaw)) * 0.015
-                        + Math.abs(candidatePitch - pitch) * 0.01;
-                if (!Double.isFinite(score) || score >= bestScore) continue;
-                bestScore = score;
+                        target.y + (needsBoost ? horizontalDistance(state.position(), target) / 5 + 8 : 0),
+                        candidateYaw, candidatePitch, attached || firework, !needsBoost, false, HORIZON, true);
+                int approach = 0;
+                if (hold || !Double.isFinite(score)) {
+                    approach = 1;
+                    score = evaluate(world, state, target, radius, target.y,
+                            candidateYaw, candidatePitch, attached, false, true);
+                }
+                if (!Double.isFinite(score)) {
+                    approach = 2;
+                    score = Math.abs(normalize(candidateYaw - yaw)) * .015
+                            + Math.abs(candidatePitch + 10) * .01;
+                } else if (approach == 0) {
+                    score += Math.abs(normalize(candidateYaw - yaw)) * .015
+                            + Math.abs(candidatePitch - pitch) * .01;
+                }
+                EmergencyCost cost = new EmergencyCost(impact.rank(health),
+                        impact.reduced(), approach, score);
+                if (bestCost != null && cost.compareTo(bestCost) >= 0) continue;
+                bestCost = cost;
                 best = new Decision(candidateYaw, candidatePitch, firework, Phase.FORCED_LANDING);
             }
         }
-        // The nearest site's centre is a guide, not a mandatory touchdown point.
-        // Momentum can carry a low glide beyond its one-block radius while still
-        // reaching verified solid ground safely. Do not reject that landing.
-        if (best == null && !attached) {
-            for (float offset : YAW_OFFSETS) {
-                float candidateYaw = yaw + normalize(heading + offset - yaw);
-                for (float candidatePitch : PITCHES) {
-                    double score = evaluate(world, state, target, radius, target.y,
-                            candidateYaw, candidatePitch, false, false, true);
-                    if (!Double.isFinite(score) || score >= bestScore) continue;
-                    bestScore = score;
-                    best = new Decision(candidateYaw, candidatePitch, false, Phase.FORCED_LANDING);
-                }
-            }
-        }
-        if (best == null) throw new IllegalStateException("No collision-free emergency landing trajectory to known ground");
         return best;
     }
 
-    /**
-     * Retains steering when no complete landing plan exists. Prefer a verified
-     * next tick, then replan on the next action tick; never spend a blind rocket.
-     * If even one tick is unsafe, a shallow unpowered glide is damage mitigation,
-     * NOT a claim that landing is safe (terrain may be unknown or unavoidable).
-     */
-    public Decision emergencyHold(World world, PhysicsState state, float yaw, float pitch, boolean attached) {
-        Decision best = null;
-        double bestScore = Double.POSITIVE_INFINITY;
-        for (float offset : YAW_OFFSETS) {
-            float candidateYaw = yaw + offset;
-            for (float candidatePitch : PITCHES) {
-                double score = evaluate(world, state, state.position(), 1, state.position().y,
-                        candidateYaw, candidatePitch, attached, false, true, 1);
-                score += Math.abs(offset) * .015 + Math.abs(candidatePitch - pitch) * .01;
-                if (!Double.isFinite(score) || score >= bestScore) continue;
-                bestScore = score;
-                best = new Decision(candidateYaw, candidatePitch, false, Phase.FORCED_LANDING);
+    /** A flight mode can supply its own recovery manoeuvres without changing ranking. */
+    private interface RecoveryStrategy {
+        Impact recover(World world, PhysicsState state, float yaw, boolean attached);
+    }
+
+    private final RecoveryStrategy recovery = new VanillaGlideRecovery();
+
+    private final class VanillaGlideRecovery implements RecoveryStrategy {
+        @Override public Impact recover(World world, PhysicsState initial, float yaw, boolean attached) {
+            Impact best = Impact.UNKNOWN;
+            for (float pitch : PITCHES) {
+                PhysicsState state = initial;
+                GlidingPhysics physics = new GlidingPhysics(yaw, pitch, attached, gravity, slowFalling);
+                for (int tick = 0; tick < RECOVERY_TICKS; tick++) {
+                    PhysicsResult result = physics.step(world, state, HALF_WIDTH, HEIGHT);
+                    if (!knownStep(world, state, result)) break;
+                    if (collision(result)) {
+                        Impact impact = collisionDamage(world, state, result, yaw, pitch, attached);
+                        if (result.onGround() || impact.raw() > 0) {
+                            if (compareImpact(impact, best) < 0) best = impact;
+                            break;
+                        }
+                        // A harmless brush against leaves does not reset accumulated fall distance.
+                        // Continue until recovery or touchdown, rather than certify the brush as safe.
+                    }
+                    if (result.velocity().y > FALL_RESET_SPEED) return Impact.SAFE;
+                    state = nextState(result);
+                }
+            }
+            return best;
+        }
+    }
+
+    private record Impact(boolean unknown, float raw, float reduced) {
+        static final Impact UNKNOWN = new Impact(true, 0, 0);
+        static final Impact SAFE = new Impact(false, 0, 0);
+        int rank(double health) { return unknown ? 3 : raw == 0 ? 0 : reduced > 0 && reduced >= health ? 2 : 1; }
+    }
+
+    private int compareImpact(Impact a, Impact b) {
+        int rank = Integer.compare(a.rank(health), b.rank(health));
+        return rank == 0 ? Float.compare(a.reduced(), b.reduced()) : rank;
+    }
+
+    double emergencyDamage(World world, PhysicsState initial, float yaw, float pitch, boolean attached) {
+        Impact impact = predictEmergencyImpact(world, initial, yaw, pitch, attached);
+        return impact.unknown() ? Double.POSITIVE_INFINITY : impact.reduced();
+    }
+
+    private Impact predictEmergencyImpact(World world, PhysicsState initial, float yaw, float pitch, boolean attached) {
+        PhysicsState state = initial;
+        GlidingPhysics physics = new GlidingPhysics(yaw, pitch, attached, gravity, slowFalling);
+        for (int tick = 0; tick < HORIZON; tick++) {
+            PhysicsResult result = physics.step(world, state, HALF_WIDTH, HEIGHT);
+            if (!knownStep(world, state, result)) return Impact.UNKNOWN;
+            if (collision(result)) {
+                Impact impact = collisionDamage(world, state, result, yaw, pitch, attached);
+                if (result.onGround() || impact.raw() > 0) return impact;
+            }
+            state = nextState(result);
+        }
+        if (state.velocity().y > FALL_RESET_SPEED) return Impact.SAFE;
+        return recovery.recover(world, state, yaw, attached);
+    }
+
+    private static PhysicsState nextState(PhysicsResult result) {
+        return new PhysicsState(result.position(), result.velocity(), result.onGround(), result.fallDistance());
+    }
+
+    private static boolean collision(PhysicsResult result) {
+        return result.onGround() || result.collidedX() || result.collidedZ();
+    }
+
+    private static boolean knownStep(World world, PhysicsState state, PhysicsResult result) {
+        Vector3d from = state.position(), to = result.position();
+        if (to.y < World.getMinWorldY() || to.y + HEIGHT > World.getMaxWorldY()) return false;
+        for (int x = (int) Math.floor(Math.min(from.x, to.x) - HALF_WIDTH) >> 4;
+                x <= (int) Math.floor(Math.max(from.x, to.x) + HALF_WIDTH) >> 4; x++) {
+            for (int z = (int) Math.floor(Math.min(from.z, to.z) - HALF_WIDTH) >> 4;
+                    z <= (int) Math.floor(Math.max(from.z, to.z) + HALF_WIDTH) >> 4; z++) {
+                if (!world.chunkLoaded(x, z)) return false;
             }
         }
-        if (best != null) return best;
-        LoggerFactory.getLogger(ElytraFlightController.class).warn(
-                "Emergency shallow-glide mitigation: no verified safe next-tick trajectory at {}; pitch=-10, no rocket; touchdown safety unknown",
-                state.position());
-        return new Decision(yaw, -10, false, Phase.FORCED_LANDING);
+        return true;
+    }
+
+    private Impact collisionDamage(World world, PhysicsState state, PhysicsResult result,
+            float yaw, float pitch, boolean attached) {
+        // Rocket acceleration happens after travel; wall damage uses pre-rocket clipped motion.
+        PhysicsResult clipped = attached
+                ? new GlidingPhysics(yaw, pitch, false, gravity, slowFalling).step(world, state, HALF_WIDTH, HEIGHT)
+                : result;
+        double speed = Math.hypot(state.velocity().x, state.velocity().z);
+        DamageModel.Damage wall = DamageModel.wall(result.collidedX() || result.collidedZ(),
+                speed < .003 ? 0 : speed,
+                Math.hypot(clipped.velocity().x, clipped.velocity().z), mitigation);
+        double distance = state.velocity().y > FALL_RESET_SPEED ? Math.min(1, state.fallDistance()) : state.fallDistance();
+        distance += (float) Math.max(0, state.position().y - result.position().y);
+        String block = world.getBlockStateAt(result.position().add(0, -(double) .2f, 0))
+                .blockName().replace("minecraft:", "");
+        double multiplier = switch (block) {
+            case "slime_block", "powder_snow" -> 0;
+            case "hay_block", "honey_block" -> (double) .2f;
+            default -> 1;
+        };
+        if (block.endsWith("_bed")) distance *= .5;
+        DamageModel.Damage fall = DamageModel.fall(result.onGround() && !slowFalling ? distance : 0,
+                multiplier, movement, mitigation);
+        return new Impact(false, wall.raw() + fall.raw(), wall.reduced() + fall.reduced());
+    }
+
+    /** Damage-first unpowered steering, also when no landing site is known. */
+    public Decision emergencyHold(World world, PhysicsState state, float yaw, float pitch, boolean attached) {
+        return emergencyDecision(world, state, yaw, pitch, attached, state.position(), 1, yaw, false, false, true);
     }
 
     /**
@@ -313,8 +434,8 @@ public final class ElytraFlightController {
             }
             // A short horizon must not approve sinking below an island before reaching it.
             // Keep the emergency glide envelope viable until there is solid ground below.
-            if (emergencyApproach && !boosted && !supportedLandingArea(world, position.x, target.y, position.z)
-                    && position.y < target.y + distance / 5) {
+            if (emergencyApproach && !boosted && position.y < target.y + distance / 5
+                    && !supportedLandingArea(world, position.x, target.y, position.z)) {
                 return Double.POSITIVE_INFINITY;
             }
             if (position.y < world.getMinWorldY() || position.y + HEIGHT > world.getMaxWorldY()) {
@@ -328,7 +449,7 @@ public final class ElytraFlightController {
                     : Math.abs(position.y - cruiseAltitude) * 0.12;
             state = new PhysicsState(position, result.velocity(), false, result.fallDistance());
         }
-        if (forcedLanding && horizon == HORIZON) return Double.POSITIVE_INFINITY;
+        if (forcedLanding && horizon == HORIZON && !emergencyApproach) return Double.POSITIVE_INFINITY;
         Vector3d position = state.position();
         if (!landing) return score + horizontalDistance(position, target) * 3;
         return score + horizontalDistance(position, target) * 4

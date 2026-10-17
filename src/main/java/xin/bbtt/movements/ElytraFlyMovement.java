@@ -132,7 +132,10 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
         ElytraFlightController.Decision decision;
         try {
             xin.bbtt.physics.MovementParameters parameters = movementSync.getMovementParameters();
-            ElytraFlightController controller = new ElytraFlightController(parameters.gravity(), parameters.slowFalling());
+            ElytraFlightController controller = new ElytraFlightController(parameters,
+                    xin.bbtt.physics.DamageParameters.fromPlayer(movementSync.inventoryManager,
+                            movementSync.getMovementParameterState().effectsSnapshot()),
+                    movementSync.getMovementParameterState().health());
             if (!emergencyLanding && equipmentAction == xin.bbtt.inventory.InventoryManager.ElytraAction.LAND) {
                 // Spare-equipment replacement must be attempted before latching this emergency.
                 emergencyLanding = true;
@@ -179,9 +182,16 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
                 emergencyHoldWarned = true;
             }
             var parameters = movementSync.getMovementParameters();
-            decision = new ElytraFlightController(parameters.gravity(), parameters.slowFalling())
+            decision = new ElytraFlightController(parameters,
+                    xin.bbtt.physics.DamageParameters.fromPlayer(movementSync.inventoryManager,
+                            movementSync.getMovementParameterState().effectsSnapshot()),
+                    movementSync.getMovementParameterState().health())
                     .emergencyHold(movementSync.getWorld(), state, movementSync.yaw.get(), movementSync.pitch.get(),
                             movementSync.hasAttachedFirework() || rocketCooldown > 35);
+        }
+        if (emergencyLanding && flightTicks % 5 == 0) {
+            MovementSync.getLogger().debug("Emergency steering at {} velocity {} fallDistance={} yaw={} pitch={}",
+                    state.position(), state.velocity(), state.fallDistance(), decision.yaw(), decision.pitch());
         }
         ElytraFlightController.Decision applied = decision;
         // Cancellation may happen while trajectory evaluation is running. Guard the actual writes too.
