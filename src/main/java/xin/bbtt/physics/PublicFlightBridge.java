@@ -58,7 +58,7 @@ public final class PublicFlightBridge {
         PhysicsResult clipped = after;
         if (action instanceof FlightAction.Glide a && (c.attached() || a.firework()))
             clipped = new GlidingPhysics(a.yaw(), a.pitch(), false, c.movement().gravity(),
-                    c.movement().slowFalling()).step(c.world(), before, .299, .6);
+                    c.movement().slowFalling()).step(c.world(), before, PlayerPose.HALF_WIDTH, PlayerPose.GLIDING.height());
         double speed = Math.hypot(before.velocity().x, before.velocity().z);
         var d = DamageModel.wall(after.collidedX() || after.collidedZ(), speed < .003 ? 0 : speed,
                 Math.hypot(clipped.velocity().x, clipped.velocity().z), c.damage());

@@ -1,5 +1,6 @@
 package xin.bbtt.movements;
 
+import xin.bbtt.physics.PlayerPose;
 import org.joml.Vector3d;
 import xin.bbtt.MovementSync;
 import xin.bbtt.mcbot.LangManager;
@@ -16,6 +17,29 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
     private boolean targetBelowRoof;
     private xin.bbtt.physics.FlightTarget roofGoal;
     private boolean completedAboveRoof;
+    private xin.bbtt.physics.WaypointFlightTarget lowRoute;
+    private java.util.concurrent.CompletableFuture<LowAltitudeFlightPlan.Result> lowPlan;
+    private int lowPlanTicks;
+    private boolean lowAltitude;
+    private boolean lowEmergencyRoute;
+
+    ElytraFlyMovement withLowAltitudePlan(LowAltitudeFlightPlan.Result result) {
+        lowRoute = result.route();
+        if (lowRoute.pursuit()) lowRoute.follow(target, result.destination());
+        lowAltitude = true;
+        lifecycle.allowLowAltitudeTakeoff(result.yaw(), result.pitch());
+        return this;
+    }
+
+    /** Keep corridor landing in the local planner even for a fixed target in an ordinary dimension. */
+    ElytraFlyMovement withLowAltitudeLanding() {
+        lowAltitude = true;
+        return this;
+    }
+
+    private xin.bbtt.physics.FlightTarget steeringTarget() {
+        return lowRoute == null ? target : lowRoute;
+    }
 
     /** Whether this leg landed at the roof substitute for an inaccessible static goal. */
     boolean completedAboveRoof() { return completedAboveRoof; }
@@ -105,7 +129,7 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
             setFinished(true);
             return;
         }
-        if (!flightConfiguration.isLegacy() && !movementSync.isGliding()) {
+        if (!lowAltitude && !flightConfiguration.isLegacy() && !movementSync.isGliding()) {
             var state = new PhysicsState(movementSync.position.get(), movementSync.velocity.get(),
                     movementSync.onGround.get(), movementSync.fallDistance.get());
             if (startTransition(movementSync, state, xin.bbtt.flight.FlightTransitions.Kind.TAKEOFF)) return;
@@ -120,7 +144,7 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
     static boolean touchingWater() {
         var sync = MovementSync.INSTANCE;
         return xin.bbtt.physics.EnvironmentalPhysics.sample(sync.getWorld(), sync.position.get(),
-                (double) 0.6f / 2, sync.isGliding() ? (double) 0.6f : (double) 1.8f).waterHeight() > 0;
+                PlayerPose.HALF_WIDTH, sync.isGliding() ? PlayerPose.GLIDING.height() : (double) 1.8f).waterHeight() > 0;
     }
 
     @Override
@@ -147,8 +171,9 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
             return;
         }
         PhysicsState state = new PhysicsState(movementSync.position.get(), movementSync.velocity.get(), movementSync.onGround.get(), movementSync.fallDistance.get());
+        updateLowRoute(movementSync, state);
         // The legacy policy keeps its per-tick work: no context snapshot, gliding ends the flight.
-        var airborneContext = flightConfiguration.isLegacy() ? null
+        var airborneContext = lowAltitude || flightConfiguration.isLegacy() ? null
                 : extendedContext(movementSync, state, inventorySnapshot(movementSync), emergencyLanding);
         if (airborneContext != null && controllingMode == null && !state.onGround()) {
             for (var mode : flightConfiguration.modes()) {
@@ -183,13 +208,14 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
                     setFinished(true);
                     MovementSync.getLogger().info("Elytra safe landing complete at {}", position);
                 } else {
-                    finish(!emergencyLanding && landed
+                    finish(!emergencyLanding && !(target instanceof xin.bbtt.physics.EntityFlightTarget entity && !entity.gliding())
+                            && landed
                             && Math.hypot(position.x - target.position().x, position.z - target.position().z) <= arrivalRadius);
                 }
             });
             return;
         }
-        if (!flightConfiguration.isLegacy() && (safeLandingLeg
+        if (!lowAltitude && !flightConfiguration.isLegacy() && (safeLandingLeg
                 || !emergencyLanding && Math.hypot(state.position().x - target.position().x,
                         state.position().z - target.position().z) <= arrivalRadius)
                 && startTransition(movementSync, state, xin.bbtt.flight.FlightTransitions.Kind.LANDING)) return;
@@ -220,38 +246,54 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
             if (!emergencyLanding && !attached && movementSync.countHotbarFireworks() == 0
                     && "minecraft:the_end".equals(movementSync.getRecoveryDimension())) {
                 Vector3d p = state.position();
-                var support = movementSync.getWorld().findHighestCollisionTop(p.x - .299,
-                        xin.bbtt.world.World.getMinWorldY(), p.z - .299, p.x + .299, p.y, p.z + .299);
+                var support = movementSync.getWorld().findHighestCollisionTop(p.x - PlayerPose.HALF_WIDTH,
+                        xin.bbtt.world.World.getMinWorldY(), p.z - PlayerPose.HALF_WIDTH, p.x + PlayerPose.HALF_WIDTH, p.y, p.z + PlayerPose.HALF_WIDTH);
                 if (support.isEmpty()) {
                     emergencyLanding = true;
                     MovementSync.getLogger().warn("Fireworks exhausted above void; diverting to known solid ground");
                 }
             }
             ElytraFlightController.Decision selected;
-            if (emergencyLanding) {
+            if (lowAltitude && (lowRoute == null || emergencyLanding && !lowEmergencyRoute)) {
+                // A global landing search can choose the roof above us. Retain local,
+                // unpowered collision-checked steering instead of climbing out of the corridor.
+                selected = controller.emergencyHold(movementSync.getWorld(), state,
+                        movementSync.yaw.get(), movementSync.pitch.get(), attached);
+            } else if (emergencyLanding && !lowAltitude) {
                 selected = controller.forceLand(movementSync.getWorld(), state,
                         movementSync.yaw.get(), movementSync.pitch.get(), attached, rocketFlights, arrivalRadius,
                         movementSync.getLandingMemory(), landingSearch);
             } else {
                 try {
-                    selected = controller.decide(movementSync.getWorld(), state,
-                            movementSync.yaw.get(), movementSync.pitch.get(), attached, target, fireworks, arrivalRadius);
+                    if (lowAltitude && lowRoute != null) {
+                        var context = extendedContext(movementSync, state, inventorySnapshot(movementSync), emergencyLanding);
+                        selected = controller.decide(movementSync.getWorld(), state,
+                                movementSync.yaw.get(), movementSync.pitch.get(), attached, lowRoute, fireworks, arrivalRadius,
+                                candidate -> lowDecisionSafe(context, candidate, flightConfiguration));
+                    } else {
+                        selected = controller.decide(movementSync.getWorld(), state,
+                                movementSync.yaw.get(), movementSync.pitch.get(), attached, steeringTarget(), fireworks, arrivalRadius);
+                    }
                 } catch (IllegalStateException unavailable) {
-                    emergencyLanding = true;
-                    selected = controller.forceLand(movementSync.getWorld(), state,
+                    if (!lowAltitude) emergencyLanding = true;
+                    selected = lowAltitude ? controller.emergencyHold(movementSync.getWorld(), state,
+                            movementSync.yaw.get(), movementSync.pitch.get(), attached)
+                            : controller.forceLand(movementSync.getWorld(), state,
                             movementSync.yaw.get(), movementSync.pitch.get(), attached, rocketFlights, arrivalRadius,
                             movementSync.getLandingMemory(), landingSearch);
                 }
                 if (!emergencyLanding && selected.phase() == ElytraFlightController.Phase.FORCED_LANDING) {
-                    emergencyLanding = true;
-                    selected = controller.forceLand(movementSync.getWorld(), state,
+                    if (!lowAltitude) emergencyLanding = true;
+                    selected = lowAltitude ? controller.emergencyHold(movementSync.getWorld(), state,
+                            movementSync.yaw.get(), movementSync.pitch.get(), attached)
+                            : controller.forceLand(movementSync.getWorld(), state,
                             movementSync.yaw.get(), movementSync.pitch.get(), attached, rocketFlights, arrivalRadius,
                             movementSync.getLandingMemory(), landingSearch);
                 }
             }
             decision = selected;
         } catch (IllegalStateException error) {
-            emergencyLanding = true;
+            if (!lowAltitude) emergencyLanding = true;
             if (!emergencyHoldWarned) {
                 MovementSync.getLogger().warn("Emergency landing unavailable at {} with velocity {}: {}; "
                                 + "retaining unpowered steering and retrying; safe touchdown is not guaranteed",
@@ -271,7 +313,18 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
                     state.position(), state.velocity(), state.fallDistance(), decision.yaw(), decision.pitch());
         }
         // Compute vanilla landing/memory/firework-budget decisions before plugin arbitration.
-        if (!flightConfiguration.isLegacy() && tickExtended(movementSync, state, equipmentAction, decision)) return;
+        if (!lowAltitude && !flightConfiguration.isLegacy() && tickExtended(movementSync, state, equipmentAction, decision)) return;
+        if (lowAltitude && !flightConfiguration.isLegacy() && !lowDecisionSafe(
+                extendedContext(movementSync, state, inventorySnapshot(movementSync), emergencyLanding), decision, flightConfiguration)) {
+            var context = extendedContext(movementSync, state, inventorySnapshot(movementSync), true);
+            var fallback = new ElytraFlightController(context.movement(), context.damage(), context.health())
+                    .emergencyHold(context.world(), state, context.yaw(), context.pitch(), context.attached());
+            if (!lowDecisionSafe(context, fallback, flightConfiguration)) {
+                runIfCurrent(() -> finish(false));
+                return;
+            }
+            decision = fallback;
+        }
         ElytraFlightController.Decision applied = decision;
         // Cancellation may happen while trajectory evaluation is running. Guard the actual writes too.
         runIfCurrent(() -> {
@@ -428,10 +481,74 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
         return new xin.bbtt.flight.FlightContext(sync.getWorld(), state, sync.getMovementParameters(),
                 xin.bbtt.physics.DamageParameters.fromPlayer(sync.inventoryManager,
                         sync.getMovementParameterState().effectsSnapshot()),
-                sync.getMovementParameterState().health(), target.aim(state), sync.yaw.get(), sync.pitch.get(),
+                sync.getMovementParameterState().health(), steeringTarget().aim(state), sync.yaw.get(), sync.pitch.get(),
                 lifecycle.rocketCooldown() == 0 ? sync.countHotbarFireworks() : 0,
                 sync.hasAttachedFirework() || lifecycle.rocketCooldown() > 35, arrivalRadius,
                 emergency, inventory);
+    }
+
+    /** Restrict local vanilla controls with registered damage rules, without global cost arbitration. */
+    static boolean lowDecisionSafe(xin.bbtt.flight.FlightContext context, ElytraFlightController.Decision decision,
+                                   xin.bbtt.flight.FlightConfiguration configuration) {
+        var action = new xin.bbtt.flight.FlightAction.Glide(decision.yaw(), decision.pitch(), decision.firework());
+        var physics = new xin.bbtt.physics.GlidingPhysics(action.yaw(), action.pitch(),
+                context.attached() || action.firework(), xin.bbtt.physics.PlayerInput.NONE, context.movement());
+        var state = context.state();
+        var results = new java.util.ArrayList<xin.bbtt.physics.PhysicsResult>();
+        // Six ticks matches a local planner edge; longer high-altitude predictions reject corridors.
+        for (int tick = 0; tick < 6; tick++) {
+            var result = physics.step(context.world(), state, PlayerPose.HALF_WIDTH, PlayerPose.GLIDING.height());
+            results.add(result);
+            state = new PhysicsState(result.position(), result.velocity(), result.onGround(), result.fallDistance(), result.pose());
+            if (result.onGround() || result.collidedX() || result.collidedZ()) break;
+        }
+        return new xin.bbtt.flight.FlightSelector(configuration).safety(context,
+                xin.bbtt.flight.VanillaGlideMode.INSTANCE, action,
+                new xin.bbtt.flight.Trajectory(context.state(), results)).damageClass()
+                == xin.bbtt.flight.FlightSelector.DamageClass.SAFE;
+    }
+
+    private void updateLowRoute(MovementSync sync, PhysicsState state) {
+        if (flightConfiguration.modes().stream().noneMatch(mode -> mode instanceof xin.bbtt.flight.VanillaGlideMode)) return;
+        boolean required = target instanceof xin.bbtt.physics.EntityFlightTarget entity ? !entity.gliding()
+                : xin.bbtt.listeners.RegistryDataListener.hasCeiling()
+                && !xin.bbtt.physics.CeilingCollision.isAboveRoof(sync.getWorld(), state.position());
+        if (!required) {
+            if (target instanceof xin.bbtt.physics.EntityFlightTarget entity && entity.gliding()) {
+                lowAltitude = false;
+                lowRoute = null;
+                if (lowPlan != null) lowPlan.cancel(false);
+                lowPlan = null;
+            }
+            if (!lowAltitude) return;
+        }
+        lowAltitude = true;
+        if (emergencyLanding && !lowEmergencyRoute) {
+            lowRoute = null;
+            if (lowPlan != null) lowPlan.cancel(false);
+            lowPlan = null;
+            lowEmergencyRoute = true;
+            lowPlanTicks = 0;
+        }
+        boolean pursuit = !emergencyLanding && target instanceof xin.bbtt.physics.EntityFlightTarget;
+        Vector3d endpoint = pursuit ? xin.bbtt.physics.WaypointFlightTarget.pursuitAim(target, state) : target.aim(state);
+        if (lowPlan != null && lowPlan.isDone()) {
+            var result = lowPlan.getNow(null);
+            lowPlan = null;
+            runIfCurrent(() -> {
+                if (isFinished()) return;
+                if (result != null && (emergencyLanding || pursuit || result.destination().distanceSquared(endpoint) <= 16)) {
+                    lowRoute = result.route();
+                    if (lowRoute.pursuit()) lowRoute.follow(target, result.destination());
+                }
+            });
+        }
+        if (lowPlan == null && !state.onGround() && sync.isGliding()
+                && (lowPlanTicks++ % 20 == 0 || !pursuit && !emergencyLanding && lowRoute != null && lowRoute.goal().distanceSquared(endpoint) > 16)) {
+            lowPlan = emergencyLanding ? LowAltitudeFlightPlan.emergency(sync.getWorld(), state, sync.getMovementParameters())
+                    : pursuit ? LowAltitudeFlightPlan.pursuit(sync.getWorld(), state, endpoint, sync.getMovementParameters(), true)
+                    : LowAltitudeFlightPlan.submit(sync.getWorld(), state, endpoint, sync.getMovementParameters(), true);
+        }
     }
 
     void projectRoofTarget(MovementSync sync) {
@@ -501,6 +618,7 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
     public void onStop() {
         // Cancelling steering must not fabricate a landing or switch off airborne physics.
         setFinished(true);
+        if (lowPlan != null) lowPlan.cancel(false);
         if (transition != null) {
             var active = transition;
             transition = null;

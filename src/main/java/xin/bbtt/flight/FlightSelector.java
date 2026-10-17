@@ -1,5 +1,6 @@
 package xin.bbtt.flight;
 
+import xin.bbtt.physics.PlayerPose;
 import java.util.Objects;
 import xin.bbtt.physics.PhysicsState;
 import xin.bbtt.physics.PublicFlightBridge;
@@ -148,10 +149,10 @@ public final class FlightSelector {
             var from = state.position();
             var to = result.position();
             if (!result.onGround() && !result.collidedX() && !result.collidedZ()
-                    && context.world().isBoxColliding(Math.min(from.x, to.x) - .299,
-                    Math.min(from.y, to.y), Math.min(from.z, to.z) - .299,
-                    Math.max(from.x, to.x) + .299, Math.max(from.y, to.y) + .6,
-                    Math.max(from.z, to.z) + .299)) return UNKNOWN;
+                    && context.world().isBoxColliding(Math.min(from.x, to.x) - PlayerPose.HALF_WIDTH,
+                    Math.min(from.y, to.y), Math.min(from.z, to.z) - PlayerPose.HALF_WIDTH,
+                    Math.max(from.x, to.x) + PlayerPose.HALF_WIDTH, Math.max(from.y, to.y) + PlayerPose.GLIDING.height(),
+                    Math.max(from.z, to.z) + PlayerPose.HALF_WIDTH)) return UNKNOWN;
             for (DamageRule rule : configuration.damageRules()) {
                 var damage = Objects.requireNonNull(rule.damage(context, action, state, result));
                 // Environmental hazards are forbidden cells, not an impact trade-off.

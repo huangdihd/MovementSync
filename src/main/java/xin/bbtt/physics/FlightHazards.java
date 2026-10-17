@@ -28,7 +28,7 @@ public final class FlightHazards {
 
     private static float contact(World world, Vector3d from, Vector3d to, double height, boolean lava) {
         float raw = 0;
-        double radius = .299;
+        double radius = PlayerPose.HALF_WIDTH;
         for (int x = (int) Math.floor(Math.min(from.x, to.x) - radius);
                 x <= (int) Math.floor(Math.max(from.x, to.x) + radius); x++) {
             for (int y = (int) Math.floor(Math.min(from.y, to.y) - 1.0e-7);

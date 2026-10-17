@@ -27,6 +27,14 @@ public final class ElytraFlightController {
         return selector.decide(world, state, yaw, pitch, attached, target, fireworks, radius);
     }
 
+    /** Corridor-only candidate filter; rejected plugin-damage candidates do not hide safe alternatives. */
+    public Decision decide(World world, PhysicsState state, float yaw, float pitch, boolean attached,
+            WaypointFlightTarget target, int fireworks, double radius,
+            java.util.function.Predicate<Decision> allowed) {
+        return selector.decideLow(world, state, yaw, pitch, attached, target, fireworks, radius,
+                java.util.Objects.requireNonNull(allowed));
+    }
+
     public Decision forceLand(World world, PhysicsState state, float yaw, float pitch, boolean attached, int fireworks, double radius) {
         return selector.forceLand(world, state, yaw, pitch, attached, fireworks, radius);
     }

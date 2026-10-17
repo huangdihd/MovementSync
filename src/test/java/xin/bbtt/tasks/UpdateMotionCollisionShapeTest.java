@@ -159,7 +159,7 @@ final class UpdateMotionCollisionShapeTest {
     }
 
     @Test
-    void groundBodyUsesVanillaFloatWidthWithoutChangingGlidingWidth() throws Exception {
+    void groundAndGlidingBodiesUseVanillaFloatWidth() throws Exception {
         useTerrain(position -> Math.floor(position.x) == 1 ? STONE : AIR);
         Vector3d vanillaContact = new Vector3d(1 - PLAYER_HALF_WIDTH, 1, 0.5);
         assertFalse(collides(vanillaContact));
@@ -168,8 +168,8 @@ final class UpdateMotionCollisionShapeTest {
         assertTrue(collides(new Vector3d(0.7, 1, 0.5)),
             "double 0.3 is still narrower than half of vanilla's float width");
         movementSync.setGliding(true);
-        assertFalse(collides(new Vector3d(0.7005, 1, 0.5)),
-            "this ground-only change must preserve the gliding body width");
+        assertTrue(collides(new Vector3d(0.7005, 1, 0.5)),
+            "gliding also uses vanilla 0.6F / 2, not the old .299 inset");
     }
 
     private void useTerrain(java.util.function.ToIntFunction<Vector3d> blocks) throws Exception {

@@ -12,6 +12,9 @@ import xin.bbtt.world.World;
 /** Bounded trajectory steering. The caller owns rocket lifetime and flight lifecycle. */
 final class FlightSelector {
     private static final int HORIZON = 24;
+    // Receding-horizon corridor steering: six travel ticks covers several decision
+    // updates without forcing a single constant heading through a future bend.
+    private static final int LOW_HORIZON = 6;
     private final VanillaGlideMode mode;
     private final java.util.List<FlightMode> modes;
     private final FlightSafety safety;
@@ -45,6 +48,8 @@ final class FlightSelector {
 
     public Decision decide(World world, PhysicsState state, float yaw, float pitch,
             boolean attached, FlightTarget destination, int fireworks, double radius) {
+        if (destination instanceof WaypointFlightTarget route)
+            return decideLow(world, state, yaw, pitch, attached, route, fireworks, radius);
         Vector3d target = destination.aim(state);
         Objects.requireNonNull(world, "world");
         Objects.requireNonNull(state, "state");
@@ -106,6 +111,85 @@ final class FlightSelector {
             }
         }
         if (best == null) throw new IllegalStateException("No collision-free flight trajectory");
+        return best;
+    }
+
+    /** Corridor steering is isolated so fixed-target arithmetic stays untouched. */
+    private Decision decideLow(World world, PhysicsState state, float yaw, float pitch,
+            boolean attached, WaypointFlightTarget route, int fireworks, double radius) {
+        return decideLow(world, state, yaw, pitch, attached, route, fireworks, radius, decision -> true);
+    }
+
+    Decision decideLow(World world, PhysicsState state, float yaw, float pitch,
+            boolean attached, WaypointFlightTarget route, int fireworks, double radius,
+            java.util.function.Predicate<Decision> allowed) {
+        Objects.requireNonNull(world, "world");
+        Objects.requireNonNull(state, "state");
+        if (!state.position().isFinite() || !state.velocity().isFinite()
+                || !Float.isFinite(yaw) || !Float.isFinite(pitch)
+                || !Double.isFinite(radius) || radius <= 0 || fireworks < 0)
+            throw new IllegalArgumentException("Flight inputs must be finite, radius positive and fireworks nonnegative");
+        if (state.onGround()) return new Decision(normalize(yaw), 0, false, Phase.LANDED);
+        route.advance(world, state, movement);
+        Vector3d target = route.aim(state);
+        float heading = LowAltitudePlanner.yaw(new Vector3d(target).sub(state.position()));
+        Decision best = null;
+        double bestScore = Double.POSITIVE_INFINITY;
+        for (FlightMode.Candidate candidate : mode.candidates(yaw, heading,
+                !attached && fireworks > 0, false)) {
+            boolean boosted = attached || candidate.firework();
+            var checked = safety.simulate(world, state,
+                    mode.stepper(candidate.yaw(), candidate.pitch(), boosted), LOW_HORIZON,
+                    candidate.yaw(), candidate.pitch(), boosted, false);
+            if (checked.terminalImpact() != null && (checked.terminalImpact().unknown()
+                    || checked.terminalImpact().raw() > 0)) continue;
+            var trajectory = checked.trajectory();
+            if (!route.accepts(trajectory)) continue;
+            boolean valid = true;
+            double score = 0;
+            for (int tick = 0; tick < trajectory.size(); tick++) {
+                var result = trajectory.result(tick);
+                if (result.collidedX() || result.collidedZ()
+                        || result.onGround() && (!route.landed()
+                        || result.position().distance(route.goal()) > radius)) {
+                    valid = false;
+                    break;
+                }
+                // No terrain-top reserve or fixed clearance penalty in a corridor.
+                if (route.pursuit()) {
+                    Vector3d liveTarget = new Vector3d(target);
+                    if (route.pursuitEndpoint())
+                        liveTarget.fma(tick + 1, route.velocity());
+                    // Integrated tracking error makes powered and unpowered
+                    // trajectories compete on actual progress, not a speed gate.
+                    score += result.position().distance(liveTarget);
+                } else score += Math.abs(result.position().y - target.y) / HORIZON;
+            }
+            if (!valid || trajectory.size() == 0) continue;
+            PhysicsState end = checked.finalState();
+            if (route.pursuit()) {
+                // Track the moving follow offset, not a stationary intercept. The
+                // velocity error brakes before passing it and avoids endpoint hunting.
+                // Interior corridor vertices are fixed geometry, not moving
+                // entities: extrapolating a ridge corner can put the scored goal
+                // back inside the ridge. Match entity motion only at the endpoint.
+                Vector3d velocity = route.pursuitEndpoint() ? route.velocity() : new Vector3d();
+                Vector3d movingTarget = new Vector3d(target).fma(LOW_HORIZON, velocity);
+                Vector3d desiredVelocity = new Vector3d(movingTarget).sub(end.position()).div(LOW_HORIZON).add(velocity);
+                Vector3d actualVelocity = end.velocity();
+                score += end.position().distance(movingTarget) * 3
+                        + actualVelocity.distance(desiredVelocity) * LOW_HORIZON;
+            } else score += end.position().distance(target) * 3;
+            score += BuiltinFlightCost.controls(candidate.yaw(), candidate.pitch(), yaw, pitch, candidate.firework());
+            if (score < bestScore) {
+                Decision decision = new Decision(candidate.yaw(), candidate.pitch(), candidate.firework(),
+                        route.landed() ? Phase.LANDING : Phase.CRUISE);
+                if (!allowed.test(decision)) continue;
+                bestScore = score;
+                best = decision;
+            }
+        }
+        if (best == null) throw new IllegalStateException("No safe low-altitude trajectory");
         return best;
     }
 

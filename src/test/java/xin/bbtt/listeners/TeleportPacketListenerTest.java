@@ -20,6 +20,8 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 /** Teleports are resolved like the vanilla client's EntityPosition.apply. */
 class TeleportPacketListenerTest {
@@ -53,6 +55,23 @@ class TeleportPacketListenerTest {
         sessionField.setAccessible(true);
         sessionField.set(Bot.INSTANCE, previousSession);
         MovementSync.INSTANCE = null;
+    }
+
+    @Test
+    void airborneFollowCorrectionPreservesNavigationInsteadOfTakingOverForLanding() {
+        movementSync.onRecoveryTeleport();
+        movementSync.setFollowTargetId(99);
+        movementSync.setGliding(true);
+        long generation = movementSync.getNavigationGeneration();
+        new TeleportPacketListener().packetReceived(session,
+            new ClientboundPlayerPositionPacket(9, 4120.5, 65, 500.5, .5, -.1, 0, -90f, 0f));
+        assertEquals(generation, movementSync.getNavigationGeneration());
+        assertEquals(99, movementSync.getFollowTargetId());
+        assertTrue(movementSync.isGliding());
+        assertNull(movementSync.getMovementController().getCurrentMovement(),
+                "a correction must not install an independent stop/landing owner");
+        assertVector(4120.5, 65, 500.5, movementSync.position.get());
+        assertVector(.5, -.1, 0, movementSync.velocity.get());
     }
 
     @Test

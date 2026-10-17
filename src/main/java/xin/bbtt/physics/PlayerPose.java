@@ -5,7 +5,10 @@ import xin.bbtt.world.World;
 
 /** Local tick-end pose, distinct from the asynchronously received gliding flag. */
 public enum PlayerPose {
-    STANDING(1.8), CROUCHING(1.5), SWIMMING(0.6), GLIDING(0.6);
+    STANDING(1.8), CROUCHING(1.5), SWIMMING(0.6), GLIDING(0.6f);
+
+    /** Vanilla player width is a float before promotion to collision coordinates. */
+    public static final double HALF_WIDTH = 0.6F / 2;
 
     private final double height;
     PlayerPose(double height) { this.height = height; }
@@ -25,7 +28,7 @@ public enum PlayerPose {
     }
 
     private static boolean fits(World world, Vector3d p, PlayerPose pose) {
-        double radius = (double) 0.6f / 2 - 1.0e-7;
+        double radius = HALF_WIDTH - 1.0e-7;
         return !world.isBoxColliding(p.x - radius, p.y + 1.0e-7, p.z - radius,
                 p.x + radius, p.y + (double)(float)pose.height - 1.0e-7, p.z + radius);
     }

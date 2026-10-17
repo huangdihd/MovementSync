@@ -7,8 +7,8 @@ import xin.bbtt.world.World;
 /** Damage-first classification of bounded flight trajectories. */
 final class FlightSafety {
     private static final int HORIZON = 24;
-    static final double HALF_WIDTH = 0.299;
-    static final double HEIGHT = 0.6;
+    static final double HALF_WIDTH = PlayerPose.HALF_WIDTH;
+    static final double HEIGHT = PlayerPose.GLIDING.height();
     // Entity.limitFallDistance (Yarn 1.21.11): strictly greater than -0.5.
     static final double FALL_RESET_SPEED = -0.5;
     private final MovementParameters movement;

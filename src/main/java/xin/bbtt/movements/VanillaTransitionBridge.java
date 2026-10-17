@@ -66,7 +66,7 @@ public final class VanillaTransitionBridge {
         var physics = new GlidingPhysics(action.yaw(), action.pitch(), c.attached() || action.firework(),
                 c.movement().gravity(), c.movement().slowFalling());
         for (int tick = 0; tick < (takeoff ? 24 : 60); tick++) {
-            var step = physics.step(c.world(), state, .299, .6);
+            var step = physics.step(c.world(), state, PlayerPose.HALF_WIDTH, PlayerPose.GLIDING.height());
             results.add(step);
             state = new PhysicsState(step.position(), step.velocity(), step.onGround(), step.fallDistance(), step.pose());
             if (state.onGround()) break;

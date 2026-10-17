@@ -25,7 +25,7 @@ public class updateMotionTask implements Runnable {
         if (session != null && session.isConnected()) session.send(packet);
     }
 
-    private static final double PLAYER_HALF_WIDTH = (double) 0.6f / 2;
+    private static final double PLAYER_HALF_WIDTH = xin.bbtt.physics.PlayerPose.HALF_WIDTH;
     private PlayerInput lastInput = PlayerInput.NONE;
     private boolean lastSprinting;
     private int jumpCooldown;
@@ -76,7 +76,7 @@ public class updateMotionTask implements Runnable {
     }
 
     private BodyDimensions getBodyDimensions() {
-        double halfWidth = 0.299; // Preserve riding fallback and gliding dimensions.
+        double halfWidth = 0.299; // Preserve the unknown-vehicle riding fallback.
         double height = 1.8;
 
         if (MovementSync.INSTANCE.isRiding()) {
@@ -86,7 +86,9 @@ public class updateMotionTask implements Runnable {
                 height = vehicle.getHeight();
             }
         } else if (MovementSync.INSTANCE.isGliding()) {
-            height = 0.6;
+            // PlayerEntity's FALL_FLYING dimensions are floats, not an inset box.
+            halfWidth = PLAYER_HALF_WIDTH;
+            height = xin.bbtt.physics.PlayerPose.GLIDING.height();
         } else {
             halfWidth = PLAYER_HALF_WIDTH;
             Object pose = MovementSync.INSTANCE.getSelfMetadata().get("pose");

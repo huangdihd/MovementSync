@@ -15,8 +15,8 @@ final class FlightTrajectoryTest {
         PhysicsStepper physics = (world, state, width, height) -> {
             int tick = calls.getAndIncrement();
             assertTrue(tick < 3, "physics must not run after the stop tick");
-            assertEquals(.299, width);
-            assertEquals(.6, height);
+            assertEquals((double) (0.6F / 2), width);
+            assertEquals((double) 0.6F, height);
             assertEquals(initial.position().add(0, -tick, tick), state.position());
             assertEquals(4 + tick, state.fallDistance());
             assertFalse(state.onGround());

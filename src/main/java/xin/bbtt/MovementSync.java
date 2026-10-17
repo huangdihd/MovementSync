@@ -165,7 +165,15 @@ public class MovementSync implements Plugin {
     /** Called after the authoritative first position has been applied. */
     public void onRecoveryTeleport() {
         if (gotoRecovery.onTeleport()) reconnectAirRecovery.positioned();
-        else if (!gotoRecovery.isPending()) cancelNavigation();
+        else if (!gotoRecovery.isPending()) {
+            // A correction applies authoritative position/velocity, not a user stop.
+            // Follow replans from that state; retain its owner and generation rather
+            // than replacing it with an independent landing that forgets the entity.
+            synchronized (navigationLock) {
+                if (followTargetId != -1) return;
+                cancelNavigation();
+            }
+        }
     }
 
     @Getter

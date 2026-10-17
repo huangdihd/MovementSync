@@ -257,6 +257,16 @@ public class World {
         );
     }
 
+    /** Runs a short compound terrain query against one consistent loaded/block view.
+     * Queries must be read-only and must not acquire navigation/player locks. Do not
+     * hold this across an entire search: writers need to publish streamed chunks.
+     */
+    public boolean readTerrain(java.util.function.BooleanSupplier query) {
+        lock.readLock().lock();
+        try { return query.getAsBoolean(); }
+        finally { lock.readLock().unlock(); }
+    }
+
     public boolean chunkLoaded(int chunkX, int chunkZ) {
         lock.readLock().lock();
         try {

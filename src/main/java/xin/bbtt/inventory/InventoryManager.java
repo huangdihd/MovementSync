@@ -1,5 +1,6 @@
 package xin.bbtt.inventory;
 
+import xin.bbtt.physics.PlayerPose;
 import xin.bbtt.MovementSync;
 
 import lombok.Getter;
@@ -145,8 +146,8 @@ public class InventoryManager {
         double height = 0;
         if (sync != null && !onGround) {
             var p = sync.position.get();
-            var ground = sync.getWorld().findHighestCollisionTop(p.x - .299, xin.bbtt.world.World.getMinWorldY(),
-                    p.z - .299, p.x + .299, p.y, p.z + .299);
+            var ground = sync.getWorld().findHighestCollisionTop(p.x - PlayerPose.HALF_WIDTH, xin.bbtt.world.World.getMinWorldY(),
+                    p.z - PlayerPose.HALF_WIDTH, p.x + PlayerPose.HALF_WIDTH, p.y, p.z + PlayerPose.HALF_WIDTH);
             height = p.y - ground.orElse(xin.bbtt.world.World.getMinWorldY());
         }
         if (!getElytraDurability().shouldLand(height)) return ElytraAction.READY;

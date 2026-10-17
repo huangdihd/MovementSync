@@ -41,6 +41,7 @@ public final class TravelMovement extends Movement {
     private volatile Movement child;
     private volatile boolean stopped;
     private boolean takeoffForLanding;
+    private java.util.concurrent.CompletableFuture<LowAltitudeFlightPlan.Result> lowPlan;
 
     public TravelMovement(Vector3i goal, long generation, boolean fly) {
         this(goal, generation, fly, null, new xin.bbtt.flight.FlightContextBuilder().addStandard());
@@ -156,10 +157,14 @@ public final class TravelMovement extends Movement {
                         movementSync.getWorld(), movementSync.position.get());
         boolean belowRoof = xin.bbtt.listeners.RegistryDataListener.hasCeiling()
                 && !isOpen(movementSync.getWorld(), movementSync.position.get());
-        // This segment deliberately has no underground flight planner. Do not
-        // approach a launch column or ask plugins for ordinary underground takeoff.
-        if (belowRoof && stage == Stage.PREPARE && (movementSync.onGround.get() || environmental))
+        if (belowRoof && stage == Stage.PREPARE) {
+            if (fly && !environmental && prepareLowFlight(movementSync)) return;
             stage = Stage.LAND;
+            if (!movementSync.onGround.get() && !environmental) {
+                startChild(extendedLanding());
+                return;
+            }
+        }
         if (!belowRoof && !flightConfiguration.isLegacy()) {
             // Still compare the real vanilla preview when plugins are registered. If all
             // plugins decline transitions, retain legacy preparation/approach behavior.
@@ -212,6 +217,35 @@ public final class TravelMovement extends Movement {
             }
             startChild(legs.walk(path, goal, false));
         }
+    }
+
+    /** Planning never owns navigation locks; publication rechecks the owning generation. */
+    private boolean prepareLowFlight(MovementSync sync) {
+        if (flightConfiguration.modes().stream().noneMatch(mode -> mode instanceof xin.bbtt.flight.VanillaGlideMode)
+                || !LowAltitudeFlightPlan.admissible(sync.position.get(), new Vector3d(goal.x + .5, goal.y, goal.z + .5))) return false;
+        var equipment = legs.prepareFlight();
+        if (equipment == xin.bbtt.inventory.InventoryManager.ElytraAction.WAITING) return true;
+        if (equipment == xin.bbtt.inventory.InventoryManager.ElytraAction.LAND
+                || !sync.hasEquippedElytra() || !legs.hasFlightBudget()) return false;
+        if (lowPlan == null) {
+            lowPlan = LowAltitudeFlightPlan.submit(sync.getWorld(),
+                    new xin.bbtt.physics.PhysicsState(sync.position.get(), sync.velocity.get(), sync.onGround.get(), sync.fallDistance.get()),
+                    new Vector3d(goal.x + .5, goal.y, goal.z + .5), sync.getMovementParameters(), sync.isGliding());
+            return true;
+        }
+        if (!lowPlan.isDone()) return true;
+        var result = lowPlan.getNow(null);
+        lowPlan = null;
+        if (result == null || result.destination().distanceSquared(new Vector3d(goal.x + .5, goal.y, goal.z + .5)) > .01) return false;
+        sync.runIfNavigationRequestCurrent(generation, () -> {
+            if (stopped || finished) return;
+            var movement = legs.flight();
+            if (!(movement instanceof ElytraFlyMovement flight)) return;
+            flight.withLowAltitudePlan(result);
+            stage = Stage.FLIGHT;
+            startChild(flight);
+        });
+        return child != null;
     }
 
     /** Returns false to hand this tick to the vanilla preparation below. */
@@ -377,6 +411,7 @@ public final class TravelMovement extends Movement {
     public void onStop() {
         stopped = true;
         finished = true;
+        if (lowPlan != null) lowPlan.cancel(false);
         Movement currentChild = child;
         child = null;
         if (currentChild != null) currentChild.onStop();

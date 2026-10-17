@@ -29,8 +29,8 @@ final class FlightSafetyTrajectoryTest {
         Impact expected = new Impact(false, 7, 3);
         Impact actual = safety.predictEmergencyImpact(world, initial(-.5), 12, 0, false,
                 (w, state, width, height) -> {
-                    assertEquals(.299, width);
-                    assertEquals(.6, height);
+                    assertEquals((double) (0.6F / 2), width);
+                    assertEquals((double) 0.6F, height);
                     ticks.incrementAndGet();
                     return advance(state, false, false);
                 }, (w, state, yaw, attached) -> {

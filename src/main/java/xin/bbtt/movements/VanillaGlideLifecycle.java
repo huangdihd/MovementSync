@@ -14,6 +14,21 @@ final class VanillaGlideLifecycle {
     private int takeoffTicks;
     private int rocketCooldown;
     private boolean airborne;
+    private boolean lowAltitudeTakeoff;
+    private float launchYaw;
+    private float launchPitch;
+
+    void allowLowAltitudeTakeoff(float yaw, float pitch) {
+        lowAltitudeTakeoff = true;
+        launchYaw = yaw;
+        launchPitch = pitch;
+    }
+
+    private boolean provenDeployment(MovementSync sync) {
+        return lowAltitudeTakeoff && LowAltitudeFlightPlan.deployment(sync.getWorld(),
+                new PhysicsState(sync.position.get(), sync.velocity.get(), sync.onGround.get(), sync.fallDistance.get()),
+                sync.getMovementParameters(), launchYaw, launchPitch) != null;
+    }
 
     /** Called inside the movement's current-request guard. */
     void init(MovementSync sync) {
@@ -21,7 +36,12 @@ final class VanillaGlideLifecycle {
         sync.getLandingMemory().takeoff(sync.getWorld(), sync.position.get());
         sync.getLandingMemory().observe(sync.getWorld(), sync.position.get());
         airborne = sync.isGliding();
-        if (!airborne && sync.onGround.get() && !underCeiling(sync)) sync.jump();
+        if (!airborne && lowAltitudeTakeoff) {
+            sync.setInput(xin.bbtt.physics.PlayerInput.NONE);
+            sync.setYawToward(launchYaw);
+            sync.pitch.set(launchPitch);
+        }
+        if (!airborne && sync.onGround.get() && (!underCeiling(sync) || provenDeployment(sync))) sync.jump();
     }
 
     boolean awaitingTakeoff(MovementSync sync) {
@@ -32,11 +52,15 @@ final class VanillaGlideLifecycle {
     void tickTakeoff(MovementSync sync, Runnable fail) {
         // Revalidate at deployment: a preview can become stale while waiting for descent.
         if (++takeoffTicks > 60 || sync.isRiding()
-                || !sync.isGliding() && underCeiling(sync) && !eligibleForAirborneTakeoff(sync)) {
+                || !sync.isGliding() && underCeiling(sync) && !lowAltitudeTakeoff && !eligibleForAirborneTakeoff(sync)) {
             fail.run();
             return;
         }
         if (!sync.onGround.get() && sync.velocity.get().y <= 0) {
+            if (lowAltitudeTakeoff && !provenDeployment(sync)) {
+                fail.run();
+                return;
+            }
             airborne = sync.startGliding();
         }
     }

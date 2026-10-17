@@ -96,7 +96,7 @@ final class GlideRange {
                 PhysicsState state = states.get(tick);
                 if (states.size() == tick + 1) {
                     var result = (tick < key.boostTicks() ? powered : unpowered)
-                            .step(empty, state, .299, .6);
+                            .step(empty, state, PlayerPose.HALF_WIDTH, PlayerPose.GLIDING.height());
                     states.add(new PhysicsState(result.position(), result.velocity(), false));
                 }
                 PhysicsState next = states.get(tick + 1);

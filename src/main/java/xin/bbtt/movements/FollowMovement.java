@@ -20,6 +20,8 @@ public final class FollowMovement extends Movement {
     private boolean landing;
     private boolean reportedLost;
     private boolean walkingPlanAttempted;
+    private java.util.concurrent.CompletableFuture<LowAltitudeFlightPlan.Result> lowPlan;
+    private int lowPlanRetryTicks;
 
     public FollowMovement(int entityId, double keepDistance, boolean allowDigging, long generation) {
         this.entityId = entityId;
@@ -36,7 +38,8 @@ public final class FollowMovement extends Movement {
 
     @Override public void onTick() {
         var sync = MovementSync.INSTANCE;
-        if (finished || !sync.isNavigationRequestCurrent(generation)) return;
+        if (finished || !sync.isNavigationRequestCurrent(generation)) { cancelLowPlan(); return; }
+        if (lowPlanRetryTicks > 0) lowPlanRetryTicks--;
         target.sample(sync.getWorld());
         // Touchdown precedes authoritative shared_flags clearing. Do not issue
         // walking input or a second deployment while that landing is pending.
@@ -45,6 +48,7 @@ public final class FollowMovement extends Movement {
             if (sync.isGliding() && !water) return;
             flying = false;
             landing = false;
+            walkingPlanAttempted = false;
             MovementSync.getLogger().info("Follow: landed; flying -> walking at {}", sync.position.get());
             if (target.lost()) { finishLost(); return; }
         }
@@ -58,15 +62,19 @@ public final class FollowMovement extends Movement {
         double sprintSpeed = sync.getMovementParameters().movementSpeed(true) * 0.21600002
                 / (friction * friction * friction) * 0.98 / (1 - friction * 0.91);
         boolean needsFlight = target.gliding() || target.horizontalSpeed() > sprintSpeed;
-        if (!flying && !water && (sync.isGliding() || needsFlight && !target.lost()
+        if (water || target.lost() || !needsFlight) cancelLowPlan();
+        if (!flying && !water && lowPlanRetryTicks == 0 && (sync.isGliding() || needsFlight && !target.lost()
                 && sync.countHotbarFireworks() > 0
                 && sync.getInventoryManager().canStartFlight(sync.position.get().distance(target.position())))) {
             var preparation = sync.getInventoryManager().prepareElytra(sync.onGround.get(), sync::queueBeforeMovement);
-            if (sync.isGliding() || preparation == xin.bbtt.inventory.InventoryManager.ElytraAction.READY
-                    && TravelMovement.isOpen(sync.getWorld(), sync.position.get())) {
-                flying = true;
-                replace(new ElytraFlyMovement(target, generation, Math.max(1, keepDistance)));
-                MovementSync.getLogger().info("Follow: walking -> flying; takeoff toward {}", target.position());
+            if (sync.isGliding()) {
+                cancelLowPlan();
+                startFlight(null);
+            } else if (preparation == xin.bbtt.inventory.InventoryManager.ElytraAction.READY) {
+                // Ground pursuit uses an airborne endpoint; only stationary targets land.
+                if (!TravelMovement.isOpen(sync.getWorld(), sync.position.get()) || target.landed()) {
+                    if (prepareLowFlight()) return;
+                } else startFlight(null);
             }
         }
         if (flying && landing && !target.lost() && needsFlight) {
@@ -76,13 +84,20 @@ public final class FollowMovement extends Movement {
         }
         if (flying && !landing && (target.lost() || target.landed() && !needsFlight)) {
             try {
-                // Reuse the existing support search with the target as its centre.
-                Vector3d site = new ElytraFlightController().selectForcedLandingTarget(sync.getWorld(),
-                        new PhysicsState(target.position(), sync.velocity.get(), false),
+                // A supported target is a landing destination, not an invented launch
+                // state. In a corridor the high-altitude reachability policy rejects
+                // this floor; the local planner must prove it from our actual state.
+                Vector3d site = ElytraFlightController.landingSite(sync.getWorld(),
+                        target.position().x, target.position().z, target.position().y + .1);
+                boolean local = site != null && !TravelMovement.isOpen(sync.getWorld(), sync.position.get());
+                if (site == null) site = ElytraFlightController.selectForcedLandingTarget(sync.getWorld(),
+                        new PhysicsState(sync.position.get(), sync.velocity.get(), sync.onGround.get(), sync.fallDistance.get()),
                         sync.countHotbarFireworks(), sync.hasAttachedFirework());
                 landing = true;
                 walkingPlanAttempted = false;
-                replace(new ElytraFlyMovement(site, generation, Math.max(1, keepDistance)));
+                var flight = new ElytraFlyMovement(site, generation, Math.max(1, keepDistance));
+                if (local) flight.withLowAltitudeLanding();
+                replace(flight);
                 MovementSync.getLogger().info("Follow: landing near target at {}", site);
             } catch (IllegalStateException unavailable) {
                 // Keep steering to the last known target while chunks become known.
@@ -95,13 +110,80 @@ public final class FollowMovement extends Movement {
         if (child.isFinished()) {
             child.onStop();
             child = null;
+            if (flying) lowPlanRetryTicks = 20;
             if (flying && (water || sync.onGround.get() && !sync.isGliding())) {
                 flying = false;
                 landing = false;
+                walkingPlanAttempted = false;
                 MovementSync.getLogger().info("Follow: landed; flying -> walking at {}", sync.position.get());
                 if (target.lost()) finishLost();
+            } else if (flying && !water && !sync.onGround.get()) {
+                // A failed steering leg is not a touchdown. Retain an owner while
+                // airborne, then resume walking after its safe landing.
+                landing = true;
+                walkingPlanAttempted = false;
+                var recovery = new ElytraFlyMovement(target.position(), generation, Math.max(1, keepDistance))
+                        .forSafeLanding();
+                if (!TravelMovement.isOpen(sync.getWorld(), sync.position.get())) recovery.withLowAltitudeLanding();
+                replace(recovery);
             }
         }
+    }
+
+    /** Worker geometry never runs under either the navigation or owner lock. */
+    private boolean prepareLowFlight() {
+        var sync = MovementSync.INSTANCE;
+        if (lowPlanRetryTicks > 0) return false;
+        boolean[] submitted = {false};
+        sync.runIfNavigationRequestCurrent(generation, () -> {
+            synchronized (this) {
+                if (finished || lowPlan != null) return;
+                // Hold the launch position while the worker previews deployment.
+                if (child != null) { child.onStop(); child = null; }
+                var state = new PhysicsState(sync.position.get(), sync.velocity.get(),
+                        sync.onGround.get(), sync.fallDistance.get());
+                lowPlan = !target.gliding()
+                        ? LowAltitudeFlightPlan.pursuit(sync.getWorld(), state, target.aim(state),
+                                sync.getMovementParameters(), sync.isGliding())
+                        : LowAltitudeFlightPlan.submit(sync.getWorld(), state, target.aim(state),
+                                sync.getMovementParameters(), sync.isGliding());
+                submitted[0] = true;
+            }
+        });
+        if (submitted[0]) return true;
+        sync.runIfNavigationRequestCurrent(generation, () -> {
+            synchronized (this) {
+                if (finished || lowPlan == null || !lowPlan.isDone()) return;
+                var result = lowPlan.getNow(null);
+                lowPlan = null;
+                if (result != null && result.origin().distanceSquared(sync.position.get()) <= 1) {
+                    startFlight(result);
+                } else {
+                    // Same twenty-tick cadence as flight corridor replanning.
+                    lowPlanRetryTicks = 20;
+                    walkingPlanAttempted = false;
+                }
+            }
+        });
+        synchronized (this) { return lowPlan != null; }
+    }
+
+    private void startFlight(LowAltitudeFlightPlan.Result result) {
+        var sync = MovementSync.INSTANCE;
+        sync.runIfNavigationRequestCurrent(generation, () -> {
+            synchronized (this) {
+                if (finished) return;
+                var flight = new ElytraFlyMovement(target, generation, Math.max(1, keepDistance));
+                if (result != null) flight.withLowAltitudePlan(result);
+                flying = true;
+                replace(flight);
+                MovementSync.getLogger().info("Follow: walking -> flying; takeoff toward {}", target.position());
+            }
+        });
+    }
+
+    private synchronized void cancelLowPlan() {
+        if (lowPlan != null) { lowPlan.cancel(false); lowPlan = null; walkingPlanAttempted = false; }
     }
 
     private void finishLost() {
@@ -128,8 +210,9 @@ public final class FollowMovement extends Movement {
         child.init();
     }
     @Override public long getTime() { return -1; }
-    @Override public void onStop() {
+    @Override public synchronized void onStop() {
         finished = true;
+        cancelLowPlan();
         if (child != null) child.onStop();
     }
 }

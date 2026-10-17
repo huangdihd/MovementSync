@@ -27,7 +27,7 @@ final class FlightTrajectory {
         PhysicsState state = initial;
         int collision = -1;
         for (int tick = 0; tick < horizon; tick++) {
-            PhysicsResult result = physics.step(world, state, .299, .6);
+            PhysicsResult result = physics.step(world, state, PlayerPose.HALF_WIDTH, PlayerPose.GLIDING.height());
             results.add(result);
             if (collision < 0 && (result.onGround() || result.collidedX() || result.collidedZ())) collision = tick;
             if (stop.test(state, result)) break;

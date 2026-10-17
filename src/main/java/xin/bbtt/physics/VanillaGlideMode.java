@@ -12,8 +12,8 @@ final class VanillaGlideMode implements FlightMode {
     final LandingSearch landingSearch = new LandingSearch();
     GlideRange range(PhysicsState state) { return new GlideRange(state, movement, PITCHES); }
     VanillaGlideMode(MovementParameters movement) { this.movement = movement; }
-    static final double HALF_WIDTH = 0.299;
-    static final double HEIGHT = 0.6;
+    static final double HALF_WIDTH = PlayerPose.HALF_WIDTH;
+    static final double HEIGHT = PlayerPose.GLIDING.height();
     static final float[] YAW_OFFSETS = {0, -30, 30, -60, 60, -100, 100, 180};
     // Cancellation freezes steering. Avoid dives whose unpowered terminal sink
     // exceeds limitFallDistance's -0.5 threshold; descend by a shallow glide instead.
