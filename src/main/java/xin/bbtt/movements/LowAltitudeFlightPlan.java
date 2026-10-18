@@ -67,6 +67,18 @@ final class LowAltitudeFlightPlan {
 
     private static PlanFuture submit(World world, PhysicsState state, Vector3d destination,
                                                     MovementParameters parameters, boolean gliding, boolean emergency, boolean pursuit, HazardRecovery.Context context) {
+        return submit(world, state, destination, parameters, gliding, emergency, pursuit, context, null);
+    }
+
+    /** Same full launch/route proof, with an explicitly selected relocation launch heading. */
+    static PlanFuture submitHeading(World world, PhysicsState state, Vector3d destination,
+            MovementParameters parameters, HazardRecovery.Context context, float yaw) {
+        return submit(world, state, destination, parameters, false, false, false, context, yaw);
+    }
+
+    private static PlanFuture submit(World world, PhysicsState state, Vector3d destination,
+            MovementParameters parameters, boolean gliding, boolean emergency, boolean pursuit,
+            HazardRecovery.Context context, Float launchYaw) {
         Vector3d goal = new Vector3d(destination);
         PlanFuture result = new PlanFuture();
         if (!admissible(state.position(), goal)) {
@@ -76,9 +88,11 @@ final class LowAltitudeFlightPlan {
         java.util.concurrent.FutureTask<Void> job = new java.util.concurrent.FutureTask<>(() -> {
             try {
                 Vector3d delta = new Vector3d(goal).sub(state.position());
-                float yaw = (float) Math.toDegrees(Math.atan2(-delta.x, delta.z));
+                float yaw = launchYaw == null ? (float) Math.toDegrees(Math.atan2(-delta.x, delta.z)) : launchYaw;
                 float pitch = 0;
-                var abort = gliding ? null : DeploymentSafety.assess(world, state, parameters, yaw, pitch);
+                var abort = gliding ? null : launchYaw == null
+                        ? DeploymentSafety.assess(world, state, parameters, yaw, pitch)
+                        : DeploymentSafety.assessRelocation(world, state, parameters, yaw, pitch);
                 PhysicsState launch = gliding ? state : !abort.safe() ? null
                         : deployment(world, state, parameters, yaw, pitch);
                 if (abort != null && !abort.safe()) result.detail = abort.reason();

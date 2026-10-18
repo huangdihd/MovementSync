@@ -33,7 +33,7 @@ public final class TravelMovement extends Movement {
 
     private final Legs legs;
     private final xin.bbtt.flight.FlightConfiguration flightConfiguration;
-    private enum Stage { PREPARE, APPROACH, TAKEOFF, FLIGHT, LAND, WALK }
+    private enum Stage { PREPARE, APPROACH, RELOCATE, TAKEOFF, FLIGHT, LAND, WALK }
     private final Vector3i goal;
     private final long generation;
     private final boolean fly;
@@ -43,6 +43,11 @@ public final class TravelMovement extends Movement {
     private boolean takeoffForLanding;
     private LowAltitudeFlightPlan.PlanFuture lowPlan;
     private String lowFlightFailure;
+    private volatile java.util.concurrent.CompletableFuture<InlandLaunchSearch.Result> relocation;
+    private boolean relocationAttempted;
+    private String originalDeploymentFailure;
+    private Float relocatedYaw;
+    private int relocationSettleTicks;
     private xin.bbtt.physics.PlayerInput waitingInput;
 
     /** No child owns the controls while preparation/planning runs. Sneak also brakes at ledges. */
@@ -207,6 +212,11 @@ public final class TravelMovement extends Movement {
                 startChild(takeoffForLanding ? extendedLanding() : legs.flight());
                 return;
             }
+            if (stage == Stage.RELOCATE) {
+                stage = Stage.PREPARE;
+                relocationSettleTicks = 0;
+                return; // Brake to an observed stop before taking a fresh full proof.
+            }
             if (stage == Stage.APPROACH && isOpen(movementSync.getWorld(), movementSync.position.get())) {
                 startFlight();
                 return;
@@ -226,7 +236,7 @@ public final class TravelMovement extends Movement {
                         movementSync.getWorld(), movementSync.position.get());
         boolean belowRoof = xin.bbtt.listeners.RegistryDataListener.hasCeiling()
                 && !isOpen(movementSync.getWorld(), movementSync.position.get());
-        if (belowRoof && stage == Stage.PREPARE) {
+        if ((belowRoof || relocationAttempted) && stage == Stage.PREPARE) {
             if (fly && !environmental && prepareLowFlight(movementSync)) return;
             stage = Stage.LAND;
             if (!movementSync.onGround.get() && !environmental) {
@@ -303,6 +313,22 @@ public final class TravelMovement extends Movement {
         // A walking interruption must not retry a rejected edge launch in this request.
         if (lowFlightFailure != null) return false;
         holdForPlanning(sync);
+        if (relocation != null) {
+            if (!relocation.isDone()) return true;
+            var candidate = relocation.isCancelled() ? null : relocation.getNow(null);
+            relocation = null;
+            if (candidate == null || candidate.origin().distanceSquared(sync.position.get()) > .25)
+                return rejectLowFlight(originalDeploymentFailure);
+            if (stopped || finished || !sync.isNavigationRequestCurrent(generation)) return true;
+            relocatedYaw = candidate.yaw();
+            stage = Stage.RELOCATE;
+            startChild(legs.walk(candidate.path(), candidate.destination(), true));
+            return true;
+        }
+        if (relocatedYaw != null && !GroundedFlightStop.stopped(sync)) {
+            if (++relocationSettleTicks > 100) return rejectLowFlight(originalDeploymentFailure);
+            return true;
+        }
         if (flightConfiguration.modes().stream().noneMatch(mode -> mode instanceof xin.bbtt.flight.VanillaGlideMode))
             return rejectLowFlight("vanilla glide mode disabled");
         if (!LowAltitudeFlightPlan.admissible(sync.position.get(), new Vector3d(goal.x + .5, goal.y, goal.z + .5)))
@@ -313,6 +339,14 @@ public final class TravelMovement extends Movement {
             return rejectLowFlight("equipment unavailable or unsafe");
         if (!legs.hasFlightBudget()) return rejectLowFlight("insufficient flight equipment budget");
         if (lowPlan == null) {
+            if (relocatedYaw != null) {
+                lowPlan = LowAltitudeFlightPlan.submitHeading(sync.getWorld(),
+                        new xin.bbtt.physics.PhysicsState(sync.position.get(), sync.velocity.get(), sync.onGround.get(), sync.fallDistance.get()),
+                        new Vector3d(goal.x + .5, goal.y, goal.z + .5), sync.getMovementParameters(),
+                        new xin.bbtt.physics.HazardRecovery.Context(sync.inventoryManager.getHotbarFireworkFlightDurations(),
+                                0, sync.hasAttachedFirework(), sync.getLandingMemory()), relocatedYaw);
+                return true;
+            }
             lowPlan = LowAltitudeFlightPlan.submit(sync.getWorld(),
                     new xin.bbtt.physics.PhysicsState(sync.position.get(), sync.velocity.get(), sync.onGround.get(), sync.fallDistance.get()),
                     new Vector3d(goal.x + .5, goal.y, goal.z + .5), sync.getMovementParameters(), sync.isGliding(),
@@ -325,7 +359,23 @@ public final class TravelMovement extends Movement {
         var status = lowPlan.status();
         var detail = lowPlan.detail();
         lowPlan = null;
-        if (result == null) return rejectLowFlight(detail == null ? lowPlanFailure(status) : detail);
+        if (result == null) {
+            String reason = detail == null ? lowPlanFailure(status) : detail;
+            if (status == LowAltitudeFlightPlan.Status.DEPLOYMENT_REJECTED && !relocationAttempted
+                    && sync.onGround.get() && !sync.isGliding()) {
+                relocationAttempted = true;
+                originalDeploymentFailure = reason;
+                relocation = InlandLaunchSearch.submit(sync.getWorld(), sync.position.get(),
+                        new Vector3d(goal.x + .5, goal.y, goal.z + .5), sync.getMovementParameters(),
+                        new xin.bbtt.physics.HazardRecovery.Context(sync.inventoryManager.getHotbarFireworkFlightDurations(),
+                                0, sync.hasAttachedFirework(), sync.getLandingMemory()), legs::plan);
+                if (stopped || finished || !sync.isNavigationRequestCurrent(generation)) relocation.cancel(true);
+                return true;
+            }
+            return rejectLowFlight(originalDeploymentFailure == null ? reason : originalDeploymentFailure);
+        }
+        if (relocatedYaw != null && status != LowAltitudeFlightPlan.Status.COMPLETE)
+            return rejectLowFlight(originalDeploymentFailure);
         if (result.origin().distanceSquared(sync.position.get()) > .25)
             return rejectLowFlight("launch position changed during planning");
         if (result.destination().distanceSquared(new Vector3d(goal.x + .5, goal.y, goal.z + .5)) > .01)
@@ -526,6 +576,8 @@ public final class TravelMovement extends Movement {
         stopped = true;
         finished = true;
         if (lowPlan != null) lowPlan.cancel(false);
+        var search = relocation;
+        if (search != null) search.cancel(true);
         Movement currentChild = child;
         child = null;
         if (currentChild != null) currentChild.onStop();

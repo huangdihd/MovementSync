@@ -16,7 +16,8 @@ public final class ScopeRouter {
     public boolean isShadowEnabled() { return shadowEnabled; }
 
     public Route route(Scope scope, boolean endVoid, boolean pluginMode) {
-        if (localGotoEnabled && scope == Scope.UNDERROOF_GOTO && !endVoid && !pluginMode)
+        if (localGotoEnabled && (scope == Scope.UNDERROOF_GOTO || scope == Scope.LOCAL_CLIMB)
+                && !endVoid && !pluginMode)
             return Route.LOCAL;
         return shadowEnabled && scope != null && scope != Scope.LEGACY && !endVoid && !pluginMode
                 ? Route.SHADOW : Route.LEGACY;

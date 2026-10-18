@@ -25,6 +25,18 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
     ElytraFlyMovement forFollow() { followOwned = true; return this; }
     private final xin.bbtt.flight.LocalGotoController localGoto = new xin.bbtt.flight.LocalGotoController();
     private final xin.bbtt.flight.ReserveMonitor reserveMonitor = new xin.bbtt.flight.ReserveMonitor();
+    private final xin.bbtt.flight.LocalClimbHandoff climbHandoff = new xin.bbtt.flight.LocalClimbHandoff();
+
+    private boolean localClimbEnabled(MovementSync sync) {
+        return !lowAltitude && !followOwned && !safeLandingLeg && !independentLanding && !emergencyLanding
+                && target instanceof xin.bbtt.physics.FixedFlightTarget && flightConfiguration.isLegacy()
+                && climbHandoff.phase() != xin.bbtt.flight.LocalClimbHandoff.Phase.CRUISE
+                && (!xin.bbtt.listeners.RegistryDataListener.hasCeiling()
+                    || xin.bbtt.physics.CeilingCollision.isAboveRoof(sync.getWorld(), sync.position.get()))
+                && sync.getFlightScopeRouter().route(xin.bbtt.flight.ScopeRouter.Scope.LOCAL_CLIMB,
+                        "minecraft:the_end".equals(sync.getRecoveryDimension()), false)
+                        == xin.bbtt.flight.ScopeRouter.Route.LOCAL;
+    }
 
     private boolean localGotoEnabled(MovementSync sync) {
         return lowAltitude && !followOwned && !lowPursuit() && !safeLandingLeg && flightConfiguration.isLegacy()
@@ -164,6 +176,7 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
             if (isFinished()) return;
             lifecycle.init(movementSync);
             observedVanillaAirborne = movementSync.isGliding();
+            if (observedVanillaAirborne) climbHandoff.inheritAirborne();
         })) setFinished(true);
     }
 
@@ -207,13 +220,26 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
             });
             return;
         }
-        // Keep an established plugin owner across ticks instead of briefly claiming DIRECT.
-        movementSync.claimFlightControlOwner(this,
-                controllingMode != null && !(controllingMode instanceof xin.bbtt.flight.VanillaGlideMode)
-                        ? xin.bbtt.physics.FlightControlAdmission.Mode.EXTENSION
-                        : localGotoEnabled(movementSync) ? xin.bbtt.physics.FlightControlAdmission.Mode.LOCAL_SOLVER
-                        : lowAltitude ? xin.bbtt.physics.FlightControlAdmission.Mode.LOCAL
-                                : xin.bbtt.physics.FlightControlAdmission.Mode.DIRECT);
+        // Snapshot and mode change share the physical monitor: retiring the local prefix
+        // also invalidates any pending worker publication before legacy cruise can run.
+        synchronized (movementSync) {
+            if (localClimbEnabled(movementSync) && movementSync.isGliding() && !movementSync.onGround.get()) {
+                var climbState = xin.bbtt.physics.FlightControlAdmission.snapshot(movementSync).state();
+                climbHandoff.deployed(climbState.position().y);
+                var climbRoute = climbHandoff.route(climbState, target.position(), movementSync.yaw.get());
+                climbHandoff.observe(movementSync.physicsTickVersion(),
+                        climbHandoff.clear(movementSync.getWorld(), climbState, climbRoute));
+            }
+            // Keep an established plugin owner across ticks instead of briefly claiming DIRECT.
+            movementSync.claimFlightControlOwner(this,
+                    controllingMode != null && !(controllingMode instanceof xin.bbtt.flight.VanillaGlideMode)
+                            ? xin.bbtt.physics.FlightControlAdmission.Mode.EXTENSION
+                            : localGotoEnabled(movementSync) || localClimbEnabled(movementSync)
+                                    && climbHandoff.phase() == xin.bbtt.flight.LocalClimbHandoff.Phase.LOCAL_CLIMB
+                                    ? xin.bbtt.physics.FlightControlAdmission.Mode.LOCAL_SOLVER
+                            : lowAltitude ? xin.bbtt.physics.FlightControlAdmission.Mode.LOCAL
+                                    : xin.bbtt.physics.FlightControlAdmission.Mode.DIRECT);
+        }
         var controlSource = xin.bbtt.physics.FlightControlAdmission.snapshot(movementSync);
         PhysicsState state = controlSource.state();
         diagnoseLowFlight(movementSync, state);
@@ -296,7 +322,9 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
         boolean hasVanilla = flightConfiguration.modes().stream()
                 .anyMatch(mode -> mode instanceof xin.bbtt.flight.VanillaGlideMode);
         if (!hasVanilla && tickExtended(movementSync, state, equipmentAction, null)) return;
-        if (localGotoEnabled(movementSync)) {
+        boolean localClimb = localClimbEnabled(movementSync)
+                && climbHandoff.phase() == xin.bbtt.flight.LocalClimbHandoff.Phase.LOCAL_CLIMB;
+        if (localClimb || localGotoEnabled(movementSync)) {
             // This early return removes selector, six-successor recovery and terminal preparation
             // from the new goto hot path; legacy/follow/End still use their original contract.
             Vector3d goal = target.position();
@@ -307,13 +335,16 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
             long event = java.util.Objects.hash(lowRoute == null ? null : lowRoute.waypoints(),
                     movementSync.getMovementParameterState().health(),
                     lowRoute != null && lowRoute.contains(state.position(), state.position()));
-            reserveMonitor.observe(movementSync, controlSource, event, recoveryContext(movementSync));
-            var route = lowRoute == null ? new xin.bbtt.physics.WaypointFlightTarget(
+            // Initial climb must not re-run a global terminal proof after deployment.
+            if (!localClimb) reserveMonitor.observe(movementSync, controlSource, event, recoveryContext(movementSync));
+            var route = localClimb ? climbHandoff.route(state, goal, movementSync.yaw.get())
+                    : lowRoute == null ? new xin.bbtt.physics.WaypointFlightTarget(
                     java.util.List.of(state.position(), goal), goal, false) : lowRoute;
             var rocket = new ElytraFlightController.Decision(heading, -20, true,
                     ElytraFlightController.Phase.CRUISE);
-            localGoto.request(movementSync, this, controlSource, route, goal,
-                    lifecycle.rocketCooldown() == 0 && movementSync.countHotbarFireworks() > 0,
+            localGoto.request(movementSync, this, controlSource, route, localClimb ? route.goal() : goal,
+                    !movementSync.hasAttachedFirework() && lifecycle.rocketCooldown() == 0
+                            && movementSync.countHotbarFireworks() > 0,
                     () -> lifecycle.execute(movementSync, rocket, equipmentAction));
             // Planner-only bounded handoff. Physics keeps consuming its finite prefix while
             // a slow worker runs; never join from the physical monitor.

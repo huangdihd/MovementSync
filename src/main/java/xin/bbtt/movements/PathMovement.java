@@ -492,7 +492,8 @@ public class PathMovement extends Movement {
         boolean settled = !isLastNode || groundSlipperiness(currentPos) <= 0.6
                 || Math.hypot(MovementSync.INSTANCE.velocity.get().x,
                     MovementSync.INSTANCE.velocity.get().z) < 0.025;
-        return settled && dx < horizontalTolerance && dz < horizontalTolerance && dy < verticalTolerance;
+        return settled && (!isLastNode || requestedGoal == null || supportedForArrival())
+                && dx < horizontalTolerance && dz < horizontalTolerance && dy < verticalTolerance;
     }
 
     private double groundSlipperiness(Vector3d position) {
@@ -626,11 +627,19 @@ public class PathMovement extends Movement {
         Vector3d currentPos = MovementSync.INSTANCE.position.get();
         double dx = Math.abs(currentPos.x - (goal.x + 0.5)), dz = Math.abs(currentPos.z - (goal.z + 0.5)), dy = Math.abs(currentPos.y - goal.y);
         
-        if (dx < 0.5 && dz < 0.5 && dy < 1.0) {
+        if (dx < 0.5 && dz < 0.5 && dy < 1.0 && supportedForArrival()) {
             markFinished();
         } else {
             scheduleRepath();
         }
+    }
+
+    private boolean supportedForArrival() {
+        var sync = MovementSync.INSTANCE;
+        Vector3d position = sync.position.get();
+        return !sync.isGliding() && (sync.onGround.get()
+                || xin.bbtt.pathfinding.EnvironmentalTraversal.inWater(sync.getWorld(), position)
+                || xin.bbtt.pathfinding.EnvironmentalTraversal.climbing(sync.getWorld(), position));
     }
 
     private void markFinished() {
@@ -730,7 +739,13 @@ public class PathMovement extends Movement {
         Node goalNode = new Node(targetNodePos.x, targetNodePos.y, targetNodePos.z);
         
         if (start.equals(goalNode) && requestedFollowTargetId == -1) {
-            markFinished();
+            // Sharing the planner's integer cell is not supported 3D arrival.
+            // In particular a descent may enter this cell before touching down.
+            MovementSync.INSTANCE.runIfNavigationRequestCurrent(requestGeneration, () -> {
+                path = List.of(new PathStep(goalNode, BuiltinMovementType.WALK));
+                currentIndex = 0;
+                waitingForRoute = false;
+            });
             return;
         }
 

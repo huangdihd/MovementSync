@@ -4,11 +4,12 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 class ScopeRouterTest {
-    @Test void defaultsToLocalOnlyForUnderroofGoto() {
+    @Test void defaultsToLocalForGotoAndDeploymentClimb() {
         var router = new ScopeRouter();
         assertFalse(router.isShadowEnabled());
         for (var scope : ScopeRouter.Scope.values()) {
-            assertEquals(scope == ScopeRouter.Scope.UNDERROOF_GOTO ? ScopeRouter.Route.LOCAL
+            assertEquals(scope == ScopeRouter.Scope.UNDERROOF_GOTO || scope == ScopeRouter.Scope.LOCAL_CLIMB
+                    ? ScopeRouter.Route.LOCAL
                     : ScopeRouter.Route.LEGACY, router.route(scope, false, false));
         }
     }

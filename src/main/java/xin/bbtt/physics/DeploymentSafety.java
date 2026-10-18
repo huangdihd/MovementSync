@@ -12,6 +12,21 @@ public final class DeploymentSafety {
     /** No deployment, or interruption during the first five glide ticks, must land safely. */
     public static Assessment assess(World world, PhysicsState initial, MovementParameters parameters,
                                     float yaw, float pitch) {
+        return assess(world, initial, parameters, yaw, pitch, false);
+    }
+
+    /**
+     * Relocation candidates require the full interruption and independent server/client
+     * landing proof for metadata delays 1, 2 and 4, even on broad inland support.
+     * Like assess, this fails closed as soon as any required branch is unsafe.
+     */
+    public static Assessment assessRelocation(World world, PhysicsState initial, MovementParameters parameters,
+                                              float yaw, float pitch) {
+        return assess(world, initial, parameters, yaw, pitch, true);
+    }
+
+    private static Assessment assess(World world, PhysicsState initial, MovementParameters parameters,
+                                     float yaw, float pitch, boolean requireLanding) {
         PhysicsState state = initial;
         if (!returnsToSupport(world, state, parameters, yaw, initial.onGround()))
             return new Assessment(false, "no-deploy branch cannot return to safe support");
@@ -31,7 +46,7 @@ public final class DeploymentSafety {
                 // A five-tick clear corridor says nothing about the first touchdown.
                 // Continue the fixed launch controls to contact, then model independent
                 // server/client glide flags through the complete ground coast.
-                if (hazardNearby(world, initial.position())) {
+                if (requireLanding || hazardNearby(world, initial.position())) {
                     for (int delay : new int[]{1, 2, 4}) {
                         Assessment landing = assessLanding(world, state, parameters, yaw, pitch, delay);
                         if (!landing.safe()) return landing;
