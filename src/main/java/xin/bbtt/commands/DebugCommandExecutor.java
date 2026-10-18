@@ -10,6 +10,14 @@ import xin.bbtt.movement.Movement;
 public class DebugCommandExecutor extends CommandExecutor {
     @Override
     public void onCommand(Command command, String label, String[] args) {
+        // Field diagnostics for the flight rework: "debug shadow on|off" logs the
+        // look-ahead solver's shadow decision next to the legacy one; controls are unchanged.
+        if (args.length == 2 && args[0].equalsIgnoreCase("shadow")) {
+            boolean enabled = args[1].equalsIgnoreCase("on");
+            MovementSync.INSTANCE.getFlightScopeRouter().setShadowEnabled(enabled);
+            MovementSync.getLogger().info("Shadow flight diagnostics {}", enabled ? "enabled" : "disabled");
+            return;
+        }
         var pos = MovementSync.INSTANCE.position.get();
         var vel = MovementSync.INSTANCE.velocity.get();
         var ctrl = MovementSync.INSTANCE.getMovementController();
