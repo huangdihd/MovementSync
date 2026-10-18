@@ -76,16 +76,31 @@ public class MovementSync implements Plugin {
 
     public synchronized long physicsTickVersion() { return physicsTickVersion; }
 
+    /** Advances the physical clock only after a physics step's result has been committed. */
+    public synchronized void completePhysicsStep() { physicsTickVersion++; }
+
     public synchronized void submitFlightControls(xin.bbtt.physics.FlightControlAdmission.Envelope envelope) {
         flightControls.submit(envelope);
     }
 
     public synchronized void revokeFlightControls(Object owner) { flightControls.revoke(owner); }
 
+    public synchronized void claimFlightControlOwner(Object owner, xin.bbtt.physics.FlightControlAdmission.Mode mode) {
+        flightControls.claim(owner, mode);
+    }
+
+    public synchronized long flightControlEpoch() { return flightControls.epoch(); }
+
+    /** Host-level handoff also retires batches owned by nested/plugin movements. */
+    public synchronized void invalidateFlightControls() { flightControls.clear(); }
+
+    public synchronized xin.bbtt.physics.FlightControlAdmission.Failure getFlightControlFailure() {
+        return flightControls.failure();
+    }
+
     /** Shared physical-input boundary, including embedded/manual physics drivers. */
     public synchronized PlayerInput snapshotInput() {
         flightControls.consume(this);
-        physicsTickVersion++;
         if (inventoryManager.isInventorySwapOpen()) return PlayerInput.NONE;
         PlayerInput keys = input.get();
         return jumpRequested.getAndSet(false) ? keys.withJump(true) : keys;
@@ -104,12 +119,29 @@ public class MovementSync implements Plugin {
                 x, y, z, yaw, pitch, eyeHeight);
     }
 
-    public void queueBeforeMovement(Packet packet) {
-        beforeMovementPackets.add(Objects.requireNonNull(packet, "packet"));
+    private final java.util.Map<Packet, Long> flightActionEpochs = new java.util.IdentityHashMap<>();
+    private boolean acceptingFlightAction;
+
+    /** Admission-only action scope; already-sent rockets remain real server state after handoff. */
+    public synchronized void acceptFlightAction(Runnable action) {
+        acceptingFlightAction = true;
+        try { action.run(); } finally { acceptingFlightAction = false; }
     }
 
-    public Packet pollBeforeMovementPacket() {
-        return beforeMovementPackets.poll();
+    public synchronized void queueBeforeMovement(Packet packet) {
+        Objects.requireNonNull(packet, "packet");
+        if (acceptingFlightAction && packet instanceof org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundUseItemPacket)
+            flightActionEpochs.put(packet, flightControls.epoch());
+        beforeMovementPackets.add(packet);
+    }
+
+    public synchronized Packet pollBeforeMovementPacket() {
+        Packet packet;
+        while ((packet = beforeMovementPackets.poll()) != null) {
+            Long epoch = flightActionEpochs.remove(packet);
+            if (epoch == null || epoch == flightControls.epoch()) return packet;
+        }
+        return null;
     }
 
     public AtomicReference<Float> pitch = new AtomicReference<>(0f);
@@ -386,6 +418,7 @@ public class MovementSync implements Plugin {
         clearFlightState();
         clearInput();
         beforeMovementPackets.clear();
+        flightActionEpochs.clear();
         velocity.set(new Vector3d());
         fallDistance.set(0.0);
         vehicleId = -1;
@@ -709,7 +742,8 @@ public class MovementSync implements Plugin {
      * An airborne glide still needs its pending start for the safety landing owner;
      * a rejected/cleared glide must never be restarted by a stale queued request.
      */
-    private void clearAbandonedFlightActions() {
+    private synchronized void clearAbandonedFlightActions() {
+        flightActionEpochs.clear();
         beforeMovementPackets.removeIf(packet -> packet instanceof ServerboundUseItemPacket
                 || (!isGliding() && packet instanceof ServerboundPlayerCommandPacket command
                 && command.getState() == PlayerState.START_ELYTRA_FLYING));

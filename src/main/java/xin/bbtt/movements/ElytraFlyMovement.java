@@ -184,9 +184,11 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
             runIfCurrent(() -> {
                 if (isFinished() || transition == null) return;
                 var active = transition;
+                movementSync.claimFlightControlOwner(this, xin.bbtt.physics.FlightControlAdmission.Mode.TRANSITION);
                 if (!active.movement().isFinished()) active.movement().onTick();
                 if (active.movement().isFinished()) {
                     transition = null;
+                    movementSync.invalidateFlightControls();
                     active.movement().onStop();
                     controllingMode = active.mode();
                     if (transitionKind == xin.bbtt.flight.FlightTransitions.Kind.TAKEOFF) lifecycle.markAirborne();
@@ -194,6 +196,12 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
             });
             return;
         }
+        // Keep an established plugin owner across ticks instead of briefly claiming DIRECT.
+        movementSync.claimFlightControlOwner(this,
+                controllingMode != null && !(controllingMode instanceof xin.bbtt.flight.VanillaGlideMode)
+                        ? xin.bbtt.physics.FlightControlAdmission.Mode.EXTENSION
+                        : lowAltitude ? xin.bbtt.physics.FlightControlAdmission.Mode.LOCAL
+                                : xin.bbtt.physics.FlightControlAdmission.Mode.DIRECT);
         var controlSource = xin.bbtt.physics.FlightControlAdmission.snapshot(movementSync);
         PhysicsState state = controlSource.state();
         diagnoseLowFlight(movementSync, state);
@@ -472,6 +480,7 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
                 // A low-flight lease must not overwrite the new owner's direct controls
                 // at the next physics boundary (for example when a target starts gliding).
                 movementSync.revokeFlightControls(this);
+                movementSync.claimFlightControlOwner(this, xin.bbtt.physics.FlightControlAdmission.Mode.DIRECT);
                 lifecycle.execute(movementSync, applied, equipmentAction);
             }
             predictLowDecision(movementSync, state, applied);
@@ -531,6 +540,7 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
             sync.revokeFlightControls(this);
             transition = selected;
             transitionKind = kind;
+            sync.claimFlightControlOwner(this, xin.bbtt.physics.FlightControlAdmission.Mode.TRANSITION);
             if (selected.movement() instanceof NavigationBoundMovement bound) bound.bindNavigationRequest(generation);
             selected.movement().init();
         })) setFinished(true);
@@ -614,6 +624,7 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
                         if (isFinished()) return;
                         sync.revokeFlightControls(this);
                         controllingMode = xin.bbtt.flight.VanillaGlideMode.INSTANCE;
+                        sync.claimFlightControlOwner(this, xin.bbtt.physics.FlightControlAdmission.Mode.DIRECT);
                         lifecycle.execute(sync, fallback, equipmentAction);
                     });
                 }
@@ -639,6 +650,9 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
             if (appliedContext.emergency()) emergencyLanding = true;
             controllingMode = applied.mode() == vanillaLandingOwner
                     ? xin.bbtt.flight.VanillaGlideMode.INSTANCE : applied.mode();
+            sync.claimFlightControlOwner(this, controllingMode instanceof xin.bbtt.flight.VanillaGlideMode
+                    ? xin.bbtt.physics.FlightControlAdmission.Mode.DIRECT
+                    : xin.bbtt.physics.FlightControlAdmission.Mode.EXTENSION);
             if (applied.mode() instanceof xin.bbtt.flight.VanillaGlideMode) {
                 var glide = (xin.bbtt.flight.FlightAction.Glide) applied.action();
                 // Standard execution must retain the existing equipment wait and rocket cooldown latch.

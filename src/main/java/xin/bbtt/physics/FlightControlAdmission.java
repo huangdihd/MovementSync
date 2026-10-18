@@ -6,7 +6,26 @@ import java.util.ArrayList;
 
 /** Physics-boundary admission. Preparation may search; consumption only replays fixed controls. */
 public final class FlightControlAdmission {
-    public record Source(long tick, long generation, PhysicsState state) {}
+    public enum Mode { LOCAL, DIRECT, EXTENSION, TRANSITION }
+    public record Source(long tick, long generation, PhysicsState state, long epoch) {
+        public Source(long tick, long generation, PhysicsState state) { this(tick, generation, state, 0); }
+    }
+    public record Failure(long tick, long generation, long epoch, String reason, String responsibleOwner) {}
+    private Failure failure;
+    private Object owner;
+    private Mode mode;
+    private long epoch;
+    private final java.util.Set<Envelope> consumed = java.util.Collections.newSetFromMap(new java.util.WeakHashMap<>());
+
+    /** Same-owner/mode renewals retain the token; handoffs invalidate in-flight work. */
+    public void claim(Object nextOwner, Mode nextMode) {
+        if (owner == nextOwner && mode == nextMode) return;
+        clear();
+        owner = nextOwner;
+        mode = nextMode;
+    }
+    public long epoch() { return epoch; }
+    public Failure failure() { return failure; }
     public record Step(ElytraFlightController.Decision control, PhysicsState expected) {}
     public record Envelope(Object owner, Source source, List<Step> steps,
                            WaypointFlightTarget corridor, Runnable accepted, List<Step> recovery) {
@@ -15,6 +34,7 @@ public final class FlightControlAdmission {
     private Envelope pending;
     private Envelope active;
     private long admittedAt;
+    private TickControlBatch batch;
     private int cursor;
     private boolean recovering;
 
@@ -34,7 +54,7 @@ public final class FlightControlAdmission {
     public static Source snapshot(MovementSync sync) {
         synchronized (sync) {
             return new Source(sync.physicsTickVersion(), sync.getNavigationGeneration(),
-                    new PhysicsState(sync.position.get(), sync.velocity.get(), sync.onGround.get(), sync.fallDistance.get(), PlayerPose.GLIDING));
+                    new PhysicsState(sync.position.get(), sync.velocity.get(), sync.onGround.get(), sync.fallDistance.get(), PlayerPose.GLIDING), sync.flightControlEpoch());
         }
     }
 
@@ -112,12 +132,20 @@ public final class FlightControlAdmission {
         return List.of();
     }
 
-    public void submit(Envelope envelope) { pending = envelope; }
-    public void revoke(Object owner) {
-        if (pending != null && pending.owner() == owner) pending = null;
-        if (active != null && active.owner() == owner) active = null;
+    public void submit(Envelope envelope) {
+        if (envelope.source().epoch() != epoch || consumed.contains(envelope)
+                || owner != null && owner != envelope.owner()) return;
+        pending = envelope;
     }
-    public void clear() { pending = null; active = null; }
+    public void revoke(Object revoked) {
+        if (owner == revoked || pending != null && pending.owner() == revoked
+                || active != null && active.owner() == revoked) {
+            clear();
+            owner = null;
+            mode = null;
+        }
+    }
+    public void clear() { pending = null; active = null; batch = null; owner = null; mode = null; epoch++; }
 
     /** Called under MovementSync only. Never takes navigation/controller locks or invokes search. */
     public void consume(MovementSync sync) {
@@ -128,19 +156,22 @@ public final class FlightControlAdmission {
         if (pending != null) {
             var candidate = pending;
             pending = null;
+            if (candidate.source().epoch() != epoch || !consumed.add(candidate)) return;
             long age = sync.physicsTickVersion() - candidate.source().tick();
             if (candidate.source().generation() == sync.getNavigationGeneration() && age >= 0 && age <= 8
                     && !candidate.steps().isEmpty() && revalidate(sync, candidate, 0)) {
                 active = candidate;
+                failure = null;
                 traceActivation++;
                 cursor = 0;
                 recovering = false;
                 admittedAt = sync.physicsTickVersion();
+                batch = TickControlBatch.admitted(active, admittedAt);
                 // Actions are queued only at acceptance, immediately before the packet/input batch.
                 // Recheck the powered branch as well: rejecting thrust must reject its action,
                 // not silently rely on the unpowered continuation proof.
                 if (!candidate.steps().get(0).control().firework() || poweredSafe(sync, candidate))
-                    candidate.accepted().run();
+                    sync.acceptFlightAction(candidate.accepted());
             } else if (active == null && candidate.source().generation() == sync.getNavigationGeneration()
                     && age >= 0 && age <= 8 && !candidate.recovery().isEmpty()) {
                 var reserve = new Envelope(candidate.owner(), candidate.source(), candidate.recovery(), null,
@@ -150,6 +181,7 @@ public final class FlightControlAdmission {
                     traceActivation++;
                     cursor = 0;
                     admittedAt = sync.physicsTickVersion();
+                    batch = TickControlBatch.admitted(active, admittedAt);
                     recovering = true;
                 } else abandon(sync);
             } else if (active == null && candidate.source().generation() == sync.getNavigationGeneration()
@@ -163,7 +195,7 @@ public final class FlightControlAdmission {
             return;
         }
         cursor = (int) (sync.physicsTickVersion() - admittedAt);
-        if (cursor >= active.steps().size() || !revalidate(sync, active, cursor)) {
+        if (batch == null || !batch.authorizes(cursor, sync.physicsTickVersion()) || !revalidate(sync, active, cursor)) {
             // Never silently keep an expired navigation command. Normal airborne recovery
             // owns the next planning tick; do not fabricate touchdown or disable gliding.
             if (!recovering && !active.recovery().isEmpty()) {
@@ -173,6 +205,7 @@ public final class FlightControlAdmission {
                     active = reserve;
                     traceActivation++;
                     admittedAt = sync.physicsTickVersion();
+                    batch = TickControlBatch.admitted(active, admittedAt);
                     cursor = 0;
                     recovering = true;
                 } else {
@@ -190,12 +223,12 @@ public final class FlightControlAdmission {
     }
 
     private void abandon(MovementSync sync) {
+        failure = new Failure(sync.physicsTickVersion(), sync.getNavigationGeneration(), epoch,
+                "UNPROVEN_EMERGENCY: prepared continuation exhausted or failed revalidation",
+                owner == null ? "legacy movement planner" : owner.getClass().getName());
         active = null;
-        sync.clearInput();
-        // No safe witness remains (terrain/state changed). Explicit last-resort descent,
-        // not a claim of safety and not indefinite reuse of the expired route heading.
-        sync.setYawToward(LowAltitudePlanner.yaw(sync.velocity.get()));
-        sync.pitch.set(90f);
+        // Return responsibility to the existing movement planner. No fabricated descent,
+        // no callback/search under this monitor, and no claim that residual motion is safe.
     }
 
     private static boolean poweredSafe(MovementSync sync, Envelope envelope) {

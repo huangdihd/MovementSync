@@ -167,7 +167,7 @@ public class updateMotionTask implements Runnable {
 
         Vector3d position = new Vector3d(MovementSync.INSTANCE.position.get());
 
-        // Admit controls and advance their physical lease before observing rotation,
+        // Admit controls before observing rotation,
         // input or action packets. Embedded physics drivers share this boundary.
         PlayerInput input = MovementSync.INSTANCE.snapshotInput();
         xin.bbtt.physics.MovementParameters parameters = MovementSync.INSTANCE.getMovementParameters();
@@ -282,6 +282,7 @@ public class updateMotionTask implements Runnable {
         MovementSync.INSTANCE.position.set(position);
         MovementSync.INSTANCE.applyPersistentGazeIfIdle();
 
+        MovementSync.INSTANCE.completePhysicsStep();
         MovementSync.INSTANCE.recordFlightTick(new MovementSync.FlightTickTrace(
                 new Vector3d(position), new Vector3d(velocity), result.onGround(), collidedX, collidedZ,
                 gliding, MovementSync.INSTANCE.hasAttachedFirework(), tickYaw, tickPitch, input, result.fallDistance()));

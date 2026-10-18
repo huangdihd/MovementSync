@@ -41,7 +41,7 @@ public class MovementController {
             
             if (currentMovement != null) {
                 try {
-                    MovementSync.INSTANCE.revokeFlightControls(currentMovement);
+                    MovementSync.INSTANCE.invalidateFlightControls();
                     currentMovement.onStop();
                 } catch (Exception e) {
                     MovementSync.getLogger().warn(LangManager.get("movementsync.movement.error.stop"), e);
@@ -63,7 +63,7 @@ public class MovementController {
         if (!isPaused.compareAndSet(false, true)) return;
         synchronized (stateLock) {
             if (currentMovement != null) {
-                MovementSync.INSTANCE.revokeFlightControls(currentMovement);
+                MovementSync.INSTANCE.invalidateFlightControls();
                 try { currentMovement.onPause(); } catch (Exception e) { MovementSync.getLogger().warn(LangManager.get("movementsync.movement.error.pause"), e); }
             }
         }
@@ -147,7 +147,7 @@ public class MovementController {
             currentTaskFuture = null;
         }
         if (currentMovement != null) {
-            MovementSync.INSTANCE.revokeFlightControls(currentMovement);
+            MovementSync.INSTANCE.invalidateFlightControls();
             try { currentMovement.onStop(); } catch (Exception e) { MovementSync.getLogger().warn(LangManager.get("movementsync.movement.error.stop"), e); }
             currentMovement = null;
         }

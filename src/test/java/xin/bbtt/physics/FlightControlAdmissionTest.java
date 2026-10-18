@@ -44,6 +44,9 @@ class FlightControlAdmissionTest extends ElytraCommandTestSupport {
         assertFalse(result.collidedZ());
         movementSync.position.set(result.position());
         movementSync.velocity.set(result.velocity());
+        movementSync.onGround.set(result.onGround());
+        movementSync.fallDistance.set(result.fallDistance());
+        movementSync.completePhysicsStep();
     }
     @Test void delayedSelectedControlIsRevalidatedAtPhysicalBoundary() throws Exception {
         for (int delay = 3; delay <= 8; delay++) {
@@ -124,6 +127,7 @@ class FlightControlAdmissionTest extends ElytraCommandTestSupport {
                 movementSync.velocity.set(result.velocity());
                 movementSync.fallDistance.set(result.fallDistance());
                 movementSync.onGround.set(result.onGround());
+                movementSync.completePhysicsStep();
                 if (result.onGround()) { landed = true; break; }
             }
             assertEquals(1, accepted.get(), "delayed turn accepted at delay=" + delay);
