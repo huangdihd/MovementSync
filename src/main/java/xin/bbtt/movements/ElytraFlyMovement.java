@@ -21,6 +21,17 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
     private java.util.concurrent.CompletableFuture<LowAltitudeFlightPlan.Result> lowPlan;
     private int lowPlanTicks;
     private boolean lowAltitude;
+    private boolean followOwned;
+    ElytraFlyMovement forFollow() { followOwned = true; return this; }
+    private final xin.bbtt.flight.LocalGotoController localGoto = new xin.bbtt.flight.LocalGotoController();
+    private final xin.bbtt.flight.ReserveMonitor reserveMonitor = new xin.bbtt.flight.ReserveMonitor();
+
+    private boolean localGotoEnabled(MovementSync sync) {
+        return lowAltitude && !followOwned && !lowPursuit() && !safeLandingLeg && flightConfiguration.isLegacy()
+                && sync.getFlightScopeRouter().route(xin.bbtt.flight.ScopeRouter.Scope.UNDERROOF_GOTO,
+                        "minecraft:the_end".equals(sync.getRecoveryDimension()), false)
+                        == xin.bbtt.flight.ScopeRouter.Route.LOCAL;
+    }
     private boolean lowEmergencyRoute;
     private int lowRouteAcceptedTick;
     private ElytraFlightController.Decision lastLowDecision;
@@ -200,6 +211,7 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
         movementSync.claimFlightControlOwner(this,
                 controllingMode != null && !(controllingMode instanceof xin.bbtt.flight.VanillaGlideMode)
                         ? xin.bbtt.physics.FlightControlAdmission.Mode.EXTENSION
+                        : localGotoEnabled(movementSync) ? xin.bbtt.physics.FlightControlAdmission.Mode.LOCAL_SOLVER
                         : lowAltitude ? xin.bbtt.physics.FlightControlAdmission.Mode.LOCAL
                                 : xin.bbtt.physics.FlightControlAdmission.Mode.DIRECT);
         var controlSource = xin.bbtt.physics.FlightControlAdmission.snapshot(movementSync);
@@ -284,6 +296,35 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
         boolean hasVanilla = flightConfiguration.modes().stream()
                 .anyMatch(mode -> mode instanceof xin.bbtt.flight.VanillaGlideMode);
         if (!hasVanilla && tickExtended(movementSync, state, equipmentAction, null)) return;
+        if (localGotoEnabled(movementSync)) {
+            // This early return removes selector, six-successor recovery and terminal preparation
+            // from the new goto hot path; legacy/follow/End still use their original contract.
+            Vector3d goal = target.position();
+            Vector3d forward = new Vector3d(goal).sub(state.position());
+            float heading = forward.x == 0 && forward.z == 0 ? movementSync.yaw.get()
+                    : (float) Math.toDegrees(Math.atan2(-forward.x, forward.z));
+            movementSync.registerForwardFlightEmergency(this, controlSource, heading);
+            long event = java.util.Objects.hash(lowRoute == null ? null : lowRoute.waypoints(),
+                    movementSync.getMovementParameterState().health(),
+                    lowRoute != null && lowRoute.contains(state.position(), state.position()));
+            reserveMonitor.observe(movementSync, controlSource, event, recoveryContext(movementSync));
+            var route = lowRoute == null ? new xin.bbtt.physics.WaypointFlightTarget(
+                    java.util.List.of(state.position(), goal), goal, false) : lowRoute;
+            var rocket = new ElytraFlightController.Decision(heading, -20, true,
+                    ElytraFlightController.Phase.CRUISE);
+            localGoto.request(movementSync, this, controlSource, route, goal,
+                    lifecycle.rocketCooldown() == 0 && movementSync.countHotbarFireworks() > 0,
+                    () -> lifecycle.execute(movementSync, rocket, equipmentAction));
+            // Planner-only bounded handoff. Physics keeps consuming its finite prefix while
+            // a slow worker runs; never join from the physical monitor.
+            if (!Thread.holdsLock(movementSync)) {
+                try { localGoto.awaitIdle(30, java.util.concurrent.TimeUnit.MILLISECONDS); }
+                catch (java.util.concurrent.TimeoutException pending) { /* retain finite prefix */ }
+                catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+                catch (Exception failed) { MovementSync.getLogger().debug("Local goto worker failed", failed); }
+            }
+            return;
+        }
         // A stalled static corridor leg above harm cannot wait for asynchronous replanning.
         // This runs before emergencyHold, whose unpowered descent is not a rescue from lava.
         if (hasVanilla && lowAltitude && !(target instanceof xin.bbtt.physics.EntityFlightTarget)
@@ -1072,6 +1113,7 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
         if (independentLanding && !GroundedFlightStop.stopped(MovementSync.INSTANCE)) return;
         if (MovementSync.INSTANCE.onGround.get() && hazardousGroundHandoff(MovementSync.INSTANCE))
             GroundedFlightStop.hold(MovementSync.INSTANCE);
+        localGoto.close();
         completedAboveRoof = arrived && targetBelowRoof;
         setFinished(true);
         if (arrived) {
@@ -1095,6 +1137,7 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
 
     @Override
     public void onStop() {
+        localGoto.close();
         MovementSync.INSTANCE.revokeFlightControls(this);
         // Cancelling steering must not fabricate a landing or switch off airborne physics.
         if (MovementSync.INSTANCE.onGround.get() && hazardousGroundHandoff(MovementSync.INSTANCE))

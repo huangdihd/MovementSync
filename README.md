@@ -62,6 +62,8 @@ English / [简体中文](README_CN.md)
 | `cansee` | Check line-of-sight to a coordinate |
 | `stopmove` | Stop all movement and clear goals |
 | `debug` | Print current state for troubleshooting |
+| `debug localgoto on\|off` | Toggle the low-altitude goto controller (default on); off restores legacy control without changing follow, End or high-altitude flight |
+| `debug shadow on\|off` | Toggle flight diagnostics: shadow comparisons on legacy control, prefix/rejection diagnostics on local control |
 
 ---
 

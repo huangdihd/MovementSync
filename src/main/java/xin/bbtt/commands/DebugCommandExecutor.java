@@ -18,6 +18,17 @@ public class DebugCommandExecutor extends CommandExecutor {
             MovementSync.getLogger().info("Shadow flight diagnostics {}", enabled ? "enabled" : "disabled");
             return;
         }
+        if (args.length == 2 && args[0].equalsIgnoreCase("localgoto")) {
+            if (!args[1].equalsIgnoreCase("on") && !args[1].equalsIgnoreCase("off")) {
+                MovementSync.getLogger().info("Usage: debug localgoto on|off");
+                return;
+            }
+            boolean enabled = args[1].equalsIgnoreCase("on");
+            MovementSync.INSTANCE.getFlightScopeRouter().setLocalGotoEnabled(enabled);
+            MovementSync.INSTANCE.invalidateFlightControls();
+            MovementSync.getLogger().info("Local goto controller {}", enabled ? "enabled" : "disabled");
+            return;
+        }
         var pos = MovementSync.INSTANCE.position.get();
         var vel = MovementSync.INSTANCE.velocity.get();
         var ctrl = MovementSync.INSTANCE.getMovementController();

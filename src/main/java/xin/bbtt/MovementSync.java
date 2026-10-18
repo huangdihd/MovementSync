@@ -83,6 +83,19 @@ public class MovementSync implements Plugin {
         flightControls.submit(envelope);
     }
 
+    public synchronized boolean registerForwardFlightEmergency(Object owner,
+            xin.bbtt.physics.FlightControlAdmission.Source source, float yaw) {
+        return flightControls.registerForwardEmergency(this, owner, source, yaw);
+    }
+
+    public synchronized boolean publishFlightPrefix(Object owner,
+            xin.bbtt.physics.FlightControlAdmission.Source source,
+            java.util.List<xin.bbtt.physics.FlightControlAdmission.Step> steps,
+            java.util.List<xin.bbtt.physics.FlightControlAdmission.Step> recovery,
+            xin.bbtt.physics.WaypointFlightTarget route, Runnable accepted) {
+        return flightControls.publishPrefix(this, owner, source, steps, recovery, route, accepted);
+    }
+
     public synchronized void revokeFlightControls(Object owner) { flightControls.revoke(owner); }
 
     public synchronized void claimFlightControlOwner(Object owner, xin.bbtt.physics.FlightControlAdmission.Mode mode) {

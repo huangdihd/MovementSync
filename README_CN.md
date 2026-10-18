@@ -62,6 +62,8 @@
 | `cansee` | 检查从机器人到头部的视线是否可见某点 |
 | `stopmove` | 停止所有运动并清除目标 |
 | `debug` | 打印当前调试状态 |
+| `debug localgoto on\|off` | 低空复杂 goto 局部控制器开关，默认 on；off 回到旧控制器，不影响 follow／末地／高空 |
+| `debug shadow on\|off` | 开关飞行诊断；旧控制路径输出影子对比，新局部路径输出前缀及拒绝分类 |
 
 ---
 

@@ -6,7 +6,7 @@ import java.util.ArrayList;
 
 /** Physics-boundary admission. Preparation may search; consumption only replays fixed controls. */
 public final class FlightControlAdmission {
-    public enum Mode { LOCAL, DIRECT, EXTENSION, TRANSITION }
+    public enum Mode { LOCAL, LOCAL_SOLVER, DIRECT, EXTENSION, TRANSITION }
     public record Source(long tick, long generation, PhysicsState state, long epoch) {
         public Source(long tick, long generation, PhysicsState state) { this(tick, generation, state, 0); }
     }
@@ -37,6 +37,45 @@ public final class FlightControlAdmission {
     private TickControlBatch batch;
     private int cursor;
     private boolean recovering;
+    private Source emergencySource;
+    private float emergencyYaw;
+
+    /** Copy the solver's exact executable prefix and fixed reserve; never search for a terminal. */
+    public static Envelope createPrefix(Object owner, Source source, List<Step> prefix,
+            List<Step> recovery, WaypointFlightTarget route, Runnable accepted) {
+        var corridor = route == null ? null : new WaypointFlightTarget(route.waypoints(), route.goal(),
+                route.landed(), route.partial(), route.corridorRadius());
+        if (recovery.stream().anyMatch(step -> step.control().firework()))
+            throw new IllegalArgumentException("Fixed recovery cannot request rockets");
+        if (!prefix.isEmpty() && recovery.stream().anyMatch(step -> step.control().pitch() > 0
+                || Math.cos(Math.toRadians(step.control().yaw() - prefix.get(0).control().yaw())) <= 0))
+            recovery = List.of(); // A targetless reserve is not permission for reverse descent.
+        return new Envelope(owner, source, prefix, corridor, accepted, recovery);
+    }
+
+    /** Caller holds sync. Invalid/stale publication never displaces the active prefix. */
+    public boolean publishPrefix(MovementSync sync, Object publisher, Source source, List<Step> prefix,
+            List<Step> recovery, WaypointFlightTarget route, Runnable accepted) {
+        if (mode != Mode.LOCAL_SOLVER || owner != publisher || !currentSource(sync, source)) return false;
+        submit(createPrefix(publisher, source, prefix, recovery, route, accepted));
+        return true;
+    }
+
+    /** Caller holds sync. Forward is supplied by the route, never inferred by targetless search. */
+    public boolean registerForwardEmergency(MovementSync sync, Object publisher, Source source, float yaw) {
+        if (mode != Mode.LOCAL_SOLVER || owner != publisher || !currentSource(sync, source)
+                || !Float.isFinite(yaw)
+                || emergencySource != null && source.tick() < emergencySource.tick()) return false;
+        emergencySource = source;
+        emergencyYaw = yaw;
+        return true;
+    }
+
+    private boolean currentSource(MovementSync sync, Source source) {
+        long age = sync.physicsTickVersion() - source.tick();
+        return source.epoch() == epoch && source.generation() == sync.getNavigationGeneration()
+                && age >= 0 && age <= 8;
+    }
 
     /** Diagnostic activation token, not an admission capability or controller ownership lock. */
     public record OwnershipTrace(long activation, long sourceTick, long sourceGeneration,
@@ -145,7 +184,7 @@ public final class FlightControlAdmission {
             mode = null;
         }
     }
-    public void clear() { pending = null; active = null; batch = null; owner = null; mode = null; epoch++; }
+    public void clear() { pending = null; active = null; batch = null; owner = null; mode = null; emergencySource = null; epoch++; }
 
     /** Called under MovementSync only. Never takes navigation/controller locks or invokes search. */
     public void consume(MovementSync sync) {
@@ -156,9 +195,9 @@ public final class FlightControlAdmission {
         if (pending != null) {
             var candidate = pending;
             pending = null;
-            if (candidate.source().epoch() != epoch || !consumed.add(candidate)) return;
+            boolean fresh = candidate.source().epoch() == epoch && consumed.add(candidate);
             long age = sync.physicsTickVersion() - candidate.source().tick();
-            if (candidate.source().generation() == sync.getNavigationGeneration() && age >= 0 && age <= 8
+            if (fresh && candidate.source().generation() == sync.getNavigationGeneration() && age >= 0 && age <= 8
                     && !candidate.steps().isEmpty() && revalidate(sync, candidate, 0)) {
                 active = candidate;
                 failure = null;
@@ -172,7 +211,7 @@ public final class FlightControlAdmission {
                 // not silently rely on the unpowered continuation proof.
                 if (!candidate.steps().get(0).control().firework() || poweredSafe(sync, candidate))
                     sync.acceptFlightAction(candidate.accepted());
-            } else if (active == null && candidate.source().generation() == sync.getNavigationGeneration()
+            } else if (fresh && active == null && candidate.source().generation() == sync.getNavigationGeneration()
                     && age >= 0 && age <= 8 && !candidate.recovery().isEmpty()) {
                 var reserve = new Envelope(candidate.owner(), candidate.source(), candidate.recovery(), null,
                         () -> {}, List.of());
@@ -184,14 +223,18 @@ public final class FlightControlAdmission {
                     batch = TickControlBatch.admitted(active, admittedAt);
                     recovering = true;
                 } else abandon(sync);
-            } else if (active == null && candidate.source().generation() == sync.getNavigationGeneration()
+            } else if (fresh && active == null && candidate.source().generation() == sync.getNavigationGeneration()
                     && age >= 0 && age <= 8) {
                 abandon(sync);
             }
         }
-        if (active == null) return;
+        if (active == null) {
+            if (mode == Mode.LOCAL_SOLVER) abandon(sync);
+            return;
+        }
         if (active.source().generation() != sync.getNavigationGeneration() || !sync.isGliding()) {
-            clear();
+            if (mode == Mode.LOCAL_SOLVER) abandon(sync);
+            else clear();
             return;
         }
         cursor = (int) (sync.physicsTickVersion() - admittedAt);
@@ -227,6 +270,16 @@ public final class FlightControlAdmission {
                 "UNPROVEN_EMERGENCY: prepared continuation exhausted or failed revalidation",
                 owner == null ? "legacy movement planner" : owner.getClass().getName());
         active = null;
+        batch = null;
+        if (mode == Mode.LOCAL_SOLVER) {
+            // No rocket action and no safety claim: only a forward, non-dive attitude.
+            // A generation change invalidates the registered heading as well as the prefix.
+            float yaw = emergencySource != null && emergencySource.epoch() == epoch
+                    && emergencySource.generation() == sync.getNavigationGeneration()
+                    ? emergencyYaw : sync.yaw.get();
+            sync.setYawToward(yaw);
+            sync.pitch.set(-20f);
+        }
         // Return responsibility to the existing movement planner. No fabricated descent,
         // no callback/search under this monitor, and no claim that residual motion is safe.
     }
@@ -244,6 +297,7 @@ public final class FlightControlAdmission {
     }
 
     private static boolean revalidate(MovementSync sync, Envelope envelope, int index) {
+        if (index < 0 || index >= envelope.steps().size()) return false;
         var state = new PhysicsState(sync.position.get(), sync.velocity.get(), sync.onGround.get(), sync.fallDistance.get(), PlayerPose.GLIDING);
         // Fixed maximum of six physics steps, selected controls only, no candidate search.
         for (int i = index; i < Math.min(index + 6, envelope.steps().size()); i++) {

@@ -125,7 +125,7 @@ public final class FollowMovement extends Movement {
                     landing = true;
                     landingAnchor = target.position();
                     walkingPlanAttempted = false;
-                    var flight = new ElytraFlyMovement(site, generation, Math.max(1, keepDistance));
+                    var flight = new ElytraFlyMovement(site, generation, Math.max(1, keepDistance)).forFollow();
                     if (local) flight.withLowAltitudeLanding();
                     replace(flight);
                     MovementSync.getLogger().info("Follow: landing near target at {}", site);
@@ -202,7 +202,7 @@ public final class FollowMovement extends Movement {
             return;
         }
         if (child == null && flying) {
-            var flight = new ElytraFlyMovement(searchDestination(), generation, Math.max(1, keepDistance));
+            var flight = new ElytraFlyMovement(searchDestination(), generation, Math.max(1, keepDistance)).forFollow();
             if (!TravelMovement.isOpen(sync.getWorld(), sync.position.get())) flight.withLowAltitudeLanding();
             landing = true;
             replace(flight);
@@ -286,6 +286,7 @@ public final class FollowMovement extends Movement {
                 var flight = target.lost()
                         ? new ElytraFlyMovement(searchDestination(), generation, Math.max(1, keepDistance))
                         : new ElytraFlyMovement(target, generation, Math.max(1, keepDistance));
+                flight.forFollow();
                 if (target.lost()) landing = true;
                 if (result != null) flight.withLowAltitudePlan(result);
                 flying = true;
