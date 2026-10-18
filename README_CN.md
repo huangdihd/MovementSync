@@ -63,6 +63,7 @@
 | `stopmove` | 停止所有运动并清除目标 |
 | `debug` | 打印当前调试状态 |
 | `debug localgoto on\|off` | 低空 goto 与部署后初始局部爬升开关，默认 on；off 回到旧控制器，不影响 follow／末地／既有高空巡航 |
+| `debug localfollow on\|off` | 局部 follow 控制开关，默认 on，独立于 localgoto；off 恢复旧跟随控制器，末地与插件模式仍不启用局部控制 |
 | `debug shadow on\|off` | 开关飞行诊断；旧控制路径输出影子对比，新局部路径输出前缀及拒绝分类 |
 
 ---

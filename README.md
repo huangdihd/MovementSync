@@ -63,6 +63,7 @@ English / [简体中文](README_CN.md)
 | `stopmove` | Stop all movement and clear goals |
 | `debug` | Print current state for troubleshooting |
 | `debug localgoto on\|off` | Toggle local low-altitude goto and initial deployment climb (default on); off restores legacy control. Follow, End and established high-altitude cruise remain unchanged |
+| `debug localfollow on\|off` | Toggle local follow control (default on), independently of localgoto; off restores legacy follow control. End and plugin mode remain excluded |
 | `debug shadow on\|off` | Toggle flight diagnostics: shadow comparisons on legacy control, prefix/rejection diagnostics on local control |
 
 ---

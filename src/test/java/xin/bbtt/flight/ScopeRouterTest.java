@@ -9,6 +9,7 @@ class ScopeRouterTest {
         assertFalse(router.isShadowEnabled());
         for (var scope : ScopeRouter.Scope.values()) {
             assertEquals(scope == ScopeRouter.Scope.UNDERROOF_GOTO || scope == ScopeRouter.Scope.LOCAL_CLIMB
+                    || scope == ScopeRouter.Scope.LOCAL_FOLLOW
                     ? ScopeRouter.Route.LOCAL
                     : ScopeRouter.Route.LEGACY, router.route(scope, false, false));
         }
@@ -17,6 +18,7 @@ class ScopeRouterTest {
     @Test void optInOnlySelectsShadowWithinExplicitLocalScopes() {
         var router = new ScopeRouter();
         router.setLocalGotoEnabled(false);
+        router.setLocalFollowEnabled(false);
         router.setShadowEnabled(true);
         for (var scope : ScopeRouter.Scope.values()) {
             assertEquals(scope == ScopeRouter.Scope.LEGACY ? ScopeRouter.Route.LEGACY
@@ -30,6 +32,7 @@ class ScopeRouterTest {
     @Test void disablingRestoresLegacyWithoutRememberingPreviousScope() {
         var router = new ScopeRouter();
         router.setLocalGotoEnabled(false);
+        router.setLocalFollowEnabled(false);
         router.setShadowEnabled(true);
         assertEquals(ScopeRouter.Route.SHADOW, router.route(ScopeRouter.Scope.LOCAL_FOLLOW, false, false));
         router.setShadowEnabled(false);

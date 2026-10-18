@@ -51,12 +51,12 @@ class LocalClimbHandoffTest {
         assertEquals(LocalClimbHandoff.Phase.CRUISE, handoff.phase());
     }
 
-    @Test void climbRoutingExcludesEndPluginFollowAndCanBeDisabled() {
+    @Test void climbRoutingExcludesEndPluginAndIsIndependentOfFollow() {
         var router = new ScopeRouter();
         assertEquals(ScopeRouter.Route.LOCAL, router.route(ScopeRouter.Scope.LOCAL_CLIMB, false, false));
         assertEquals(ScopeRouter.Route.LEGACY, router.route(ScopeRouter.Scope.LOCAL_CLIMB, true, false));
         assertEquals(ScopeRouter.Route.LEGACY, router.route(ScopeRouter.Scope.LOCAL_CLIMB, false, true));
-        assertEquals(ScopeRouter.Route.LEGACY, router.route(ScopeRouter.Scope.LOCAL_FOLLOW, false, false));
+        assertEquals(ScopeRouter.Route.LOCAL, router.route(ScopeRouter.Scope.LOCAL_FOLLOW, false, false));
         router.setLocalGotoEnabled(false);
         assertEquals(ScopeRouter.Route.LEGACY, router.route(ScopeRouter.Scope.LOCAL_CLIMB, false, false));
     }

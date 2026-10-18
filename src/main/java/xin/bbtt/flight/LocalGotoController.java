@@ -59,6 +59,13 @@ public final class LocalGotoController implements AutoCloseable {
 
     public boolean request(MovementSync sync, Object owner, FlightControlAdmission.Source source,
             WaypointFlightTarget route, Vector3d goal, boolean allowedRocket, Runnable accepted) {
+        return request(sync, owner, source, route, goal, allowedRocket, accepted, null);
+    }
+
+    /** Shared local route controller; a tracking observation forbids all normal touchdown candidates. */
+    public boolean request(MovementSync sync, Object owner, FlightControlAdmission.Source source,
+            WaypointFlightTarget route, Vector3d goal, boolean allowedRocket, Runnable accepted,
+            LocalLookaheadSolver.MovingTarget tracking) {
         Objects.requireNonNull(sync);
         Objects.requireNonNull(owner);
         Objects.requireNonNull(source);
@@ -93,7 +100,7 @@ public final class LocalGotoController implements AutoCloseable {
             worker.execute(() -> {
                 try {
                     compute(sync, owner, source, snapshot, endpoint, world, movement, yaw, pitch,
-                            attached, allowedRocket, accepted);
+                            attached, allowedRocket, accepted, tracking);
                     synchronized (LocalGotoController.this) { busy = false; }
                     finished.complete(null);
                 } catch (Throwable failure) {
@@ -107,7 +114,8 @@ public final class LocalGotoController implements AutoCloseable {
 
     private void compute(MovementSync sync, Object owner, FlightControlAdmission.Source source,
             WaypointFlightTarget route, Vector3d goal, World world, MovementParameters movement,
-            float yaw, float pitch, boolean attached, boolean allowedRocket, Runnable accepted) {
+            float yaw, float pitch, boolean attached, boolean allowedRocket, Runnable accepted,
+            LocalLookaheadSolver.MovingTarget tracking) {
         var points = route.waypoints();
         if (workerRoute == null || workerEpoch != source.epoch() || workerGeneration != source.generation()
                 || !points.equals(workerPoints)) {
@@ -124,20 +132,43 @@ public final class LocalGotoController implements AutoCloseable {
         LocalLookaheadSolver.PrefixResult unpowered = null, powered = null;
         boolean rocket = false;
         Status status = Status.UNPROVEN;
-        if (normalLanding(world, source.state(), goal)) {
+        if (tracking == null && normalLanding(world, source.state(), goal)) {
             status = Status.LANDED;
         } else if (!source.state().onGround()) {
             // Even an empty visible lookahead is not permission to fly blindly. The solver still
             // checks every executable step towards the route endpoint and may return UNPROVEN.
             var anchors = lookahead.isEmpty() ? List.of(forwardPoint) : lookahead;
+            // Track the live endpoint only when the shared body sweep can see it. Behind
+            // terrain, route progress owns steering until the endpoint becomes visible.
+            boolean trackingVisible = tracking != null
+                    && LocalAirRoute.visible(world, source.state().position(), goal, PlayerPose.GLIDING);
+            if (trackingVisible) anchors = List.of(goal);
+            // Visibility limits steering anchors, not pursuit urgency. Beyond the bounded
+            // visibility sweep, dropping tracking makes short route anchors penalize thrust
+            // for overshooting the lookahead and leaves a distant target unreacquired.
+            var scoringTarget = tracking;
+            if (tracking != null && !trackingVisible && !lookahead.isEmpty()) {
+                // A blocked pursuit ray must not reward staying below route clearance.
+                // Bound the probe, so a distant unobstructed target retains pursuit urgency
+                // even when the full endpoint is beyond the visibility sweep cap.
+                Vector3d ray = new Vector3d(goal).sub(source.state().position());
+                double distance = ray.length();
+                Vector3d near = new Vector3d(ray).mul(distance > 48 ? (48 - 1e-6) / distance : 1)
+                        .add(source.state().position());
+                if (!LocalAirRoute.visible(world, source.state().position(), near, PlayerPose.GLIDING)) {
+                    Vector3d routedAim = tracking.position();
+                    routedAim.y = Math.max(routedAim.y, forwardPoint.y);
+                    scoringTarget = new LocalLookaheadSolver.MovingTarget(routedAim, tracking.velocity());
+                }
+            }
             var solver = new LocalLookaheadSolver();
             var budget = new LocalLookaheadSolver.Budget(600, HORIZON, 25_000_000);
-            unpowered = solver.solvePrefix(anchors, source.state(), world, movement, yaw, pitch, attached, budget);
+            unpowered = solver.solvePrefix(anchors, source.state(), world, movement, yaw, pitch, attached, budget, scoringTarget);
             prefix = unpowered.prefix();
-            boolean arriving = source.state().position().distance(goal) < 32;
+            boolean arriving = tracking == null && source.state().position().distance(goal) < 32;
             boolean needsClimb = source.state().position().y < goal.y - 1;
             if (allowedRocket && !attached && accepted != null && (!arriving || needsClimb)) {
-                powered = solver.solvePrefix(anchors, source.state(), world, movement, yaw, pitch, true, budget);
+                powered = solver.solvePrefix(anchors, source.state(), world, movement, yaw, pitch, true, budget, scoringTarget);
                 if (!powered.prefix().isEmpty()) {
                     // Different winning candidates are not a dual-branch proof: replay the SAME
                     // powered winner without thrust before authorizing the first-step action.
@@ -177,7 +208,7 @@ public final class LocalGotoController implements AutoCloseable {
                     var brake = new ElytraFlightController.Decision(selected.yaw(), -45, false,
                             ElytraFlightController.Phase.CRUISE);
                     reserve = replay(world, movement, trajectory.end(), brake, attached || rocket,
-                            RESERVE_TICKS, goal, true).steps();
+                            RESERVE_TICKS, goal, tracking == null).steps();
                     status = Status.SAFE_PREFIX;
                 }
             }
@@ -185,9 +216,10 @@ public final class LocalGotoController implements AutoCloseable {
                 // The generic solver deliberately excludes ground contact; bounded goal-only
                 // braking may include a harmless supported touchdown, never arbitrary ground.
                 var brake = new ElytraFlightController.Decision(forward, -45, false,
-                        ElytraFlightController.Phase.LANDING);
+                        tracking == null ? ElytraFlightController.Phase.LANDING
+                                : ElytraFlightController.Phase.CRUISE);
                 prefix = replay(world, movement, source.state(), brake, attached,
-                        RESERVE_TICKS, goal, true).steps();
+                        RESERVE_TICKS, goal, tracking == null).steps();
                 rocket = false;
                 if (!prefix.isEmpty()) status = Status.SAFE_PREFIX;
             }

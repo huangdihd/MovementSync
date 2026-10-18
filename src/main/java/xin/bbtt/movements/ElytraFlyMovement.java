@@ -28,14 +28,15 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
     private final xin.bbtt.flight.LocalClimbHandoff climbHandoff = new xin.bbtt.flight.LocalClimbHandoff();
 
     private boolean localClimbEnabled(MovementSync sync) {
-        return !lowAltitude && !followOwned && !safeLandingLeg && !independentLanding && !emergencyLanding
-                && target instanceof xin.bbtt.physics.FixedFlightTarget && flightConfiguration.isLegacy()
+        return !lowAltitude && !safeLandingLeg && !independentLanding && !emergencyLanding
+                && ((!followOwned && target instanceof xin.bbtt.physics.FixedFlightTarget)
+                    || localFollowEnabled(sync)) && flightConfiguration.isLegacy()
                 && climbHandoff.phase() != xin.bbtt.flight.LocalClimbHandoff.Phase.CRUISE
                 && (!xin.bbtt.listeners.RegistryDataListener.hasCeiling()
                     || xin.bbtt.physics.CeilingCollision.isAboveRoof(sync.getWorld(), sync.position.get()))
-                && sync.getFlightScopeRouter().route(xin.bbtt.flight.ScopeRouter.Scope.LOCAL_CLIMB,
+                && (localFollowEnabled(sync) || sync.getFlightScopeRouter().route(xin.bbtt.flight.ScopeRouter.Scope.LOCAL_CLIMB,
                         "minecraft:the_end".equals(sync.getRecoveryDimension()), false)
-                        == xin.bbtt.flight.ScopeRouter.Route.LOCAL;
+                        == xin.bbtt.flight.ScopeRouter.Route.LOCAL);
     }
 
     private boolean localGotoEnabled(MovementSync sync) {
@@ -44,6 +45,15 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
                         "minecraft:the_end".equals(sync.getRecoveryDimension()), false)
                         == xin.bbtt.flight.ScopeRouter.Route.LOCAL;
     }
+    private boolean localFollowEnabled(MovementSync sync) {
+        return (followOwned || target instanceof xin.bbtt.physics.EntityFlightTarget)
+                && !safeLandingLeg && !independentLanding && !emergencyLanding
+                && flightConfiguration.isLegacy()
+                && sync.getFlightScopeRouter().route(xin.bbtt.flight.ScopeRouter.Scope.LOCAL_FOLLOW,
+                        "minecraft:the_end".equals(sync.getRecoveryDimension()), false)
+                        == xin.bbtt.flight.ScopeRouter.Route.LOCAL;
+    }
+
     private boolean lowEmergencyRoute;
     private int lowRouteAcceptedTick;
     private ElytraFlightController.Decision lastLowDecision;
@@ -234,7 +244,7 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
             movementSync.claimFlightControlOwner(this,
                     controllingMode != null && !(controllingMode instanceof xin.bbtt.flight.VanillaGlideMode)
                             ? xin.bbtt.physics.FlightControlAdmission.Mode.EXTENSION
-                            : localGotoEnabled(movementSync) || localClimbEnabled(movementSync)
+                            : localFollowEnabled(movementSync) || localGotoEnabled(movementSync) || localClimbEnabled(movementSync)
                                     && climbHandoff.phase() == xin.bbtt.flight.LocalClimbHandoff.Phase.LOCAL_CLIMB
                                     ? xin.bbtt.physics.FlightControlAdmission.Mode.LOCAL_SOLVER
                             : lowAltitude ? xin.bbtt.physics.FlightControlAdmission.Mode.LOCAL
@@ -324,10 +334,17 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
         if (!hasVanilla && tickExtended(movementSync, state, equipmentAction, null)) return;
         boolean localClimb = localClimbEnabled(movementSync)
                 && climbHandoff.phase() == xin.bbtt.flight.LocalClimbHandoff.Phase.LOCAL_CLIMB;
-        if (localClimb || localGotoEnabled(movementSync)) {
+        boolean localFollow = localFollowEnabled(movementSync);
+        if (localClimb || localFollow || localGotoEnabled(movementSync)) {
             // This early return removes selector, six-successor recovery and terminal preparation
-            // from the new goto hot path; legacy/follow/End still use their original contract.
-            Vector3d goal = target.position();
+            // from local control; legacy/End retain their original contract.
+            // FollowMovement alone replaces a live entity leg with its stopped/lost anchor.
+            // Even a momentarily stationary entity observation must remain airborne here.
+            var tracking = localFollow && target instanceof xin.bbtt.physics.EntityFlightTarget
+                    ? new xin.bbtt.physics.LocalLookaheadSolver.MovingTarget(
+                            xin.bbtt.physics.WaypointFlightTarget.pursuitAim(target, state), target.velocity())
+                    : null;
+            Vector3d goal = tracking == null ? target.position() : tracking.predict(12);
             Vector3d forward = new Vector3d(goal).sub(state.position());
             float heading = forward.x == 0 && forward.z == 0 ? movementSync.yaw.get()
                     : (float) Math.toDegrees(Math.atan2(-forward.x, forward.z));
@@ -340,12 +357,17 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
             var route = localClimb ? climbHandoff.route(state, goal, movementSync.yaw.get())
                     : lowRoute == null ? new xin.bbtt.physics.WaypointFlightTarget(
                     java.util.List.of(state.position(), goal), goal, false) : lowRoute;
+            // Keep the live entity and its heading, but score the shared clearance waypoint
+            // during deployment: a same-height entity must not starve the initial climb.
+            // Non-null tracking also keeps touchdown disabled throughout this prefix.
+            if (localClimb && tracking != null)
+                tracking = new xin.bbtt.physics.LocalLookaheadSolver.MovingTarget(route.goal(), target.velocity());
             var rocket = new ElytraFlightController.Decision(heading, -20, true,
                     ElytraFlightController.Phase.CRUISE);
             localGoto.request(movementSync, this, controlSource, route, localClimb ? route.goal() : goal,
                     !movementSync.hasAttachedFirework() && lifecycle.rocketCooldown() == 0
                             && movementSync.countHotbarFireworks() > 0,
-                    () -> lifecycle.execute(movementSync, rocket, equipmentAction));
+                    () -> lifecycle.execute(movementSync, rocket, equipmentAction), tracking);
             // Planner-only bounded handoff. Physics keeps consuming its finite prefix while
             // a slow worker runs; never join from the physical monitor.
             if (!Thread.holdsLock(movementSync)) {
