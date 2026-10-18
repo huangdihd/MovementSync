@@ -127,7 +127,29 @@ public class MovementSync implements Plugin {
             float yaw, float pitch, PlayerInput input, double fallDistance) {}
     private volatile FlightTickTrace lastFlightTick;
     public FlightTickTrace getLastFlightTick() { return lastFlightTick; }
-    public void recordFlightTick(FlightTickTrace trace) { lastFlightTick = trace; }
+    public synchronized void recordFlightTick(FlightTickTrace trace) {
+        lastFlightTick = trace;
+        if (physicsTraceEnabled) {
+            lastPhysicsTickTrace = xin.bbtt.flight.PhysicsTickTrace.copy(++physicsTraceSequence,
+                    physicsTickVersion, getNavigationGeneration(), flightControls.ownershipTrace(), trace);
+        }
+    }
+
+    private final xin.bbtt.flight.ScopeRouter flightScopeRouter = new xin.bbtt.flight.ScopeRouter();
+    private boolean physicsTraceEnabled;
+    private long physicsTraceSequence;
+    private volatile xin.bbtt.flight.PhysicsTickTrace lastPhysicsTickTrace;
+
+    /** P0 dispatch seam; all routes still execute the legacy controller. */
+    public xin.bbtt.flight.ScopeRouter getFlightScopeRouter() { return flightScopeRouter; }
+
+    /** Opt-in, latest-only diagnostics. Does not advance or repair the legacy input clock. */
+    public synchronized void setPhysicsTraceEnabled(boolean enabled) {
+        physicsTraceEnabled = enabled;
+        if (!enabled) lastPhysicsTickTrace = null;
+    }
+
+    public xin.bbtt.flight.PhysicsTickTrace getLastPhysicsTickTrace() { return lastPhysicsTickTrace; }
 
     private final AtomicBoolean gliding = new AtomicBoolean();
     private boolean awaitingNewFlight;

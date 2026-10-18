@@ -18,6 +18,19 @@ public final class FlightControlAdmission {
     private int cursor;
     private boolean recovering;
 
+    /** Diagnostic activation token, not an admission capability or controller ownership lock. */
+    public record OwnershipTrace(long activation, long sourceTick, long sourceGeneration,
+                                 long admittedAt, int cursor, boolean recovering, boolean active) {}
+    private long traceActivation;
+
+    /** Caller holds the same MovementSync monitor as consume; takes no other locks. */
+    public OwnershipTrace ownershipTrace() {
+        return active == null
+                ? new OwnershipTrace(traceActivation, -1, -1, -1, -1, false, false)
+                : new OwnershipTrace(traceActivation, active.source().tick(), active.source().generation(),
+                        admittedAt, cursor, recovering, true);
+    }
+
     public static Source snapshot(MovementSync sync) {
         synchronized (sync) {
             return new Source(sync.physicsTickVersion(), sync.getNavigationGeneration(),
@@ -119,6 +132,7 @@ public final class FlightControlAdmission {
             if (candidate.source().generation() == sync.getNavigationGeneration() && age >= 0 && age <= 8
                     && !candidate.steps().isEmpty() && revalidate(sync, candidate, 0)) {
                 active = candidate;
+                traceActivation++;
                 cursor = 0;
                 recovering = false;
                 admittedAt = sync.physicsTickVersion();
@@ -133,6 +147,7 @@ public final class FlightControlAdmission {
                         () -> {}, List.of());
                 if (revalidate(sync, reserve, 0)) {
                     active = reserve;
+                    traceActivation++;
                     cursor = 0;
                     admittedAt = sync.physicsTickVersion();
                     recovering = true;
@@ -156,6 +171,7 @@ public final class FlightControlAdmission {
                         () -> {}, List.of());
                 if (revalidate(sync, reserve, 0)) {
                     active = reserve;
+                    traceActivation++;
                     admittedAt = sync.physicsTickVersion();
                     cursor = 0;
                     recovering = true;
