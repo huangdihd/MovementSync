@@ -34,6 +34,19 @@ class EntityFlightTargetTest {
         assertEquals(new Vector3d(), target.velocity());
     }
 
+    @Test void returningEntityClearsLossWithoutChangingItsIdentity() {
+        World world = new World();
+        var target = new EntityFlightTarget(99, 6, new Vector3d(-60, 64, 28));
+        target.sample(world);
+        assertTrue(target.lost());
+        Entity entity = new Entity(99, UUID.randomUUID(), EntityType.ARMOR_STAND,
+                -80, 65, 28, 0, 0, 0, new Vector3d());
+        world.getEntities().put(99, entity);
+        target.sample(world);
+        assertFalse(target.lost());
+        assertEquals(entity.getPosition(), target.position());
+    }
+
     @Test void fixedTargetDefensivelyCopiesAndDoesNotPredict() {
         Vector3d original = new Vector3d(1, 2, 3);
         var target = new FixedFlightTarget(original);

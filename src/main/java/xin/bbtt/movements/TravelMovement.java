@@ -41,7 +41,55 @@ public final class TravelMovement extends Movement {
     private volatile Movement child;
     private volatile boolean stopped;
     private boolean takeoffForLanding;
-    private java.util.concurrent.CompletableFuture<LowAltitudeFlightPlan.Result> lowPlan;
+    private LowAltitudeFlightPlan.PlanFuture lowPlan;
+    private String lowFlightFailure;
+    private xin.bbtt.physics.PlayerInput waitingInput;
+
+    /** No child owns the controls while preparation/planning runs. Sneak also brakes at ledges. */
+    private void holdForPlanning(MovementSync sync) {
+        sync.runIfNavigationRequestCurrent(generation, () -> {
+            if (stopped || finished || child != null) return;
+            sync.clearInput(); // Also discard a queued one-shot jump from the previous leg.
+            waitingInput = new xin.bbtt.physics.PlayerInput(false, false, false, false,
+                    false, sync.onGround.get(), false);
+            sync.setInput(waitingInput);
+        });
+    }
+
+    private void releasePlanningInput(MovementSync sync) {
+        GroundedFlightStop.release(sync, waitingInput);
+        waitingInput = null;
+    }
+
+    String lowFlightFailure() { return lowFlightFailure; }
+
+    private boolean rejectLowFlight(String reason) {
+        lowFlightFailure = reason;
+        MovementSync.INSTANCE.runIfNavigationRequestCurrent(generation, () ->
+                MovementSync.getLogger().info("Travel: under-roof flight preparation failed: {}; falling back to walking", reason));
+        return false;
+    }
+
+    /** Flight proximity is not arrival: the final ground leg must reach the requested elevation. */
+    private boolean atSupportedGoal(MovementSync sync) {
+        Vector3d position = sync.position.get();
+        boolean supported = sync.onGround.get()
+                || xin.bbtt.pathfinding.EnvironmentalTraversal.inWater(sync.getWorld(), position)
+                || xin.bbtt.pathfinding.EnvironmentalTraversal.climbing(sync.getWorld(), position);
+        return supported && !sync.isGliding()
+                && Math.abs(position.x - (goal.x + .5)) < .5
+                && Math.abs(position.z - (goal.z + .5)) < .5
+                && Math.abs(position.y - goal.y) < 1;
+    }
+
+    private void abortTravel(MovementSync sync, String reason) {
+        sync.runIfNavigationRequestCurrent(generation, () -> {
+            MovementSync.getLogger().info("Travel: navigation aborted: {}", reason);
+            sync.abandonNavigationRequest(generation, reason);
+            releasePlanningInput(MovementSync.INSTANCE);
+            finished = true;
+        });
+    }
 
     public TravelMovement(Vector3i goal, long generation, boolean fly) {
         this(goal, generation, fly, null, new xin.bbtt.flight.FlightContextBuilder().addStandard());
@@ -110,7 +158,7 @@ public final class TravelMovement extends Movement {
     }
 
     @Override
-    public void init() {}
+    public void init() { holdForPlanning(MovementSync.INSTANCE); }
 
     @Override
     public void onTick() {
@@ -120,6 +168,7 @@ public final class TravelMovement extends Movement {
         if (stopped || finished || !movementSync.isNavigationRequestCurrent(generation)) return;
         Movement currentChild = child;
         if (currentChild != null) {
+            releasePlanningInput(movementSync);
             currentChild.onTick();
             if (!currentChild.isFinished()) return;
             child = null;
@@ -128,18 +177,31 @@ public final class TravelMovement extends Movement {
             if (currentChild instanceof ElytraFlyMovement flight && flight.completedAboveRoof()) {
                 movementSync.runIfNavigationRequestCurrent(generation, () -> {
                     MovementSync.getLogger().info(LangManager.get("movementsync.command.goto.target_below_roof"));
-                    movementSync.abandonNavigationRequest(generation);
-                    finished = true;
+                    movementSync.abandonNavigationRequest(generation, "target below roof is unreachable from roof landing");
+                    releasePlanningInput(MovementSync.INSTANCE);
+            finished = true;
                 });
+                return;
+            }
+            if (currentChild instanceof PathMovement path
+                    && path.completion() == PathMovement.Completion.FAILED) {
+                abortTravel(movementSync, "walking leg failed: " + path.failureReason());
                 return;
             }
             if (currentChild instanceof PathMovement path
                     && path.completion() == PathMovement.Completion.UNEXPECTED_FALL) {
                 stage = Stage.PREPARE;
             } else if (stage == Stage.WALK) {
-                finished = true;
+                if (atSupportedGoal(movementSync)) {
+                    movementSync.runIfNavigationRequestCurrent(generation, () -> {
+                        movementSync.setActiveGoal(null);
+                        releasePlanningInput(MovementSync.INSTANCE);
+            finished = true;
+                    });
+                } else abortTravel(movementSync, "walking leg ended before supported 3D arrival");
                 return;
             }
+            holdForPlanning(movementSync);
             if (stage == Stage.TAKEOFF) {
                 stage = takeoffForLanding ? Stage.LAND : Stage.FLIGHT;
                 startChild(takeoffForLanding ? extendedLanding() : legs.flight());
@@ -149,8 +211,15 @@ public final class TravelMovement extends Movement {
                 startFlight();
                 return;
             }
+            if (currentChild instanceof ElytraFlyMovement && !atSupportedGoal(movementSync)
+                    && xin.bbtt.listeners.RegistryDataListener.hasCeiling()
+                    && !isOpen(movementSync.getWorld(), movementSync.position.get())
+                    && movementSync.countHotbarFireworks() == 0) {
+                rejectLowFlight("insufficient fireworks to continue; landed on known support");
+            }
             if (stage != Stage.PREPARE) stage = Stage.LAND;
         }
+        holdForPlanning(movementSync);
         boolean environmental = xin.bbtt.pathfinding.EnvironmentalTraversal.inWater(
                 movementSync.getWorld(), movementSync.position.get())
                 || xin.bbtt.pathfinding.EnvironmentalTraversal.climbing(
@@ -202,6 +271,15 @@ public final class TravelMovement extends Movement {
             if (stopped || finished || !movementSync.isNavigationRequestCurrent(generation)) return;
             stage = Stage.LAND;
         }
+        if (stage == Stage.LAND && !environmental && movementSync.onGround.get()
+                && ElytraFlyMovement.hazardousGroundHandoff(movementSync)
+                && (movementSync.isGliding() || movementSync.velocity.get().x != 0
+                    || movementSync.velocity.get().z != 0)
+                && !GroundedFlightStop.stopped(movementSync)) {
+            // Keep flight control alive while metadata still selects glide physics.
+            if (movementSync.isGliding()) startChild(extendedLanding());
+            return;
+        }
         if (stage == Stage.LAND && (ElytraFlyMovement.touchingWater()
                 || (movementSync.onGround.get() || environmental) && !movementSync.isGliding())) {
             stage = Stage.WALK;
@@ -210,8 +288,9 @@ public final class TravelMovement extends Movement {
             if (path.isEmpty()) {
                 movementSync.runIfNavigationRequestCurrent(generation, () -> {
                     MovementSync.getLogger().info(LangManager.get("movementsync.command.goto.no_path", goal.x, goal.y, goal.z));
-                    movementSync.abandonNavigationRequest(generation);
-                    finished = true;
+                    movementSync.abandonNavigationRequest(generation, "no walking path to destination");
+                    releasePlanningInput(MovementSync.INSTANCE);
+            finished = true;
                 });
                 return;
             }
@@ -221,22 +300,36 @@ public final class TravelMovement extends Movement {
 
     /** Planning never owns navigation locks; publication rechecks the owning generation. */
     private boolean prepareLowFlight(MovementSync sync) {
-        if (flightConfiguration.modes().stream().noneMatch(mode -> mode instanceof xin.bbtt.flight.VanillaGlideMode)
-                || !LowAltitudeFlightPlan.admissible(sync.position.get(), new Vector3d(goal.x + .5, goal.y, goal.z + .5))) return false;
+        // A walking interruption must not retry a rejected edge launch in this request.
+        if (lowFlightFailure != null) return false;
+        holdForPlanning(sync);
+        if (flightConfiguration.modes().stream().noneMatch(mode -> mode instanceof xin.bbtt.flight.VanillaGlideMode))
+            return rejectLowFlight("vanilla glide mode disabled");
+        if (!LowAltitudeFlightPlan.admissible(sync.position.get(), new Vector3d(goal.x + .5, goal.y, goal.z + .5)))
+            return rejectLowFlight("invalid route coordinates");
         var equipment = legs.prepareFlight();
         if (equipment == xin.bbtt.inventory.InventoryManager.ElytraAction.WAITING) return true;
-        if (equipment == xin.bbtt.inventory.InventoryManager.ElytraAction.LAND
-                || !sync.hasEquippedElytra() || !legs.hasFlightBudget()) return false;
+        if (equipment == xin.bbtt.inventory.InventoryManager.ElytraAction.LAND || !sync.hasEquippedElytra())
+            return rejectLowFlight("equipment unavailable or unsafe");
+        if (!legs.hasFlightBudget()) return rejectLowFlight("insufficient flight equipment budget");
         if (lowPlan == null) {
             lowPlan = LowAltitudeFlightPlan.submit(sync.getWorld(),
                     new xin.bbtt.physics.PhysicsState(sync.position.get(), sync.velocity.get(), sync.onGround.get(), sync.fallDistance.get()),
-                    new Vector3d(goal.x + .5, goal.y, goal.z + .5), sync.getMovementParameters(), sync.isGliding());
+                    new Vector3d(goal.x + .5, goal.y, goal.z + .5), sync.getMovementParameters(), sync.isGliding(),
+                    new xin.bbtt.physics.HazardRecovery.Context(sync.inventoryManager.getHotbarFireworkFlightDurations(),
+                            0, sync.hasAttachedFirework(), sync.getLandingMemory()));
             return true;
         }
         if (!lowPlan.isDone()) return true;
         var result = lowPlan.getNow(null);
+        var status = lowPlan.status();
+        var detail = lowPlan.detail();
         lowPlan = null;
-        if (result == null || result.destination().distanceSquared(new Vector3d(goal.x + .5, goal.y, goal.z + .5)) > .01) return false;
+        if (result == null) return rejectLowFlight(detail == null ? lowPlanFailure(status) : detail);
+        if (result.origin().distanceSquared(sync.position.get()) > .25)
+            return rejectLowFlight("launch position changed during planning");
+        if (result.destination().distanceSquared(new Vector3d(goal.x + .5, goal.y, goal.z + .5)) > .01)
+            return rejectLowFlight("route destination changed");
         sync.runIfNavigationRequestCurrent(generation, () -> {
             if (stopped || finished) return;
             var movement = legs.flight();
@@ -246,6 +339,18 @@ public final class TravelMovement extends Movement {
             startChild(flight);
         });
         return child != null;
+    }
+
+    static String lowPlanFailure(LowAltitudeFlightPlan.Status status) {
+        return switch (status) {
+            case DEPLOYMENT_REJECTED -> "deployment blocked or unsafe";
+            case NO_CORRIDOR -> "no safe corridor within geometric search budget";
+            case INVALID_COORDINATES -> "invalid route coordinates";
+            case BUSY -> "flight planner busy";
+            case CANCELLED -> "flight planning cancelled";
+            case FAILED -> "flight planner failed";
+            default -> "flight planner returned no route (" + status + ")";
+        };
     }
 
     /** Returns false to hand this tick to the vanilla preparation below. */
@@ -267,12 +372,18 @@ public final class TravelMovement extends Movement {
             return true;
         }
         if (stage == Stage.LAND && supported) {
+            if (!environmental && ElytraFlyMovement.hazardousGroundHandoff(sync)
+                    && !GroundedFlightStop.stopped(sync)) {
+                if (sync.isGliding()) startChild(extendedLanding());
+                return true;
+            }
             stage = Stage.WALK;
             List<PathStep> path = legs.plan(goal);
             if (stopped || finished || !sync.isNavigationRequestCurrent(generation)) return true;
             if (path.isEmpty()) {
-                sync.abandonNavigationRequest(generation);
-                finished = true;
+                sync.abandonNavigationRequest(generation, "no walking path to destination");
+                releasePlanningInput(MovementSync.INSTANCE);
+            finished = true;
             } else startChild(legs.walk(path, goal, false));
         }
         return true;
@@ -343,6 +454,9 @@ public final class TravelMovement extends Movement {
     private void startChild(Movement movement) {
         MovementSync.INSTANCE.runIfNavigationRequestCurrent(generation, () -> {
             if (stopped || finished) return;
+            // Even the final walking leg is subordinate: only this owner may clear
+            // the static goal, after observing supported, non-gliding 3D arrival.
+            if (movement instanceof PathMovement path) path.asIntermediateLeg(goal);
             child = movement;
             child.init();
         });
@@ -415,5 +529,6 @@ public final class TravelMovement extends Movement {
         Movement currentChild = child;
         child = null;
         if (currentChild != null) currentChild.onStop();
+        releasePlanningInput(MovementSync.INSTANCE);
     }
 }

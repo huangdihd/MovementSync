@@ -128,7 +128,27 @@ final class LowAltitudeTravelEndToEndTest extends ElytraCommandTestSupport {
         assertFalse(world.chunkLoaded(1, 0), "old sections really unload, not merely accumulate");
     }
 
+    @Test
+    void sixHundredBlockUnderRoofTravelLaunchesBeforeGoalLoadsAndArrivesIn3d() throws Exception {
+        Corridor world = new Corridor(false, true);
+        Vector3d start = new Vector3d(16.5, 64, 8.5);
+        Vector3i goal = new Vector3i(16, 64, 608);
+        assertFalse(world.chunkLoaded(goal.x >> 4, goal.z >> 4));
+        var durability = movementSync.inventoryManager.getElytraDurability();
+        assertTrue(durability.usable(), "fixture must equip usable elytra");
+        assertTrue(durability.canStart(600), "600-block flight must not be rejected by durability budget");
+        exercise(world, start, goal, false, true);
+        assertTrue(world.loadingChanges >= 30, "actual movement must stream terrain along the 600-block route");
+        assertTrue(world.chunkLoaded(goal.x >> 4, goal.z >> 4), "destination eventually streams in");
+        assertFalse(world.chunkLoaded(1, 0), "old terrain must unload");
+    }
+
     private void exercise(Corridor world, Vector3d start, Vector3i goal, boolean perturb) throws Exception {
+        exercise(world, start, goal, perturb, false);
+    }
+
+    private void exercise(Corridor world, Vector3d start, Vector3i goal, boolean perturb,
+                          boolean requirePartialLaunch) throws Exception {
         Field worldField = MovementSync.class.getDeclaredField("world");
         worldField.setAccessible(true);
         worldField.set(movementSync, world);
@@ -161,6 +181,19 @@ final class LowAltitudeTravelEndToEndTest extends ElytraCommandTestSupport {
                 Object child = field(travel, "child");
                 if (child instanceof ElytraFlyMovement) awaitPlanning(child);
                 travel.onTick();
+                if (requirePartialLaunch) {
+                    assertNull(travel.lowFlightFailure(), "travel rejected flight at tick=" + tick
+                            + " position=" + movementSync.position.get());
+                    if (movementSync.getActiveGoal() == null) {
+                        assertTrue(movementSync.onGround.get() && !movementSync.isGliding()
+                                        && movementSync.position.get().distance(
+                                                new Vector3d(goal.x + .5, goal.y, goal.z + .5)) <= 1.5,
+                                "navigation cleared before supported 3D arrival at tick=" + tick
+                                        + " position=" + movementSync.position.get());
+                    }
+                    if (tick == 100) assertTrue(deployments > 0,
+                            "must launch promptly instead of waiting for the unloaded destination");
+                }
                 var input = movementSync.snapshotInput();
                 var packet = movementSync.pollBeforeMovementPacket();
                 while (packet != null) {
@@ -169,6 +202,10 @@ final class LowAltitudeTravelEndToEndTest extends ElytraCommandTestSupport {
                             && command.getState() == PlayerState.START_ELYTRA_FLYING) {
                         assertFalse(movementSync.onGround.get(), "deployment requires the real jump");
                         assertTrue(movementSync.velocity.get().y <= 0, "deploy on descent");
+                        if (requirePartialLaunch && deployments == 0) {
+                            assertFalse(world.chunkLoaded(goal.x >> 4, goal.z >> 4),
+                                    "first deployment must use a partial route before the destination loads");
+                        }
                         deployments++;
                         sharedFlags(true);
                     } else if (packet instanceof ServerboundUseItemPacket) {

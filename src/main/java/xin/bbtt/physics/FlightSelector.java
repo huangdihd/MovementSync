@@ -123,6 +123,16 @@ final class FlightSelector {
     Decision decideLow(World world, PhysicsState state, float yaw, float pitch,
             boolean attached, WaypointFlightTarget route, int fireworks, double radius,
             java.util.function.Predicate<Decision> allowed) {
+        // Count-only legacy callers supply a finite inventory of ordinary flight=1 rockets.
+        int[] flights = new int[Math.max(0, fireworks)];
+        java.util.Arrays.fill(flights, 1);
+        return decideLow(world, state, yaw, pitch, attached, route, fireworks, radius,
+                new HazardRecovery.Context(flights, 0, attached, null), allowed);
+    }
+
+    Decision decideLow(World world, PhysicsState state, float yaw, float pitch,
+            boolean attached, WaypointFlightTarget route, int fireworks, double radius,
+            HazardRecovery.Context context, java.util.function.Predicate<Decision> allowed) {
         Objects.requireNonNull(world, "world");
         Objects.requireNonNull(state, "state");
         if (!state.position().isFinite() || !state.velocity().isFinite()
@@ -130,13 +140,36 @@ final class FlightSelector {
                 || !Double.isFinite(radius) || radius <= 0 || fireworks < 0)
             throw new IllegalArgumentException("Flight inputs must be finite, radius positive and fireworks nonnegative");
         if (state.onGround()) return new Decision(normalize(yaw), 0, false, Phase.LANDED);
+        // A completed worker route is geometry, not a timed reference. Reject a
+        // drifted starting state before considering terminal braking or rockets;
+        // emergency recovery remains the caller's separate safe fallback.
+        if (!route.reconcile(world, state))
+            throw new IllegalStateException("No safe low-altitude trajectory: current state outside corridor");
         route.advance(world, state, movement);
         Vector3d target = route.aim(state);
         float heading = LowAltitudePlanner.yaw(new Vector3d(target).sub(state.position()));
-        Decision best = null;
-        double bestScore = Double.POSITIVE_INFINITY;
-        for (FlightMode.Candidate candidate : mode.candidates(yaw, heading,
-                !attached && fireworks > 0, false)) {
+        boolean terminal = route.landed() && !route.pursuit()
+                && state.position().distance(target) <= radius + state.velocity().length() * HORIZON;
+        record Ranked(Decision decision, FlightTrajectory trajectory, double score) {}
+        var ranked = new java.util.ArrayList<Ranked>();
+        var candidates = new java.util.ArrayList<>(mode.candidates(yaw, heading,
+                !terminal && !attached && context.cooldownTicks() == 0
+                        && context.rocketFlightDurations().length > 0, false));
+        if (terminal) {
+            // Brake against momentum, which need not point along the route. These
+            // controls receive exactly the same collision and recovery proofs.
+            float brakingYaw = LowAltitudePlanner.yaw(new Vector3d(state.velocity()).negate());
+            candidates.addAll(mode.candidates(yaw, brakingYaw, false, false));
+            // Unlike cancellation (which freezes controls), a closed-loop final
+            // approach can pitch down to shed altitude while an attached rocket
+            // is still running. Never bypass the safe-touchdown/recovery checks.
+            for (float offset : YAW_OFFSETS) {
+                float approachYaw = yaw + normalize(heading + offset - yaw);
+                for (float approachPitch : new float[] {20, 30, 45, 60})
+                    candidates.add(new FlightMode.Candidate(mode, approachYaw, approachPitch, false));
+            }
+        }
+        for (FlightMode.Candidate candidate : candidates) {
             boolean boosted = attached || candidate.firework();
             var checked = safety.simulate(world, state,
                     mode.stepper(candidate.yaw(), candidate.pitch(), boosted), LOW_HORIZON,
@@ -151,7 +184,8 @@ final class FlightSelector {
                 var result = trajectory.result(tick);
                 if (result.collidedX() || result.collidedZ()
                         || result.onGround() && (!route.landed()
-                        || result.position().distance(route.goal()) > radius)) {
+                        || Math.abs(result.position().y - route.goal().y) > .5
+                        || result.position().distance(route.goal()) > (terminal ? Math.max(.5, radius - PlayerPose.HALF_WIDTH) : radius))) {
                     valid = false;
                     break;
                 }
@@ -179,18 +213,62 @@ final class FlightSelector {
                 Vector3d actualVelocity = end.velocity();
                 score += end.position().distance(movingTarget) * 3
                         + actualVelocity.distance(desiredVelocity) * LOW_HORIZON;
-            } else score += end.position().distance(target) * 3;
-            score += BuiltinFlightCost.controls(candidate.yaw(), candidate.pitch(), yaw, pitch, candidate.firework());
-            if (score < bestScore) {
-                Decision decision = new Decision(candidate.yaw(), candidate.pitch(), candidate.firework(),
-                        route.landed() ? Phase.LANDING : Phase.CRUISE);
-                if (!allowed.test(decision)) continue;
-                bestScore = score;
-                best = decision;
+            } else {
+                score += end.position().distance(target) * (terminal ? 1 : 3);
+                if (terminal) {
+                    // A terminal waypoint is a stop, not another cruise vertex.
+                    // Position-only six-tick scoring rewards crossing it at rocket
+                    // speed. Include vertical motion: a rising fly-by is not arrival.
+                    Vector3d desiredVelocity = new Vector3d(target).sub(end.position()).div(HORIZON);
+                    score += end.velocity().distance(desiredVelocity) * HORIZON;
+                }
             }
+            score += BuiltinFlightCost.controls(candidate.yaw(), candidate.pitch(), yaw, pitch, candidate.firework());
+            ranked.add(new Ranked(new Decision(candidate.yaw(), candidate.pitch(), candidate.firework(),
+                    route.landed() ? Phase.LANDING : Phase.CRUISE), trajectory, score));
         }
-        if (best == null) throw new IllegalStateException("No safe low-altitude trajectory");
-        return best;
+        // Rank cheap trajectories first. Only prove candidates that can actually win;
+        // all six executable states still need actual AND stalled terminal support.
+        ranked.sort(java.util.Comparator.comparingDouble(Ranked::score));
+        // Keep the last successful controls separate from the branching search.
+        // Search exhaustion is not evidence that this live-revalidated continuation
+        // is blocked. Geometry alone never enters this fast path.
+        var witness = HazardRecovery.controlWitness(world);
+        var replayBudget = new HazardRecovery.Budget(2 * LOW_HORIZON * 600);
+        for (Ranked candidate : ranked) {
+            if (witness == null || replayBudget.exhausted()) break;
+            if (!allowed.test(candidate.decision())) continue;
+            boolean valid = true;
+            for (int tick = 0; tick < candidate.trajectory().size(); tick++) {
+                if (!HazardRecovery.revalidate(world,
+                        FlightSafety.nextState(candidate.trajectory().result(tick)), movement,
+                        context.afterTicks(tick + 1, candidate.decision().firework()), witness,
+                        replayBudget).admissible()) {
+                    valid = false;
+                    break;
+                }
+            }
+            if (valid) return candidate.decision();
+        }
+        var budget = new HazardRecovery.Budget(HazardRecovery.DECISION_STEP_BUDGET);
+        for (Ranked candidate : ranked) {
+            if (!allowed.test(candidate.decision())) continue;
+            boolean valid = true;
+            for (int tick = 0; tick < candidate.trajectory().size(); tick++) {
+                var result = candidate.trajectory().result(tick);
+                if (!HazardRecovery.assess(world, FlightSafety.nextState(result), movement,
+                        context.afterTicks(tick + 1, candidate.decision().firework()), budget).admissible()) {
+                    valid = false;
+                    break;
+                }
+            }
+            if (valid && allowed.test(candidate.decision())) return candidate.decision();
+            if (budget.exhausted()) break;
+        }
+        throw new IllegalStateException(budget.exhausted()
+                ? "No safe low-altitude trajectory: recovery proof budget exhausted (steps=" + budget.steps() + ")"
+                : "No safe low-altitude trajectory: geometry/recovery/control rejection (candidates="
+                        + ranked.size() + ", proofSteps=" + budget.steps() + ")");
     }
 
     /** Explicit emergency entry point; normal cruise decisions are unchanged. */

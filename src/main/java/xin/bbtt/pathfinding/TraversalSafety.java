@@ -26,7 +26,10 @@ final class TraversalSafety {
                 }
             }
         }
-        return true;
+        // Fire has no blocking collision shape, but touching it with any part of
+        // the standing body ignites the player. Share the flight contact filter,
+        // including hot support and lit campfires, rather than checking feet only.
+        return xin.bbtt.physics.FlightHazards.safeLanding(world, position);
     }
 
     static boolean isSafeSegment(World world, Vector3d source, Vector3d target) {

@@ -16,6 +16,27 @@ final class LowAltitudePlannerTest {
     };
     private final PhysicsState initial = new PhysicsState(new Vector3d(8, 100, 8), new Vector3d(), false);
 
+    @Test void pursuitReservesSteeringDropAboveUpcomingHumpNotOnlyEndpointColumn() {
+        BlockState stone = new BlockState("minecraft:stone", 1, Map.of(), "block", 1.5, true, "STONE");
+        World rolling = new World() {
+            @Override public boolean chunkLoaded(int x, int z) { return true; }
+            @Override public BlockState getBlockStateAt(Vector3d p) {
+                return p.y < 64 || p.x < -65 && p.x >= -69 && p.y < 67
+                        ? stone : super.getBlockStateAt(p);
+            }
+        };
+        PhysicsState flying = new PhysicsState(new Vector3d(-54.5, 68, 28.5),
+                new Vector3d(-.8, -.2, 0), false);
+        Vector3d endpoint = new Vector3d(-61.5, 64, 28.5);
+        var route = LowAltitudePlanner.planPursuit(rolling, flying, endpoint, MovementParameters.DEFAULT);
+        assertNotNull(route);
+        assertTrue(route.pursuit());
+        assertFalse(route.landed());
+        assertTrue(route.goal().y > 67 + PlayerPose.GLIDING.height(),
+                "Upcoming terrain must retain an airborne steering reserve: " + route.goal());
+        assertEquals(endpoint, new Vector3d(-61.5, 64, 28.5));
+    }
+
     @Test void geometricRouteReachesDistantGoalAndCopiesVectors() {
         Vector3d goal = new Vector3d(8, 100, 408);
         var route = LowAltitudePlanner.plan(air, initial, goal, MovementParameters.DEFAULT);

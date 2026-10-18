@@ -68,6 +68,24 @@ final class FlightExtensionMovementTest extends ElytraCommandTestSupport {
     }
 
     @Test
+    void pluginHandoffRetiresPendingLowFlightLease() {
+        var plugin = new RecordingMode(true);
+        var movement = movement(new FlightContextBuilder().addMode(plugin));
+        movement.init();
+        var accepted = new java.util.concurrent.atomic.AtomicInteger();
+        var source = xin.bbtt.physics.FlightControlAdmission.snapshot(movementSync);
+        var control = new xin.bbtt.physics.ElytraFlightController.Decision(0, 0, false,
+                xin.bbtt.physics.ElytraFlightController.Phase.CRUISE);
+        movementSync.submitFlightControls(new xin.bbtt.physics.FlightControlAdmission.Envelope(
+                movement, source, List.of(new xin.bbtt.physics.FlightControlAdmission.Step(control, source.state())),
+                null, accepted::incrementAndGet, List.of()));
+        movement.onTick();
+        movementSync.snapshotInput();
+        assertEquals(0, accepted.get(), "old low-flight action must not run after plugin handoff");
+        assertEquals(23f, movementSync.pitch.get(), "physics must retain the plugin's control");
+    }
+
+    @Test
     void unavailableModeNeverSuppliesCandidates() {
         var unavailable = new RecordingMode(false);
         var available = new RecordingMode(true);

@@ -36,6 +36,7 @@ public class LoginPacketListener extends SessionAdapter {
             MovementSync.getLogger().debug("Login: dimension index = {}", dim);
         } else if (packet instanceof ClientboundRespawnPacket respawn) {
             if (MovementSync.INSTANCE != null) {
+                MovementSync.INSTANCE.onPlayerRespawn();
                 MovementSync.INSTANCE.suspendNavigationForRecovery();
                 MovementSync.INSTANCE.setRecoveryDimension(respawn.getCommonPlayerSpawnInfo().getWorldName().asString());
             }

@@ -21,38 +21,84 @@ final class LowAltitudeFlightPlan {
 
     record Result(WaypointFlightTarget route, Vector3d origin, Vector3d destination, float yaw, float pitch) {}
 
-    static CompletableFuture<Result> submit(World world, PhysicsState state, Vector3d destination,
+    /** Worker outcome, not a claim about the reason a particular terrain cell was blocked. */
+    enum Status { PENDING, COMPLETE, PARTIAL, INVALID_COORDINATES, DEPLOYMENT_REJECTED,
+        NO_CORRIDOR, CANCELLED, BUSY, FAILED }
+
+    static final class PlanFuture extends CompletableFuture<Result> {
+        private volatile Status status = Status.PENDING;
+        private volatile String detail;
+        String detail() { return detail; }
+        Status status() { return isCancelled() ? Status.CANCELLED : status; }
+        private void finish(Result result, Status outcome) {
+            status = outcome;
+            complete(result);
+        }
+    }
+
+    static PlanFuture submit(World world, PhysicsState state, Vector3d destination,
                                              MovementParameters parameters, boolean gliding) {
-        return submit(world, state, destination, parameters, gliding, false, false);
+        return submit(world, state, destination, parameters, gliding, HazardRecovery.Context.EMPTY);
+    }
+
+    static PlanFuture submit(World world, PhysicsState state, Vector3d destination,
+            MovementParameters parameters, boolean gliding, HazardRecovery.Context context) {
+        return submit(world, state, destination, parameters, gliding, false, false, context);
     }
 
     static CompletableFuture<Result> pursuit(World world, PhysicsState state, Vector3d destination,
                                               MovementParameters parameters, boolean gliding) {
-        return submit(world, state, destination, parameters, gliding, false, true);
+        return pursuit(world, state, destination, parameters, gliding, HazardRecovery.Context.EMPTY);
+    }
+
+    static CompletableFuture<Result> pursuit(World world, PhysicsState state, Vector3d destination,
+            MovementParameters parameters, boolean gliding, HazardRecovery.Context context) {
+        return submit(world, state, destination, parameters, gliding, false, true, context);
     }
 
     static CompletableFuture<Result> emergency(World world, PhysicsState state, MovementParameters parameters) {
-        return submit(world, state, state.position(), parameters, true, true, false);
+        return emergency(world, state, parameters, HazardRecovery.Context.EMPTY);
     }
 
-    private static CompletableFuture<Result> submit(World world, PhysicsState state, Vector3d destination,
-                                                    MovementParameters parameters, boolean gliding, boolean emergency, boolean pursuit) {
+    static CompletableFuture<Result> emergency(World world, PhysicsState state, MovementParameters parameters,
+            HazardRecovery.Context context) {
+        return submit(world, state, state.position(), parameters, true, true, false, context);
+    }
+
+    private static PlanFuture submit(World world, PhysicsState state, Vector3d destination,
+                                                    MovementParameters parameters, boolean gliding, boolean emergency, boolean pursuit, HazardRecovery.Context context) {
         Vector3d goal = new Vector3d(destination);
-        if (!admissible(state.position(), goal)) return CompletableFuture.completedFuture(null);
-        CompletableFuture<Result> result = new CompletableFuture<>();
+        PlanFuture result = new PlanFuture();
+        if (!admissible(state.position(), goal)) {
+            result.finish(null, Status.INVALID_COORDINATES);
+            return result;
+        }
         java.util.concurrent.FutureTask<Void> job = new java.util.concurrent.FutureTask<>(() -> {
             try {
                 Vector3d delta = new Vector3d(goal).sub(state.position());
                 float yaw = (float) Math.toDegrees(Math.atan2(-delta.x, delta.z));
                 float pitch = 0;
-                PhysicsState launch = gliding ? state : deployment(world, state, parameters, yaw, pitch);
+                var abort = gliding ? null : DeploymentSafety.assess(world, state, parameters, yaw, pitch);
+                PhysicsState launch = gliding ? state : !abort.safe() ? null
+                        : deployment(world, state, parameters, yaw, pitch);
+                if (abort != null && !abort.safe()) result.detail = abort.reason();
                 WaypointFlightTarget route = launch == null || Thread.currentThread().isInterrupted() ? null
-                        : emergency ? emergencyRoute(world, launch, parameters)
-                        : pursuit ? LowAltitudePlanner.planPursuit(world, launch, goal, parameters)
-                        : LowAltitudePlanner.plan(world, launch, goal, parameters);
-                result.complete(route == null ? null : new Result(route, state.position(), emergency ? route.goal() : goal, yaw, pitch));
+                        : emergency ? emergencyRoute(world, launch, parameters, context)
+                        : pursuit ? LowAltitudePlanner.planPursuit(world, launch, goal, parameters, context)
+                        : LowAltitudePlanner.plan(world, launch, goal, parameters, context);
+                if (launch != null && route == null) {
+                    var reserve = HazardRecovery.assess(world, launch, parameters, context);
+                    result.detail = reserve.admissible() ? "no validated corridor within search budget"
+                            : reserve.reason();
+                }
+                Result planned = route == null ? null
+                        : new Result(route, state.position(), emergency ? route.goal() : goal, yaw, pitch);
+                result.finish(planned, Thread.currentThread().isInterrupted() ? Status.CANCELLED
+                        : launch == null ? Status.DEPLOYMENT_REJECTED
+                        : route == null ? Status.NO_CORRIDOR
+                        : route.partial() ? Status.PARTIAL : Status.COMPLETE);
             } catch (RuntimeException failure) {
-                result.complete(null);
+                result.finish(null, Status.FAILED);
             }
             return null;
         });
@@ -62,23 +108,29 @@ final class LowAltitudeFlightPlan {
         try {
             WORKER.execute(job);
         } catch (java.util.concurrent.RejectedExecutionException busy) {
-            result.complete(null);
+            result.finish(null, Status.BUSY);
         }
         return result;
     }
 
-    private static WaypointFlightTarget emergencyRoute(World world, PhysicsState state, MovementParameters parameters) {
-        // Keep the ordinary candidate ordering/support rules, filtering each site
-        // by the same corridor planner rather than stopping at an unreachable first choice.
+    private static WaypointFlightTarget emergencyRoute(World world, PhysicsState state,
+            MovementParameters parameters, HazardRecovery.Context context) {
+        // Every candidate, including remembered ground, needs a complete loaded corridor.
         WaypointFlightTarget[] accepted = {null};
-        Vector3d selected = new LandingSearch().selectReachable(world, state, new int[0], false, parameters, site -> {
+        java.util.function.Predicate<Vector3d> reachable = site -> {
             if (Thread.currentThread().isInterrupted()) return false;
-            var route = LowAltitudePlanner.plan(world, state, site, parameters);
-            if (route == null || route.partial()
-                    || route.waypoints().stream().anyMatch(point -> point.y > state.position().y)) return false;
+            var route = LowAltitudePlanner.plan(world, state, site, parameters, context);
+            if (route == null || route.partial()) return false;
             accepted[0] = route;
             return true;
-        });
+        };
+        Vector3d remembered = context.memory() == null ? null : context.memory().nearest(state.position());
+        if (remembered != null) {
+            Vector3d site = ElytraFlightController.landingSite(world, remembered.x, remembered.z, remembered.y);
+            if (site != null && reachable.test(site)) return accepted[0];
+        }
+        Vector3d selected = new LandingSearch().selectReachable(world, state,
+                context.rocketFlightDurations(), context.attached(), parameters, reachable);
         return selected == null ? null : accepted[0];
     }
 
@@ -87,7 +139,11 @@ final class LowAltitudeFlightPlan {
         return origin.isFinite() && goal.isFinite();
     }
 
-    /** Preview the actual stationary jump and descending deployment, never a fabricated upward impulse. */
+    /**
+     * Success-only preview of the actual stationary jump and descending deployment.
+     * Not launch authorization: submit and lifecycle init must also pass DeploymentSafety,
+     * including no-deploy, interruption, and independent delayed-metadata landing branches.
+     */
     static PhysicsState deployment(World world, PhysicsState initial, MovementParameters parameters,
                                    float yaw, float pitch) {
         PhysicsState state = initial;
@@ -97,7 +153,7 @@ final class LowAltitudeFlightPlan {
                 PhysicsState deployed = state;
                 for (int glide = 0; glide < 5; glide++) {
                     PhysicsResult next = new GlidingPhysics(yaw, pitch, false, PlayerInput.NONE, parameters)
-                            .step(world, deployed, (double) 0.6f / 2, (double) 0.6f);
+                            .step(world, deployed, (double) 0.6f / 2, glide == 0 ? (double) 1.8f : (double) 0.6f);
                     if (!safe(world, next) || next.onGround()) return null;
                     deployed = state(next);
                 }

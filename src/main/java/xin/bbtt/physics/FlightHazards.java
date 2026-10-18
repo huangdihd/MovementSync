@@ -29,14 +29,14 @@ public final class FlightHazards {
     private static float contact(World world, Vector3d from, Vector3d to, double height, boolean lava) {
         float raw = 0;
         double radius = PlayerPose.HALF_WIDTH;
-        for (int x = (int) Math.floor(Math.min(from.x, to.x) - radius);
-                x <= (int) Math.floor(Math.max(from.x, to.x) + radius); x++) {
+        for (int x = (int) Math.floor(Math.min(from.x, to.x) - radius - 1.0e-7);
+                x <= (int) Math.floor(Math.max(from.x, to.x) + radius + 1.0e-7); x++) {
             for (int y = (int) Math.floor(Math.min(from.y, to.y) - 1.0e-7);
                     y <= (int) Math.floor(Math.max(from.y, to.y) + height - 1.0e-7); y++) {
-                for (int z = (int) Math.floor(Math.min(from.z, to.z) - radius);
-                        z <= (int) Math.floor(Math.max(from.z, to.z) + radius); z++) {
-                    if (!intersects(from, to, x - radius, y - height + 1.0e-7, z - radius,
-                            x + 1 + radius, y + 1 + 1.0e-7, z + 1 + radius)) continue;
+                for (int z = (int) Math.floor(Math.min(from.z, to.z) - radius - 1.0e-7);
+                        z <= (int) Math.floor(Math.max(from.z, to.z) + radius + 1.0e-7); z++) {
+                    if (!intersects(from, to, x - radius - 1.0e-7, y - height + 1.0e-7, z - radius - 1.0e-7,
+                            x + 1 + radius + 1.0e-7, y + 1 + 1.0e-7, z + 1 + radius + 1.0e-7)) continue;
                     BlockState block = world.getBlockStateAt(new Vector3d(x, y, z));
                     String name = block.blockName();
                     if (name == null) continue;

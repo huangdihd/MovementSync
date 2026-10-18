@@ -6,6 +6,27 @@ import xin.bbtt.mcbot.LangManager;
 import java.util.*;
 
 public class DStarLite {
+    public enum Termination { COMPLETE, BUDGET_EXHAUSTED, UNLOADED_FRONTIER, EXHAUSTED, INVALID_BUDGET }
+
+    /** Expanded nodes count valid queue removals, including a terminal goal/frontier. */
+    public record SearchDiagnostics(Termination termination, int expandedNodes, int budget,
+                                    int openNodes, Node endpoint, int pathNodes) {}
+
+    private SearchDiagnostics diagnostics;
+
+    /** Result of the most recent search, or null before findPath is called. */
+    public SearchDiagnostics diagnostics() { return diagnostics; }
+
+    private List<PathStep> result(List<PathStep> path, Termination termination,
+                                  int expanded, int budget, int openNodes) {
+        diagnostics = new SearchDiagnostics(termination, expanded, budget, openNodes,
+                path.isEmpty() ? null : path.get(path.size() - 1).getNode(), path.size());
+        xin.bbtt.MovementSync.getLogger().debug(
+                "Path search start={} goal={} termination={} expanded={} budget={} open={} endpoint={} pathNodes={}",
+                start, goal, termination, expanded, budget, openNodes, diagnostics.endpoint(), path.size());
+        return path;
+    }
+
     private final Node start;
     private final Node goal;
     private final PathfindingContext context;
@@ -40,8 +61,9 @@ public class DStarLite {
     }
 
     public List<PathStep> findPath(int maxIterations) {
-        if (maxIterations < 0) return new ArrayList<>();
-        if (start.equals(goal)) return new ArrayList<>(List.of(new PathStep(start, BuiltinMovementType.WALK)));
+        if (maxIterations < 0) return result(new ArrayList<>(), Termination.INVALID_BUDGET, 0, maxIterations, 0);
+        if (start.equals(goal)) return result(new ArrayList<>(List.of(new PathStep(start, BuiltinMovementType.WALK))),
+                Termination.COMPLETE, 0, maxIterations, 0);
         try (StandablePositionResolver.SearchCache ignored = StandablePositionResolver.beginSearch()) {
             return search(maxIterations);
         }
@@ -67,16 +89,18 @@ public class DStarLite {
         while (!active.isEmpty()) {
             NodeEntry entry = openSet.poll();
             if (active.get(entry.node) != entry) continue;
-            if (iterations++ > maxIterations) break;
             Node curr = entry.node;
-            active.remove(curr);
             
             if (curr.equals(goal)) {
                 List<PathStep> path = reconstructPath(cameFromNode, cameFromType, curr);
                 xin.bbtt.MovementSync.getLogger().info(LangManager.get("movementsync.command.goto.success", path.size(), iterations, System.currentTimeMillis() - startTime));
-                return path;
+                return result(path, Termination.COMPLETE, iterations, maxIterations, active.size());
             }
             
+            // Recognizing the goal is not an expansion (no outgoing edges).
+            if (iterations >= maxIterations) break;
+            active.remove(curr);
+            iterations++;
             double h = context.getHeuristic(curr, goal);
             if (h < minH) { 
                 minH = h; 
@@ -87,7 +111,8 @@ public class DStarLite {
             // frontier reaches unknown terrain toward an unloaded goal.
             if (h <= minH && context.isUnloadedFrontier(curr, goal)
                     && active.values().stream().noneMatch(candidate -> context.getHeuristic(candidate.node, goal) < h)) {
-                return reconstructPath(cameFromNode, cameFromType, curr);
+                return result(reconstructPath(cameFromNode, cameFromType, curr),
+                        Termination.UNLOADED_FRONTIER, iterations, maxIterations, active.size());
             }
             
             for (Edge edge : context.getEdges(curr)) {
@@ -106,8 +131,10 @@ public class DStarLite {
         }
         
         xin.bbtt.MovementSync.getLogger().debug(LangManager.get("movementsync.command.goto.not_found", goal.x, goal.y, goal.z, iterations));
-        if (!bestNode.equals(start)) return reconstructPath(cameFromNode, cameFromType, bestNode);
-        return new ArrayList<>();
+        List<PathStep> partial = bestNode.equals(start) ? new ArrayList<>()
+                : reconstructPath(cameFromNode, cameFromType, bestNode);
+        return result(partial, active.isEmpty() ? Termination.EXHAUSTED : Termination.BUDGET_EXHAUSTED,
+                iterations, maxIterations, active.size());
     }
 
     private List<PathStep> reconstructPath(Map<Node, Node> cameFromNode, Map<Node, MovementType> cameFromType, Node current) {

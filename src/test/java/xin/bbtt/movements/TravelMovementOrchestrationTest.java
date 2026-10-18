@@ -436,6 +436,25 @@ final class TravelMovementOrchestrationTest {
         assertTrue(fixture.events.isEmpty());
     }
 
+    @Test void walkingFallbackPlansWithLedgeHoldInsteadOfStaleForwardInput() {
+        Fixture fixture = new Fixture();
+        fixture.world.candidates = false;
+        fixture.movementSync.setInput(new xin.bbtt.physics.PlayerInput(true, false, false, false, true, false, true));
+        fixture.planning = () -> assertEquals(
+                new xin.bbtt.physics.PlayerInput(false, false, false, false, false, true, false),
+                fixture.movementSync.getInput());
+        fixture.travel.onTick();
+        assertEquals(List.of("walk"), fixture.events);
+        assertTrue(fixture.movementSync.getInput().sneak(), "hold remains until the walking child ticks");
+        fixture.current().tick = () -> {
+            assertEquals(xin.bbtt.physics.PlayerInput.NONE, fixture.movementSync.getInput());
+            fixture.movementSync.setInput(new xin.bbtt.physics.PlayerInput(true, false, false, false, false, false, false));
+        };
+        fixture.travel.onTick();
+        assertTrue(fixture.movementSync.getInput().forward());
+        assertFalse(fixture.movementSync.getInput().sneak());
+    }
+
     @Test void partialFinalPathStartsWalkingWithoutCompletingGoal() {
         Fixture fixture = new Fixture();
         fixture.world.candidates = false;

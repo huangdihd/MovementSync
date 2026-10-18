@@ -70,6 +70,14 @@ public class EntityPacketListener implements Listener {
 
     @EventHandler
     public void OnRemoveEntity(ReceivePacketEvent<ClientboundRemoveEntitiesPacket> receivePacketEvent) {
+        var sync = MovementSync.INSTANCE;
+        for (int id : receivePacketEvent.getPacket().getEntityIds()) {
+            if (id != sync.getFollowTargetId()) continue;
+            var target = sync.getWorld().getEntity(id);
+            MovementSync.getLogger().info("Follow target removed by server: entity={}, lastPosition={}, observer={}, distance={}; tracking-range removal versus despawn is not specified by packet",
+                    id, target == null ? null : target.getPosition(), sync.position.get(),
+                    target == null ? null : target.getPosition().distance(sync.position.get()));
+        }
         MovementSync.INSTANCE.getWorld().handleRemoveEntitiesPacket(receivePacketEvent.getPacket());
     }
 
@@ -82,11 +90,12 @@ public class EntityPacketListener implements Listener {
             // Entity shared flags are protocol metadata index zero, even before registry loading.
             for (var entry : packet.getMetadata()) {
                 if (entry.getId() == 0 && entry.getValue() instanceof Byte flags) {
-                    boolean gliding = (flags & 0x80) != 0;
-                    if (gliding && !MovementSync.INSTANCE.isGliding()) {
-                        MovementSync.getLogger().info("Server metadata: adopting authoritative gliding state");
-                    }
-                    MovementSync.INSTANCE.setGliding(gliding);
+                    boolean before = MovementSync.INSTANCE.isGliding();
+                    MovementSync.INSTANCE.applySharedFlags(flags);
+                    if (before != MovementSync.INSTANCE.isGliding()) MovementSync.getLogger().info(
+                            "Authoritative glide metadata: rawFlags={}, before={}, after={}, position={}, velocity={}, lastPhysicsTick={}",
+                            flags, before, MovementSync.INSTANCE.isGliding(), MovementSync.INSTANCE.position.get(),
+                            MovementSync.INSTANCE.velocity.get(), MovementSync.INSTANCE.getLastFlightTick());
                 }
             }
             EntityRegistry.EntityEntry registryEntry = EntityRegistry.Instance.getEntity("PLAYER");
@@ -97,13 +106,13 @@ public class EntityPacketListener implements Listener {
                     if (id >= 0 && id < keys.size()) {
                         String key = keys.get(id);
                         Object value = entry.getValue();
+                        if ("shared_flags".equals(key) && value instanceof Byte flags) {
+                            value = MovementSync.INSTANCE.applySharedFlags(flags);
+                        }
                         if (value == null) {
                             MovementSync.INSTANCE.getSelfMetadata().remove(key);
                         } else {
                             MovementSync.INSTANCE.getSelfMetadata().put(key, value);
-                        }
-                        if ("shared_flags".equals(key) && value instanceof Byte flags) {
-                            MovementSync.INSTANCE.setGliding((flags & 0x80) != 0);
                         }
                     }
                 }

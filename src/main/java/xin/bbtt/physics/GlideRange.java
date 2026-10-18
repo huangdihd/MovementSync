@@ -38,7 +38,7 @@ final class GlideRange {
         return atHeight(height, boostTicks);
     }
 
-    private static long minimumBoostTicks(int flight) {
+    static long minimumBoostTicks(int flight) {
         // Yarn 1.21.11 FireworkRocketEntity: lifeTime = 10*(1+flight)+nextInt(6)+nextInt(7).
         // Use both random minima. Boost precedes ++life > lifeTime, including the expiry tick.
         return 10L * (1 + Math.max(0L, flight)) + 1;

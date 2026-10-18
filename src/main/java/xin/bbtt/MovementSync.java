@@ -71,7 +71,21 @@ public class MovementSync implements Plugin {
     }
 
     /** Consumes only the one-shot request; held jump remains held. */
-    public PlayerInput snapshotInput() {
+    private final xin.bbtt.physics.FlightControlAdmission flightControls = new xin.bbtt.physics.FlightControlAdmission();
+    private long physicsTickVersion;
+
+    public synchronized long physicsTickVersion() { return physicsTickVersion; }
+
+    public synchronized void submitFlightControls(xin.bbtt.physics.FlightControlAdmission.Envelope envelope) {
+        flightControls.submit(envelope);
+    }
+
+    public synchronized void revokeFlightControls(Object owner) { flightControls.revoke(owner); }
+
+    /** Shared physical-input boundary, including embedded/manual physics drivers. */
+    public synchronized PlayerInput snapshotInput() {
+        flightControls.consume(this);
+        physicsTickVersion++;
         if (inventoryManager.isInventorySwapOpen()) return PlayerInput.NONE;
         PlayerInput keys = input.get();
         return jumpRequested.getAndSet(false) ? keys.withJump(true) : keys;
@@ -108,7 +122,18 @@ public class MovementSync implements Plugin {
     public static final double verticalDrag = 0.9800000190734863D;
     public AtomicBoolean onGround = new AtomicBoolean(true);
     public final AtomicReference<Double> fallDistance = new AtomicReference<>(0.0);
+    public record FlightTickTrace(Vector3d position, Vector3d velocity, boolean onGround,
+            boolean collidedX, boolean collidedZ, boolean gliding, boolean attached,
+            float yaw, float pitch, PlayerInput input, double fallDistance) {}
+    private volatile FlightTickTrace lastFlightTick;
+    public FlightTickTrace getLastFlightTick() { return lastFlightTick; }
+    public void recordFlightTick(FlightTickTrace trace) { lastFlightTick = trace; }
+
     private final AtomicBoolean gliding = new AtomicBoolean();
+    private boolean awaitingNewFlight;
+    private volatile boolean dead;
+
+    public boolean isDead() { return dead; }
     private ScheduledExecutorService physicalSimulationService;
     public ScheduledExecutorService movementService;
 
@@ -154,7 +179,7 @@ public class MovementSync implements Plugin {
             inventoryManager.resetSession();
             reconnectAirRecovery.reset();
             if (gotoRecovery.isPending()) getLogger().info("Static goto suspended for reconnect");
-            navigationGeneration.incrementAndGet();
+            advanceNavigationGeneration();
             movementController.cancelAll();
             activeGoal = null;
             followTargetId = -1;
@@ -171,7 +196,7 @@ public class MovementSync implements Plugin {
             // than replacing it with an independent landing that forgets the entity.
             synchronized (navigationLock) {
                 if (followTargetId != -1) return;
-                cancelNavigation();
+                cancelNavigation(true, "authoritative position correction");
             }
         }
     }
@@ -307,11 +332,49 @@ public class MovementSync implements Plugin {
         this.gliding.set(gliding);
     }
 
+    /** Metadata from the previous life must not restart flight after death/respawn. */
+    public synchronized byte applySharedFlags(byte flags) {
+        if (awaitingNewFlight || dead) flags = (byte) (flags & ~0x80);
+        boolean flying = (flags & 0x80) != 0;
+        if (flying && !isGliding()) getLogger().info("Server metadata: adopting authoritative gliding state");
+        setGliding(flying);
+        return flags;
+    }
+
+    /** A new connection can legitimately reconnect in mid-flight. */
+    public synchronized void resetFlightMetadataSession() {
+        dead = false;
+        awaitingNewFlight = false;
+        clearFlightState();
+    }
+
+    public void onPlayerDeath() {
+        resetRespawnFlightState(true);
+        landingMemory.clear();
+        cancelNavigation(false);
+    }
+
+    public void onPlayerRespawn() {
+        resetRespawnFlightState(false);
+    }
+
+    private synchronized void resetRespawnFlightState(boolean dead) {
+        this.dead = dead;
+        awaitingNewFlight = true;
+        clearFlightState();
+        clearInput();
+        beforeMovementPackets.clear();
+        velocity.set(new Vector3d());
+        fallDistance.set(0.0);
+        vehicleId = -1;
+    }
+
     /** Returns whether a start request was sent, not whether the server accepted it. */
     public synchronized boolean startGliding() {
-        if (isGliding() || onGround.get() || isRiding() || entityId < 0) return false;
+        if (dead || isGliding() || onGround.get() || isRiding() || entityId < 0) return false;
         if (!inventoryManager.canStartFlight(0)) return false;
         if (Bot.INSTANCE == null || Bot.INSTANCE.getSession() == null || !Bot.INSTANCE.getSession().isConnected()) return false;
+        awaitingNewFlight = false;
         jump();
         setGliding(true);
         queueBeforeMovement(new ServerboundPlayerCommandPacket(
@@ -527,7 +590,7 @@ public class MovementSync implements Plugin {
             double followKeepDistance,
             boolean allowDigging) {
         synchronized (navigationLock) {
-            long generation = navigationGeneration.incrementAndGet();
+            long generation = advanceNavigationGeneration();
             movementController.cancelAll();
             activeGoal = goal == null ? null : new org.joml.Vector3i(goal);
             followTargetId = requestedFollowTargetId;
@@ -590,18 +653,44 @@ public class MovementSync implements Plugin {
     public long beginNavigationRequest() {
         synchronized (navigationLock) {
             clearRecoverableGoto("replaced by navigation");
-            long generation = navigationGeneration.incrementAndGet();
+            long generation = advanceNavigationGeneration();
             movementController.cancelAll();
             return generation;
         }
     }
 
-    /** Clears a failed request's goal without disturbing newer navigation or other state. */
+    /** Releases an unpublished request, retaining reconnect intent for a later recovery attempt. */
     public void abandonNavigationRequest(long generation) {
         synchronized (navigationLock) {
             if (!isNavigationRequestCurrent(generation)) return;
             activeGoal = null;
         }
+    }
+
+    /** Failure is terminal, but never an arrival; stale owners cannot clear newer intent. */
+    public void abandonNavigationRequest(long generation, String reason) {
+        long safetyGeneration;
+        synchronized (navigationLock) {
+            if (!isNavigationRequestCurrent(generation)) return;
+            activeGoal = null;
+            clearRecoverableGoto("failed: " + reason);
+            safetyGeneration = advanceNavigationGeneration();
+            movementController.cancelAll();
+            clearInput();
+            clearAbandonedFlightActions();
+            followTargetId = -1;
+        }
+        startSafetyExit(safetyGeneration);
+    }
+
+    /** Discard abandoned flight actions without dropping inventory transaction packets.
+     * An airborne glide still needs its pending start for the safety landing owner;
+     * a rejected/cleared glide must never be restarted by a stale queued request.
+     */
+    private void clearAbandonedFlightActions() {
+        beforeMovementPackets.removeIf(packet -> packet instanceof ServerboundUseItemPacket
+                || (!isGliding() && packet instanceof ServerboundPlayerCommandPacket command
+                && command.getState() == PlayerState.START_ELYTRA_FLYING));
     }
 
     private xin.bbtt.movements.ElytraFlyMovement safetyLanding;
@@ -619,25 +708,53 @@ public class MovementSync implements Plugin {
     }
 
     private void cancelNavigation(boolean land) {
+        cancelNavigation(land, land ? "explicit stop or navigation replacement" : "death or lifecycle reset");
+    }
+
+    private void cancelNavigation(boolean land, String reason) {
+        long safetyGeneration;
         synchronized (navigationLock) {
-            if (land && isGliding() && safetyLanding != null && !safetyLanding.isFinished()) {
+            if (land && !dead && safetyLanding != null && !safetyLanding.isFinished()) {
                 getLogger().info("正在安全落地,落地后停止");
                 return;
             }
-            clearRecoverableGoto("cancelled or died");
-            navigationGeneration.incrementAndGet();
+            clearRecoverableGoto(reason);
+            safetyGeneration = advanceNavigationGeneration();
             movementController.cancelAll();
             activeGoal = null;
             followTargetId = -1;
             safetyLanding = null;
-            if (land && isGliding()) {
+            clearInput();
+            clearAbandonedFlightActions();
+        }
+        if (land) startSafetyExit(safetyGeneration);
+    }
+
+    /** Terrain checks run outside the navigation lock; publication rechecks ownership. */
+    private void startSafetyExit(long generation) {
+        if (dead || isRiding()) return;
+        boolean gliding = isGliding();
+        boolean hazard = !gliding && xin.bbtt.movements.HazardExitMovement.needed(this);
+        synchronized (navigationLock) {
+            if (!isNavigationRequestCurrent(generation) || dead || isRiding()) return;
+            if (gliding && isGliding()) {
                 safetyLanding = new xin.bbtt.movements.ElytraFlyMovement(position.get()).forIndependentLanding();
-                getLogger().info("Navigation cancelled: safe landing takeover; 正在安全落地,落地后停止");
                 movementController.addMovement(safetyLanding);
+            } else if (hazard && !isGliding()) {
+                movementController.addMovement(new xin.bbtt.movements.HazardExitMovement(generation));
             }
         }
     }
 
+    /** Serialize invalidation with physical snapshots/admission, without taking navigationLock
+     * from inside the physics monitor. Callers already own navigationLock. */
+    private synchronized long advanceNavigationGeneration() {
+        flightControls.clear();
+        return navigationGeneration.incrementAndGet();
+    }
+
+    // Lock-free by design: physical admission reads this while holding MovementSync.
+    // Never acquire navigationLock here (navigation cancellation takes the opposite order).
     public long getNavigationGeneration() {
         return navigationGeneration.get();
     }

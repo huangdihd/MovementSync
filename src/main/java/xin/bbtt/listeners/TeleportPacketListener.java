@@ -59,6 +59,14 @@ public class TeleportPacketListener extends SessionAdapter {
         TeleportEvent teleportEvent = new TeleportEvent(playerPositionPacket.getId(), position);
         Bot.INSTANCE.getPluginManager().events().callEvent(teleportEvent);
         if (teleportEvent.isDefaultActionCancelled()) return false;
+        if (!firstPosition) MovementSync.getLogger().warn(
+                "Authoritative position correction: id={}, relatives={}, beforePosition={}, beforeVelocity={}, "
+                + "beforeYaw={}, beforePitch={}, correctedPosition={}, correctedVelocity={}, correctedYaw={}, "
+                + "correctedPitch={}, gliding={}, onGround={}, lastPhysicsTick={}",
+                playerPositionPacket.getId(), relatives, current, MovementSync.INSTANCE.velocity.get(),
+                currentYaw, currentPitch, position, velocity, yaw, pitch,
+                MovementSync.INSTANCE.isGliding(), MovementSync.INSTANCE.onGround.get(),
+                MovementSync.INSTANCE.getLastFlightTick());
         MovementSync.INSTANCE.position.set(position);
         MovementSync.INSTANCE.pitch.set(pitch);
         MovementSync.INSTANCE.yaw.set(yaw);

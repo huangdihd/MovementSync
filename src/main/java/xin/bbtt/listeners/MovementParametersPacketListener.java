@@ -22,6 +22,7 @@ public final class MovementParametersPacketListener extends SessionAdapter {
         MovementParameterState state = movementSync.getMovementParameterState();
         if (packet instanceof ClientboundLoginPacket) {
             state.reset();
+            movementSync.resetFlightMetadataSession();
         } else if (packet instanceof ClientboundRespawnPacket respawn) {
             state.respawn(respawn.isKeepAttributeModifiers());
         } else if (packet instanceof ClientboundUpdateAttributesPacket attributes) {
@@ -37,8 +38,7 @@ public final class MovementParametersPacketListener extends SessionAdapter {
             state.updateFood(health.getFood());
             state.updateHealth(health.getHealth());
             if (health.getHealth() <= 0) {
-                movementSync.clearFlightState();
-                movementSync.cancelNavigation();
+                movementSync.onPlayerDeath();
             }
         } else if (packet instanceof ClientboundPlayerAbilitiesPacket abilities) {
             state.updateAbilities(abilities.isCanFly());

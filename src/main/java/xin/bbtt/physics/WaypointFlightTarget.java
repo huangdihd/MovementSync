@@ -80,6 +80,9 @@ public final class WaypointFlightTarget implements FlightTarget {
     public int index() { return index; }
     public boolean partial() { return partial; }
     public double corridorRadius() { return corridorRadius; }
+    /** Planner-backed routes carry geometric terrain validation only, not an executable
+     * control or recovery certificate. Budget exhaustion cannot turn this into proof. */
+    public boolean terrainValidated() { return geometry != null; }
     @Override public Vector3d position() { return new Vector3d(waypoints.get(index)); }
     @Override public Vector3d velocity() { return pursuit && followed != null ? followed.velocity() : new Vector3d(); }
     @Override public boolean landed() { return !pursuit && landing && !partial && index == waypoints.size() - 1; }
@@ -136,8 +139,10 @@ public final class WaypointFlightTarget implements FlightTarget {
     boolean accepts(FlightTrajectory trajectory) {
         Vector3d from = trajectory.initial().position();
         for (int tick = 0; tick < trajectory.size(); tick++) {
-            Vector3d to = trajectory.result(tick).position();
-            if (!contains(from, to)) return false;
+            var result = trajectory.result(tick);
+            Vector3d to = result.position();
+            // Damage-free clipping is not a valid executable route segment.
+            if (result.collidedX() || result.collidedZ() || !contains(from, to)) return false;
             from = to;
         }
         return true;
@@ -154,6 +159,35 @@ public final class WaypointFlightTarget implements FlightTarget {
         return edge.mul(t).add(a);
     }
 
+    /** Reconcile a worker's start cursor with the live body, never with elapsed time.
+     * Only a body-visible connection to the closest remaining segment may skip
+     * vertices; a nearby segment behind a wall is not a publication certificate. */
+    public boolean reconcile(World world, PhysicsState observer) {
+        if (!contains(observer.position(), observer.position())) return false;
+        int nearest = index;
+        double best = Double.POSITIVE_INFINITY;
+        for (int i = Math.max(1, index); i < waypoints.size(); i++) {
+            // Being closer to an outgoing capsule does not mean its bend has
+            // been passed. Only advance() may anticipate a turn with a preview.
+            if (i > index) {
+                Vector3d corner = waypoints.get(i - 1);
+                Vector3d incoming = new Vector3d(corner).sub(waypoints.get(i - 2));
+                if (new Vector3d(observer.position()).sub(corner).dot(incoming) < 0) break;
+            }
+            double d = distance(observer.position(), waypoints.get(i - 1), waypoints.get(i));
+            if (d < best - 1e-6) {
+                best = d;
+                nearest = i;
+            }
+        }
+        Vector3d endpoint = waypoints.get(nearest);
+        Vector3d anchor = closest(observer.position(), waypoints.get(Math.max(0, nearest - 1)), endpoint);
+        if (!contains(observer.position(), anchor)
+                || !LowAltitudePlanner.lineOfSight(world, observer.position(), endpoint, 0, 0)) return false;
+        index = nearest;
+        return true;
+    }
+
     /** Skip with LOS and a safe live steering preview. After crossing a corner,
      * staged forward progress suffices; no velocity matching or input replay. */
     public boolean advance(World world, PhysicsState observer, MovementParameters movement) {
@@ -166,10 +200,14 @@ public final class WaypointFlightTarget implements FlightTarget {
         Vector3d current = waypoints.get(index);
         Vector3d incoming = new Vector3d(current).sub(waypoints.get(Math.max(0, index - 1)));
         FlightSafety safety = new FlightSafety(movement, DamageParameters.NONE, 20);
-        for (float pitch : new float[] {-55, -30, -10, 0, 20, 40}) {
+        // Match the controller's executable constant-heading horizon. Re-aiming
+        // every preview tick certifies controls that this decision never executes.
+        float yaw = LowAltitudePlanner.yaw(new Vector3d(next).sub(observer.position()));
+        // A diving-only shortcut cannot advance a cruise cursor: selection
+        // must offer the same controls used as the advancement proof.
+        for (float pitch : VanillaGlideMode.PITCHES) {
             PhysicsState state = observer;
             for (int tick = 0; tick < 24; tick++) {
-                float yaw = LowAltitudePlanner.yaw(new Vector3d(next).sub(state.position()));
                 PhysicsState before = state;
                 state = LowAltitudePlanner.preview(world, state, yaw, pitch, movement, safety);
                 if (state == null || geometry != null && !contains(before.position(), state.position())) break;

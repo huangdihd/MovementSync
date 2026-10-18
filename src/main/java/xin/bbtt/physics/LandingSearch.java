@@ -39,6 +39,13 @@ public final class LandingSearch {
         return select(world, state, flights, attached, parameters, Integer.MAX_VALUE, reachable, true);
     }
 
+    /** Work-bounded terminal-proof candidate search; rejection never certifies safety. */
+    Vector3d selectReachable(World world, PhysicsState state, int[] flights,
+            boolean attached, MovementParameters parameters, int budget,
+            java.util.function.Predicate<Vector3d> reachable) {
+        return select(world, state, flights, attached, parameters, budget, reachable, true);
+    }
+
     Vector3d select(World world, PhysicsState state, int[] flights, boolean attached,
             MovementParameters parameters, int budget) {
         return select(world, state, flights, attached, parameters, budget, null, false);

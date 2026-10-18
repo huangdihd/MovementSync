@@ -13,6 +13,8 @@ public final class EntityFlightTarget implements FlightTarget {
     private boolean landed;
     private boolean lost;
     private boolean gliding;
+    private double observedHorizontalSpeed;
+    private static final double VELOCITY_ALPHA = 0.2;
 
     public EntityFlightTarget(int entityId, double keepDistance, Vector3d initial) {
         this.entityId = entityId;
@@ -20,13 +22,24 @@ public final class EntityFlightTarget implements FlightTarget {
         this.position = new Vector3d(initial);
     }
 
+    public EntityFlightTarget(int entityId, double keepDistance, Vector3d initial, Vector3d initialVelocity) {
+        this(entityId, keepDistance, initial);
+        velocity.set(initialVelocity);
+        observedHorizontalSpeed = Math.hypot(initialVelocity.x, initialVelocity.z);
+    }
+
     public void sample(World world) {
         Entity entity = world.getEntity(entityId);
-        if (entity == null) { lost = true; velocity.zero(); return; }
+        if (entity == null) { lost = true; velocity.zero(); observedHorizontalSpeed = 0; return; }
         Vector3d next = new Vector3d(entity.getPosition());
+        // Unobserved travel is not a one-tick displacement on reacquisition.
+        if (lost) { position.set(next); velocity.set(entity.getMovement()); }
+        lost = false;
+        Vector3d displacement = new Vector3d(next).sub(position);
+        observedHorizontalSpeed = Math.hypot(displacement.x, displacement.z);
         // EMA of tick displacements, alpha=1/5: five-tick noise filtering is an
         // engineering window, not a speed threshold. A single packet spike decays.
-        velocity.lerp(new Vector3d(next).sub(position), 0.2);
+        velocity.lerp(displacement, VELOCITY_ALPHA);
         position = next;
         Object flags = entity.getMetadata().get("shared_flags");
         // Yarn 1.21.11 Entity.GLIDING_FLAG_INDEX = 7.
@@ -35,7 +48,20 @@ public final class EntityFlightTarget implements FlightTarget {
                 || EnvironmentalPhysics.sample(world, position, (double) 0.6f / 2, (double) 1.8f).waterHeight() > 0);
     }
 
+    /** Remaining displacement of the velocity estimate when position updates stop. */
+    public Vector3d stoppingPreview() {
+        // Sum of the EMA's future velocity tail, not a stationary-speed threshold.
+        return position().fma((1 - VELOCITY_ALPHA) / VELOCITY_ALPHA, velocity);
+    }
+
+    public boolean landingWithin(Vector3d anchor, double radius) {
+        Vector3d preview = stoppingPreview();
+        return !gliding && Math.hypot(preview.x - anchor.x, preview.z - anchor.z) <= radius;
+    }
+
     public boolean gliding() { return gliding; }
+    /** Conservative mode selection; steering retains the noise-filtered velocity. */
+    public double pursuitSpeed() { return Math.max(observedHorizontalSpeed, horizontalSpeed()); }
     public double horizontalSpeed() { return Math.hypot(velocity.x, velocity.z); }
     @Override public Vector3d position() { return new Vector3d(position); }
     @Override public Vector3d velocity() { return new Vector3d(velocity); }

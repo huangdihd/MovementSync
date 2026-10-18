@@ -75,6 +75,18 @@ class StaticGotoRecoveryTest {
         assertNull(sync.getGotoRecovery().getTask());
     }
 
+    @Test void terminalFailureClearsOnlyItsOwnRecoveryIntent() {
+        var sync = new MovementSync();
+        long old = sync.beginGotoNavigationRequest(new Vector3i(778, 40, -31), true, false);
+        long current = sync.beginGotoNavigationRequest(new Vector3i(659, 61, 28), false, false);
+        sync.abandonNavigationRequest(old, "no path");
+        assertNotNull(sync.getGotoRecovery().getTask());
+        assertEquals(new Vector3i(659, 61, 28), sync.getActiveGoal());
+        sync.abandonNavigationRequest(current, "no node progress for 200 execution ticks");
+        assertNull(sync.getActiveGoal());
+        assertNull(sync.getGotoRecovery().getTask());
+    }
+
     @Test void onlyFirstPositionEnablesOneShotAirRecoveryUntilSessionReset() throws Exception {
         var sync = new MovementSync();
         var checks = new java.util.concurrent.atomic.AtomicInteger();

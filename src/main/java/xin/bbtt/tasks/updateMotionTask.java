@@ -91,15 +91,9 @@ public class updateMotionTask implements Runnable {
             height = xin.bbtt.physics.PlayerPose.GLIDING.height();
         } else {
             halfWidth = PLAYER_HALF_WIDTH;
-            Object pose = MovementSync.INSTANCE.getSelfMetadata().get("pose");
-            if (pose != null) {
-                String poseName = pose.toString();
-                if (poseName.contains("SNEAKING")) {
-                    height = 1.5;
-                } else if (poseName.contains("SWIMMING") || poseName.contains("FALL_FLYING")) {
-                    height = 0.6;
-                }
-            }
+            // Collision and travel must use the same locally resolved pose.
+            // Metadata may still describe standing while the client is crawling.
+            height = pose.height();
         }
 
         return new BodyDimensions(halfWidth, height);
@@ -173,6 +167,8 @@ public class updateMotionTask implements Runnable {
 
         Vector3d position = new Vector3d(MovementSync.INSTANCE.position.get());
 
+        // Admit controls and advance their physical lease before observing rotation,
+        // input or action packets. Embedded physics drivers share this boundary.
         PlayerInput input = MovementSync.INSTANCE.snapshotInput();
         xin.bbtt.physics.MovementParameters parameters = MovementSync.INSTANCE.getMovementParameters();
         if (input.sprint() && !parameters.canSprint()) {
@@ -272,8 +268,10 @@ public class updateMotionTask implements Runnable {
         if (gliding) {
             MovementSync.INSTANCE.velocity.set(velocity);
             MovementSync.INSTANCE.onGround.set(result.onGround());
-            // Client tickGliding does not clear flight on contact. Keep flight travel
-            // until authoritative shared_flags metadata clears the gliding bit.
+            // Verified against Mojang 1.21.11 client + mappings: LivingEntity.updateFallFlying
+            // (chl.fT, source lines 3215-3239) gates flag clearance on !level.isClientSide.
+            // LocalPlayer's post-travel onGround check clears abilities.flying, NOT glide.
+            // Keep flight travel until shared_flags metadata clears the gliding bit.
         } else {
             // Identity CAS preserves even a concurrent same-valued write by a legacy action.
             // If another writer wins, its complete velocity takes priority over this tick's drag.
@@ -284,7 +282,15 @@ public class updateMotionTask implements Runnable {
         MovementSync.INSTANCE.position.set(position);
         MovementSync.INSTANCE.applyPersistentGazeIfIdle();
 
+        MovementSync.INSTANCE.recordFlightTick(new MovementSync.FlightTickTrace(
+                new Vector3d(position), new Vector3d(velocity), result.onGround(), collidedX, collidedZ,
+                gliding, MovementSync.INSTANCE.hasAttachedFirework(), tickYaw, tickPitch, input, result.fallDistance()));
         boolean horizontalCollision = collidedX || collidedZ;
+        if (gliding && horizontalCollision && !lastHorizontalCollision) {
+            MovementSync.getLogger().warn("Glide horizontal collision: position={}, velocity={}, collidedX={}, collidedZ={}, yaw={}, pitch={}, attachedRocket={}",
+                    position, velocity, collidedX, collidedZ, tickYaw, tickPitch,
+                    MovementSync.INSTANCE.hasAttachedFirework());
+        }
         // ClientPlayerEntity.sendMovementPackets repeats the position every 20 ticks while
         // standing still; servers and anti-cheats use it to resolve pending corrections.
         boolean positionChanged = !lastPos.equals(position) || ++ticksSincePositionPacket >= 20;

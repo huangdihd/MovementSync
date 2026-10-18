@@ -151,7 +151,9 @@ public final class WalkingPhysics implements PhysicsStepper {
                 || water) fallDistance = 0;
 
         boolean climbingAfterMove = EnvironmentalPhysics.sample(world, position, halfWidth, height).climbing();
-        double velocityMultiplier = EnvironmentalPhysics.velocityMultiplier(world, position);
+        double velocityMultiplier = EnvironmentalPhysics.velocityMultiplier(world, position, halfWidth,
+                downwardCollision || (groundedAtTickStart && state.velocity().y == 0 && !input.jump()),
+                new Vector3d(position).sub(state.position()));
         velocity.x *= velocityMultiplier;
         velocity.z *= velocityMultiplier;
         BlockMovementProperties landing = EnvironmentalPhysics.landingProperties(world, position);

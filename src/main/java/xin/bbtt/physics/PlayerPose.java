@@ -5,7 +5,7 @@ import xin.bbtt.world.World;
 
 /** Local tick-end pose, distinct from the asynchronously received gliding flag. */
 public enum PlayerPose {
-    STANDING(1.8), CROUCHING(1.5), SWIMMING(0.6), GLIDING(0.6f);
+    STANDING(1.8), CROUCHING(1.5), SWIMMING(0.6f), GLIDING(0.6f);
 
     /** Vanilla player width is a float before promotion to collision coordinates. */
     public static final double HALF_WIDTH = 0.6F / 2;
@@ -25,6 +25,11 @@ public enum PlayerPose {
         PlayerPose expected = swimming ? SWIMMING : gliding ? GLIDING : sneak ? CROUCHING : STANDING;
         return fits(world, position, expected) ? expected
                 : fits(world, position, CROUCHING) ? CROUCHING : SWIMMING;
+    }
+
+    /** Ground recovery does not require a delayed server pose packet to discover a low ceiling. */
+    public static PlayerPose grounded(World world, Vector3d position) {
+        return STANDING.afterTravel(world, position, false, false, false);
     }
 
     private static boolean fits(World world, Vector3d p, PlayerPose pose) {

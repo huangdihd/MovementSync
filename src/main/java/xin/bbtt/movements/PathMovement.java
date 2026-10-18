@@ -23,12 +23,14 @@ public class PathMovement extends Movement {
     private List<PathStep> path;
     private int currentIndex = 0;
     private PlayerInput issuedInput;
+    private boolean issuedRidingInput;
+    private boolean stopped;
     private volatile boolean repathRequested = false;
     private boolean immediateRepathRequested;
     private int repathThrottler = 0;
     /** Ticks since the last repath, to throttle update-driven repath bursts. */
     private int ticksSinceRepath = 100;
-    /** Last position where we made horizontal progress, for stuck detection. */
+    /** Physical checkpoint for the currently executing edge (including vertical motion). */
     private Vector3d lastProgressPos = null;
     private int stuckTicks = 0;
     private final PathProgressWatchdog progressWatchdog = new PathProgressWatchdog(
@@ -46,11 +48,20 @@ public class PathMovement extends Movement {
     private final long requestGeneration;
     private org.joml.Vector3i navigationGoal;
     private boolean intermediateLeg;
-    public enum Completion { NORMAL, UNEXPECTED_FALL }
+    public enum Completion { NORMAL, UNEXPECTED_FALL, FAILED }
+    public enum FailureReason { NO_PROGRESS, UNSAFE_ROUTE }
+    private final java.util.Set<xin.bbtt.pathfinding.ExcludingPathfindingContext.Transition> rejectedTransitions =
+            new java.util.HashSet<>();
     private Completion completion = Completion.NORMAL;
+    private FailureReason failureReason;
+    /** An exhausted partial route waits for terrain updates, with bounded retry frequency. */
+    private boolean waitingForRoute;
     private boolean yieldUnexpectedFalls;
 
     public Completion completion() { return completion; }
+
+    /** Non-null only when completion is {@link Completion#FAILED}. */
+    public FailureReason failureReason() { return failureReason; }
 
     /** Only a parent that handles {@link Completion#UNEXPECTED_FALL} may ask for it; others keep replanning after landing. */
     public PathMovement yieldingUnexpectedFalls() {
@@ -130,12 +141,14 @@ public class PathMovement extends Movement {
     @Override
     public void init() {
         if (path == null || path.isEmpty()) {
-            setFinished(true);
+            path = List.of();
+            if (requestedGoal == null) setFinished(true);
         }
     }
 
     @Override
     public void onTick() {
+        if (stopped || isFinished()) return;
         // Navigation lock before MovementSync, the order every navigation path uses.
         if (!MovementSync.INSTANCE.runIfNavigationRequestCurrent(requestGeneration, () -> {
             synchronized (MovementSync.INSTANCE) {
@@ -148,11 +161,15 @@ public class PathMovement extends Movement {
             setFinished(true);
             return;
         }
-        if (immediateRepathRequested) {
+        if (immediateRepathRequested && !stopped && !isFinished()) {
             immediateRepathRequested = false;
             repathInternally();
         }
     }
+
+    private int crawlTicks;
+    private Float crawlYaw;
+    private boolean crawlAttempted;
 
     private void onAuthorizedTick() {
         if (placement != null) {
@@ -177,6 +194,9 @@ public class PathMovement extends Movement {
             return;
         }
         if (yieldUnexpectedFall()) return;
+        // A standing-only graph cannot describe an elytra touchdown beneath a roof.
+        // Leave that pocket physically before asking the graph to reject its edges.
+        if (crawlOut()) return;
         repathThrottler++;
         ticksSinceRepath++;
         // External repath requests come in bursts as the bot moves (block
@@ -200,6 +220,11 @@ public class PathMovement extends Movement {
         handleFollowTargetRepath();
         if (immediateRepathRequested) return;
 
+        if (waitingForRoute) {
+            if (ticksSinceRepath >= 20) scheduleRepath();
+            return;
+        }
+
         if (currentIndex >= path.size()) {
             finishPath();
             return;
@@ -216,6 +241,7 @@ public class PathMovement extends Movement {
                 && !MovementSync.INSTANCE.isRiding()
                 && !MovementSync.INSTANCE.onGround.get();
         if (!jumpRequiresLanding && hasReachedNode(currentPos, targetPos)) {
+            resetEdgeProgress();
             currentIndex++;
             progressWatchdog.nodeAdvanced(targetNode);
             if (currentIndex >= path.size()) {
@@ -249,6 +275,7 @@ public class PathMovement extends Movement {
             Node prevNode = currentIndex > 0 ? path.get(currentIndex - 1).getNode() : new Node((int)Math.floor(currentPos.x), StandablePositionResolver.nodeY(currentPos.y), (int)Math.floor(currentPos.z));
             Movement customMovement = currentType.createMovement(prevNode, targetNode);
             if (customMovement != null) {
+                resetEdgeProgress();
                 if (customMovement instanceof NavigationBoundMovement navigationBound) {
                     navigationBound.bindNavigationRequest(requestGeneration);
                 }
@@ -276,15 +303,11 @@ public class PathMovement extends Movement {
             }
         }
 
-        // Stuck recovery: if the bot is on the ground with somewhere to go but
-        // hasn't advanced for a while, the world likely changed since planning
-        // (a block appeared, the ground vanished). Replan — but ONLY after a
-        // real stall. A per-tick "is the target still walkable?" replan would
-        // keep resetting the path to index 0, whose first target is the centre
-        // of the bot's current block; mid-step that pulls the bot backwards,
-        // producing a constant "backing up" stutter.
-        if (!isGapJump && onGround && !MovementSync.INSTANCE.isRiding() && updateStuck(currentPos, targetPos)) {
-            scheduleRepath();
+        // Only execution opportunities count: child placement/mining and route waits
+        // return above. Observe actual displacement, not velocity (gravity may remain
+        // nonzero against a floor), and retain the request-wide watchdog separately.
+        if (updateStuck(currentPos)) {
+            rejectStalledEdge();
             return;
         }
 
@@ -302,36 +325,118 @@ public class PathMovement extends Movement {
                 currentType == BuiltinMovementType.JUMP || isGapJump);
     }
 
-    /**
-     * Tracks horizontal progress toward the target and reports whether the bot
-     * has been stalled long enough to warrant a replan. Returns false (and
-     * keeps the counter reset) whenever the bot is essentially at the target or
-     * is still making progress, so normal movement is never interrupted.
-     */
-    private boolean updateStuck(Vector3d currentPos, Vector3d targetPos) {
-        double dx = targetPos.x - currentPos.x;
-        double dz = targetPos.z - currentPos.z;
-        boolean hasSomewhereToGo = (dx * dx + dz * dz) > 0.25;
-        if (!hasSomewhereToGo) {
-            stuckTicks = 0;
-            lastProgressPos = new Vector3d(currentPos);
-            return false;
-        }
+    private xin.bbtt.physics.PhysicsState walkingState() {
+        var sync = MovementSync.INSTANCE;
+        return new xin.bbtt.physics.PhysicsState(sync.position.get(), sync.velocity.get(),
+                sync.onGround.get(), sync.fallDistance.get(),
+                xin.bbtt.physics.PlayerPose.grounded(sync.getWorld(), sync.position.get()));
+    }
 
-        double moved = lastProgressPos == null ? Double.MAX_VALUE
-                : Math.pow(currentPos.x - lastProgressPos.x, 2) + Math.pow(currentPos.z - lastProgressPos.z, 2);
-        if (moved > 0.0025) { // advanced more than 0.05 blocks since last checkpoint
+    /** One bounded, collision-tested low-pose escape; ordinary blocked edges still replan. */
+    private boolean crawlOut() {
+        var sync = MovementSync.INSTANCE;
+        if (!sync.onGround.get() || sync.isRiding() || sync.isGliding()) return false;
+        var initial = walkingState();
+        if (initial.pose() == xin.bbtt.physics.PlayerPose.STANDING) {
+            crawlAttempted = false;
+            crawlTicks = 0;
+            if (crawlYaw != null) {
+                crawlYaw = null;
+                resetEdgeProgress();
+                scheduleRepath();
+                return true;
+            }
+            return false;
+        }
+        if (crawlYaw == null && !crawlAttempted) {
+            crawlAttempted = true;
+            float heading = sync.yaw.get();
+            if (requestedGoal != null) heading = (float) Math.toDegrees(Math.atan2(
+                    -(requestedGoal.x + .5 - initial.position().x), requestedGoal.z + .5 - initial.position().z));
+            var forward = new PlayerInput(true, false, false, false, false, false, false);
+            for (float offset : new float[]{0, 45, -45, 90, -90, 135, -135, 180}) {
+                float candidate = heading + offset;
+                var state = initial;
+                for (int tick = 0; tick < 80; tick++) {
+                    if (!xin.bbtt.physics.DeploymentSafety.assessWalking(sync.getWorld(), state,
+                            sync.getMovementParameters(), candidate, forward).safe()) break;
+                    var next = new xin.bbtt.physics.WalkingPhysics(forward, candidate, true,
+                            sync.getMovementParameters()).step(sync.getWorld(), state,
+                            xin.bbtt.physics.PlayerPose.HALF_WIDTH, state.pose().height());
+                    if (!next.onGround() || next.position().distanceSquared(state.position()) < 1.0e-8) break;
+                    state = new xin.bbtt.physics.PhysicsState(next.position(), next.velocity(),
+                            next.onGround(), next.fallDistance(), next.pose());
+                    if (state.pose() == xin.bbtt.physics.PlayerPose.STANDING) {
+                        crawlYaw = candidate;
+                        break;
+                    }
+                }
+                if (crawlYaw != null) break;
+            }
+        }
+        if (crawlYaw == null || ++crawlTicks > 100) {
+            crawlYaw = null;
+            return false;
+        }
+        var command = new PlayerInput(true, false, false, false, false, false, false);
+        if (!xin.bbtt.physics.DeploymentSafety.assessWalking(sync.getWorld(), initial,
+                sync.getMovementParameters(), crawlYaw, command).safe()) {
+            crawlYaw = null;
+            stopHorizontal();
+            return false;
+        }
+        sync.setYawToward(crawlYaw);
+        issuedInput = command;
+        sync.setInput(command);
+        return true;
+    }
+
+    private void resetEdgeProgress() {
+        stuckTicks = 0;
+        lastProgressPos = null;
+    }
+
+    /** Eight execution intervals without 1mm of physical progress veto this edge. */
+    private boolean updateStuck(Vector3d currentPos) {
+        if (lastProgressPos == null || currentPos.distanceSquared(lastProgressPos) > 1.0e-6) {
             lastProgressPos = new Vector3d(currentPos);
             stuckTicks = 0;
             return false;
         }
-        // ~2s of no meaningful progress (40 ticks @ 50ms).
-        if (++stuckTicks > 40) {
-            stuckTicks = 0;
-            lastProgressPos = null;
-            return true;
-        }
-        return false;
+        return ++stuckTicks >= 8;
+    }
+
+    private void rejectStalledEdge() {
+        var sync = MovementSync.INSTANCE;
+        PlayerInput actual = sync.getInput();
+        var state = walkingState();
+        var predicted = new xin.bbtt.physics.WalkingPhysics(actual, sync.yaw.get(), true,
+                sync.getMovementParameters()).step(sync.getWorld(), state,
+                        xin.bbtt.physics.PlayerPose.HALF_WIDTH, state.pose().height());
+        boolean noInput = !actual.forward() && !actual.backward() && !actual.left()
+                && !actual.right() && !actual.jump();
+        String reason = noInput ? "no-input/no-physical-progress"
+                : predicted.collidedX() || predicted.collidedZ() ? "collision/no-physical-progress"
+                : actual.sneak() ? "sneak-edge-or-external/no-physical-progress"
+                : "no-physical-progress/geometry-unconfirmed";
+        rejectCurrentEdge(reason, actual, "predicted=" + predicted);
+    }
+
+    private void rejectCurrentEdge(String reason, PlayerInput command, String detail) {
+        var sync = MovementSync.INSTANCE;
+        Node live = new Node((int) Math.floor(sync.position.get().x),
+                StandablePositionResolver.nodeY(sync.position.get().y),
+                (int) Math.floor(sync.position.get().z));
+        Node from = currentIndex > 0 ? path.get(currentIndex - 1).getNode() : live;
+        Node to = path.get(currentIndex).getNode();
+        rejectedTransitions.add(new xin.bbtt.pathfinding.ExcludingPathfindingContext.Transition(from, to));
+        rejectedTransitions.add(new xin.bbtt.pathfinding.ExcludingPathfindingContext.Transition(live, to));
+        MovementSync.getLogger().warn(
+                "Path execution veto source={} liveSource={} target={} label={} position={} velocity={} actualCommand={} yaw={} grounded={} reason={} detail={} excluded={}",
+                from, live, to, path.get(currentIndex).getType(), sync.position.get(), sync.velocity.get(),
+                command, sync.yaw.get(), sync.onGround.get(), reason, detail, rejectedTransitions.size());
+        resetEdgeProgress();
+        scheduleRepath();
     }
 
     private void handleFollowTargetRepath() {
@@ -404,8 +509,12 @@ public class PathMovement extends Movement {
             var command = JumpInputController.groundArrival(currentPos, targetPos,
                     MovementSync.INSTANCE.velocity.get(), groundSlipperiness(currentPos));
             MovementSync.INSTANCE.setYawToward(command.yaw());
-            issuedInput = command.input();
-            MovementSync.INSTANCE.setInput(issuedInput);
+            if (isJumpEdge) {
+                issuedInput = command.input();
+                MovementSync.INSTANCE.setInput(issuedInput);
+            } else {
+                issueWalkingInput(command.input());
+            }
             return;
         }
         // Keep the preview's controller in charge until touchdown; slippery
@@ -436,6 +545,7 @@ public class PathMovement extends Movement {
             float sideInput = (float) moveDir.dot(sideDir);
             
             // Normalize inputs to -1..1 or similar if needed, here just basic projection
+            issuedRidingInput = true;
             MovementSync.INSTANCE.setRidingForward(forwardInput > 0.1 ? 1.0f : (forwardInput < -0.1 ? -1.0f : 0));
             MovementSync.INSTANCE.setRidingSideways(sideInput > 0.1 ? 1.0f : (sideInput < -0.1 ? -1.0f : 0));
             return;
@@ -452,9 +562,21 @@ public class PathMovement extends Movement {
         boolean coast = currentIndex == path.size() - 1
                 && MovementSync.INSTANCE.onGround.get() && Math.abs(verticalDist) < 0.5
                 && dist <= Math.max(0.3, closingSpeed / (1 - 0.546));
-        issuedInput = new PlayerInput(
-                !coast, false, false, false, false, false, isGapJump && !coast);
-        MovementSync.INSTANCE.setInput(issuedInput);
+        issueWalkingInput(new PlayerInput(
+                !coast, false, false, false, false, false, isGapJump && !coast));
+    }
+
+    private void issueWalkingInput(PlayerInput proposed) {
+        MovementSync sync = MovementSync.INSTANCE;
+        var assessment = xin.bbtt.physics.DeploymentSafety.assessWalking(sync.getWorld(),
+                walkingState(),
+                sync.getMovementParameters(), sync.yaw.get(), proposed);
+        if (!assessment.safe()) {
+            rejectCurrentEdge(assessment.reason(), sync.getInput(), "proposed=" + proposed);
+            return;
+        }
+        issuedInput = proposed;
+        sync.setInput(issuedInput);
     }
 
     private void applyJumpInput(Vector3d currentPos, Vector3d targetPos, boolean isGapJump) {
@@ -462,6 +584,15 @@ public class PathMovement extends Movement {
                 currentPos, targetPos, MovementSync.INSTANCE.velocity.get(),
                 MovementSync.INSTANCE.onGround.get(), isGapJump);
         MovementSync.INSTANCE.setYawToward(command.yaw());
+        // Planned jumps also need an interruption branch when the next footprint
+        // overlooks damage; geometric path validity is not an abort proof.
+        var sync = MovementSync.INSTANCE;
+        var probe = new Vector3d(currentPos).lerp(targetPos, Math.min(1, 1.0 / Math.max(1, currentPos.distance(targetPos))));
+        if (ElytraFlyMovement.harmBelow(sync.getWorld(),
+                new xin.bbtt.physics.PhysicsState(probe, new Vector3d(), false))) {
+            issueWalkingInput(command.input());
+            return;
+        }
         issuedInput = command.input();
         MovementSync.INSTANCE.setInput(issuedInput);
     }
@@ -510,19 +641,51 @@ public class PathMovement extends Movement {
             if (!intermediateLeg && requestedFollowTargetId == -1
                     && requestedGoal != null
                     && requestedGoal.equals(MovementSync.INSTANCE.getActiveGoal())) {
-                MovementSync.INSTANCE.setActiveGoal(null);
+                if (completion == Completion.FAILED) {
+                    MovementSync.INSTANCE.abandonNavigationRequest(requestGeneration,
+                            "pathfinding " + failureReason + (failureReason == FailureReason.UNSAFE_ROUTE
+                                    ? ": no continuation after unsafe departure was excluded"
+                                    : ": no new node for " + MAX_TICKS_WITHOUT_NODE_PROGRESS + " execution ticks"));
+                } else {
+                    MovementSync.INSTANCE.setActiveGoal(null);
+                }
             }
         });
     }
 
     private void abortLivelockedGoal(Vector3d currentPos) {
+        var sync = MovementSync.INSTANCE;
         MovementSync.getLogger().warn(
-                "Pathfinding aborted: no new path node completed for {} execution ticks despite replanning; position={}, goal={}",
-                MAX_TICKS_WITHOUT_NODE_PROGRESS,
-                currentPos,
-                requestedGoal
-        );
+                "Pathfinding aborted: no new path node completed for {} execution ticks despite replanning; position={}, goal={}, step={}/{}, currentNode={}, previous={}, next={}, velocity={}, onGround={}, feetBlock={}, belowBlock={}, nearbySupport={}, waitingForRoute={}",
+                MAX_TICKS_WITHOUT_NODE_PROGRESS, currentPos, requestedGoal,
+                currentIndex, path.size(),
+                new Node((int) Math.floor(currentPos.x), StandablePositionResolver.nodeY(currentPos.y), (int) Math.floor(currentPos.z)),
+                currentIndex > 0 && currentIndex <= path.size() ? path.get(currentIndex - 1) : null,
+                currentIndex < path.size() ? path.get(currentIndex) : null,
+                sync.velocity.get(), sync.onGround.get(), sync.getWorld().getBlockStateAt(currentPos).blockName(),
+                sync.getWorld().getBlockStateAt(new Vector3d(currentPos).sub(0, .500001, 0)).blockName(),
+                nearbySupport(currentPos), waitingForRoute);
+
+        completion = Completion.FAILED;
+        failureReason = FailureReason.NO_PROGRESS;
         markFinished();
+    }
+
+    /** Include the adjacent columns: at a shore the feet column alone can hide a lava edge. */
+    private String nearbySupport(Vector3d position) {
+        int x = (int) Math.floor(position.x);
+        int y = (int) Math.floor(position.y - .000001);
+        int z = (int) Math.floor(position.z);
+        StringBuilder support = new StringBuilder("[");
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                if (support.length() > 1) support.append(", ");
+                Vector3d sample = new Vector3d(x + dx, y, z + dz);
+                support.append(x + dx).append('/').append(y).append('/').append(z + dz)
+                        .append('=').append(MovementSync.INSTANCE.getWorld().getBlockStateAt(sample).blockName());
+            }
+        }
+        return support.append(']').toString();
     }
 
     private void scheduleRepath() {
@@ -556,7 +719,11 @@ public class PathMovement extends Movement {
             }
         }
         
-        if (targetNodePos == null) { markFinished(); return; }
+        if (targetNodePos == null) {
+            if (!rejectedTransitions.isEmpty()) failUnsafeRoute();
+            else markFinished();
+            return;
+        }
         
         Vector3d currentPos = MovementSync.INSTANCE.position.get();
         Node start = new Node((int)Math.floor(currentPos.x), StandablePositionResolver.nodeY(currentPos.y), (int)Math.floor(currentPos.z));
@@ -567,13 +734,14 @@ public class PathMovement extends Movement {
             return;
         }
 
-        xin.bbtt.pathfinding.DStarLite pathfinder = new xin.bbtt.pathfinding.DStarLite(
-                start,
-                goalNode,
+        var context = new xin.bbtt.pathfinding.ExcludingPathfindingContext(
                 new xin.bbtt.pathfinding.DefaultPathfindingContext(
-                        MovementSync.INSTANCE.getWorld(), allowDigging)
-        );
-        List<PathStep> newPath = pathfinder.findPath(2000);
+                        MovementSync.INSTANCE.getWorld(), allowDigging), rejectedTransitions);
+        xin.bbtt.pathfinding.DStarLite pathfinder = new xin.bbtt.pathfinding.DStarLite(start, goalNode, context);
+        List<PathStep> newPath = xin.bbtt.pathfinding.WalkingSearch.findPath(pathfinder);
+        MovementSync.getLogger().info(
+                "Path replan full-search start={} goal={} excluded={} rejectedLabels={} result={}",
+                start, goalNode, rejectedTransitions.size(), context.rejectedLabels(), pathfinder.diagnostics());
 
         if (!MovementSync.INSTANCE.runIfNavigationRequestCurrent(
                 requestGeneration, () -> applyRepathResult(newPath, start))) {
@@ -583,6 +751,7 @@ public class PathMovement extends Movement {
 
     private void applyRepathResult(List<PathStep> newPath, Node start) {
         if (newPath != null && newPath.size() > 1) {
+            waitingForRoute = false;
             this.path = newPath;
             // newPath[0] is the block we're already standing in. Targeting its
             // centre would pull the bot backwards whenever it has moved past
@@ -592,14 +761,25 @@ public class PathMovement extends Movement {
             this.currentIndex = 1;
             this.stuckTicks = 0;
             this.lastProgressPos = null;
+        } else if (!rejectedTransitions.isEmpty()) {
+            failUnsafeRoute();
         } else if (requestedFollowTargetId != -1) {
             stopHorizontal();
 
             this.path = List.of(new PathStep(start, BuiltinMovementType.WALK));
             this.currentIndex = 0;
         } else {
-            markFinished();
+            // No continuation is not arrival: unloaded terrain can become available
+            // later. Keep the original goal and watchdog history across retries.
+            stopHorizontal();
+            waitingForRoute = true;
         }
+    }
+
+    private void failUnsafeRoute() {
+        completion = Completion.FAILED;
+        failureReason = FailureReason.UNSAFE_ROUTE;
+        markFinished();
     }
 
     private boolean isSuperseded() {
@@ -629,8 +809,11 @@ public class PathMovement extends Movement {
             MovementSync.INSTANCE.clearInput();
         }
         issuedInput = null;
-        MovementSync.INSTANCE.setRidingForward(0);
-        MovementSync.INSTANCE.setRidingSideways(0);
+        if (issuedRidingInput && MovementSync.INSTANCE.isNavigationRequestCurrent(requestGeneration)) {
+            MovementSync.INSTANCE.setRidingForward(0);
+            MovementSync.INSTANCE.setRidingSideways(0);
+        }
+        issuedRidingInput = false;
     }
 
     private boolean yieldUnexpectedFall() {
@@ -682,8 +865,12 @@ public class PathMovement extends Movement {
 
     @Override
     public void onStop() {
+        stopped = true;
+        immediateRepathRequested = false;
+        repathRequested = false;
         if (placement != null) placement.onStop();
         stopHorizontal();
+        resetEdgeProgress();
         progressWatchdog.pause();
     }
 
@@ -691,6 +878,7 @@ public class PathMovement extends Movement {
     public void onPause() {
         if (placement != null) placement.onPause();
         stopHorizontal();
+        resetEdgeProgress();
         progressWatchdog.pause();
     }
 }

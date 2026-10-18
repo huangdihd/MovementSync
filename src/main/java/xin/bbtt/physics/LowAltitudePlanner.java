@@ -18,6 +18,8 @@ import xin.bbtt.world.World;
 /** Bounded worker-side geometric 3D A*. Nodes are positions, never flight states.
  * A route is a conservative terrain corridor, not a guarantee of dynamic reachability:
  * the controller must validate its actual trajectory, especially near a landing.
+ * Hazard-exposed entry states additionally require resource-bounded actual and
+ * stalled recovery via {@link HazardRecovery}; an airborne prefix is insufficient.
  * Unknown terrain is blocked. Budget exhaustion returns the closest reached loaded
  * position to the goal, rather than rejecting distant destinations. */
 public final class LowAltitudePlanner {
@@ -42,6 +44,7 @@ public final class LowAltitudePlanner {
     private record Node(Key key, Vector3d position, Node parent, double cost, double estimate) {}
     private static final class Budget {
         int checks;
+        HazardRecovery.Context context = HazardRecovery.Context.EMPTY;
         final CompletableFuture<?> cancellation;
         Budget(CompletableFuture<?> cancellation) { this.cancellation = cancellation; }
         boolean cancelled() {
@@ -78,7 +81,14 @@ public final class LowAltitudePlanner {
 
     public static WaypointFlightTarget plan(World world, PhysicsState initial, Vector3d goal,
             MovementParameters movement) {
-        return search(world, initial, new Vector3d(Objects.requireNonNull(goal)), movement, new Budget(null));
+        return plan(world, initial, goal, movement, HazardRecovery.Context.EMPTY);
+    }
+
+    public static WaypointFlightTarget plan(World world, PhysicsState initial, Vector3d goal,
+            MovementParameters movement, HazardRecovery.Context context) {
+        Budget budget = new Budget(null);
+        budget.context = Objects.requireNonNull(context);
+        return search(world, initial, new Vector3d(Objects.requireNonNull(goal)), movement, budget);
     }
 
     /** A moving ground endpoint is an airborne pursuit intent, never a landing site.
@@ -86,6 +96,11 @@ public final class LowAltitudePlanner {
      * terrain validation, rather than a world cruise altitude, decides feasibility. */
     public static WaypointFlightTarget planPursuit(World world, PhysicsState initial, Vector3d goal,
             MovementParameters movement) {
+        return planPursuit(world, initial, goal, movement, HazardRecovery.Context.EMPTY);
+    }
+
+    public static WaypointFlightTarget planPursuit(World world, PhysicsState initial, Vector3d goal,
+            MovementParameters movement, HazardRecovery.Context context) {
         Clearance margin = clearance(initial, movement);
         PhysicsState probe = new PhysicsState(new Vector3d(0, 128, 0), initial.velocity(), false,
                 0, PlayerPose.GLIDING);
@@ -96,30 +111,46 @@ public final class LowAltitudePlanner {
                     .step(EMPTY, probe, HALF_WIDTH, HEIGHT));
             drop = Math.max(drop, 128 - probe.position().y);
         }
-        Vector3d airborne = new Vector3d(goal).add(0, HEIGHT + margin.vertical() + drop, 0);
+        // Preserve the steering reserve above obstacles as well as above the
+        // entity's feet. Merely lifting a blocked endpoint to the first air cell
+        // loses this reserve on every hump and at the top of a tree.
+        double reserve = HEIGHT + margin.vertical() + drop;
+        Vector3d airborne = new Vector3d(goal).add(0, reserve, 0);
+        Vector3d direction = new Vector3d(goal).sub(initial.position());
+        direction.y = 0;
+        if (direction.lengthSquared() > 0) direction.normalize();
+        Vector3d lookAhead = new Vector3d(direction).mul(margin.corridor());
         // A packet-interpolated entity or its follow offset can be inside a
         // ridge. Find loaded air above that column, never aim into the solid.
         if (!airborne.isFinite()) return null;
-        while (!clear(world, airborne, airborne, margin.horizontal(), margin.vertical())) {
+        while (!clear(world, new Vector3d(airborne).sub(0, reserve, 0),
+                new Vector3d(airborne).add(lookAhead), margin.horizontal(), margin.vertical())) {
             airborne.y += 1;
             if (airborne.y + HEIGHT + margin.vertical() >= world.getMaxWorldY()
                     || !world.chunkLoaded((int) Math.floor(airborne.x) >> 4,
                             (int) Math.floor(airborne.z) >> 4)) return null;
         }
-        WaypointFlightTarget route = search(world, initial, airborne, movement, new Budget(null));
+        WaypointFlightTarget route = plan(world, initial, airborne, movement, context);
         return route == null ? null : route.asPursuit();
     }
 
     /** One daemon worker, two queued requests; a saturated queue returns null. */
     public static CompletableFuture<WaypointFlightTarget> planAsync(World world, PhysicsState initial,
             Vector3d goal, MovementParameters movement) {
+        return planAsync(world, initial, goal, movement, HazardRecovery.Context.EMPTY);
+    }
+
+    public static CompletableFuture<WaypointFlightTarget> planAsync(World world, PhysicsState initial,
+            Vector3d goal, MovementParameters movement, HazardRecovery.Context context) {
         Vector3d destination = new Vector3d(Objects.requireNonNull(goal));
         CompletableFuture<WaypointFlightTarget> future = new CompletableFuture<>();
         try {
             WORKER.execute(() -> {
                 if (future.isCancelled()) return;
                 try {
-                    future.complete(search(world, initial, destination, movement, new Budget(future)));
+                    Budget budget = new Budget(future);
+                    budget.context = Objects.requireNonNull(context);
+                    future.complete(search(world, initial, destination, movement, budget));
                 } catch (RuntimeException failure) {
                     future.completeExceptionally(failure);
                 }
@@ -138,6 +169,7 @@ public final class LowAltitudePlanner {
         if (!goal.isFinite() || !initial.position().isFinite() || !initial.velocity().isFinite()
                 || !Double.isFinite(initial.fallDistance()) || initial.onGround()) return null;
         Vector3d origin = initial.position();
+        if (!HazardRecovery.assess(world, initial, movement, budget.context).admissible()) return null;
         Clearance clearance = clearance(initial, movement);
         double horizontal = clearance.horizontal(), vertical = clearance.vertical();
         if (!clear(world, origin, origin, horizontal, vertical)) return null;
@@ -182,6 +214,8 @@ public final class LowAltitudePlanner {
                     if (p.distanceSquared(goal) < best.position().distanceSquared(goal)) best = child;
                 }
         }
+        // Only publish a terrain-validated prefix; execution rechecks the real
+        // remaining resource snapshot rather than treating geometric nodes as motion.
         if (budget.cancelled() || best == start) return null;
         return route(world, best, goal, false, true, horizontal, vertical, clearance.corridor(), budget);
     }
@@ -201,6 +235,10 @@ public final class LowAltitudePlanner {
             if (!budget.take()) return false;
             Vector3d next = new Vector3d(from).lerp(to, (double) i / steps);
             if (!clear(world, previous, next, horizontal, vertical)) return false;
+            // Geometric samples are not executable states: assigning the launch
+            // velocity/inventory to each would invent resource replenishment.
+            // Entry is recovery-checked; the selector checks real successors with
+            // candidate consumption deducted before executing this corridor.
             previous = next;
         }
         return true;
@@ -259,6 +297,12 @@ public final class LowAltitudePlanner {
 
     static PhysicsState preview(World world, PhysicsState state, float yaw, float pitch,
             MovementParameters movement, FlightSafety safety, boolean attached) {
+        return preview(world, state, yaw, pitch, movement, safety, attached,
+                new HazardRecovery.Context(new int[0], 0, attached, null));
+    }
+
+    static PhysicsState preview(World world, PhysicsState state, float yaw, float pitch,
+            MovementParameters movement, FlightSafety safety, boolean attached, HazardRecovery.Context context) {
         state = new PhysicsState(state.position(), state.velocity(), state.onGround(), state.fallDistance(), PlayerPose.GLIDING);
         PhysicsResult result = new GlidingPhysics(yaw, pitch, attached, PlayerInput.NONE, movement)
                 .step(world, state, HALF_WIDTH, HEIGHT);
@@ -266,8 +310,9 @@ public final class LowAltitudePlanner {
                 || !lineOfSight(world, state.position(), result.position(), 0, 0)) return null;
         if (result.onGround() && (!landing(world, result.position())
                 || safety.collisionDamage(world, state, result, yaw, pitch, attached).raw() > 0)) return null;
-        return new PhysicsState(result.position(), result.velocity(), result.onGround(), result.fallDistance(),
+        PhysicsState next = new PhysicsState(result.position(), result.velocity(), result.onGround(), result.fallDistance(),
                 result.onGround() ? PlayerPose.STANDING : PlayerPose.GLIDING);
+        return HazardRecovery.assess(world, next, movement, context.afterTicks(1, false)).admissible() ? next : null;
     }
 
     static float yaw(Vector3d delta) { return (float) Math.toDegrees(Math.atan2(-delta.x, delta.z)); }

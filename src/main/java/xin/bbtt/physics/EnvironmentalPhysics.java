@@ -90,6 +90,49 @@ public final class EnvironmentalPhysics {
                 ? feet.velocityMultiplier() : supportProperties(world, position).velocityMultiplier();
     }
 
+    /** Entity.getVelocityMultiplier uses the supporting block's X/Z, not always the feet center. */
+    public static double velocityMultiplier(World world, Vector3d position, double halfWidth,
+                                            boolean grounded, Vector3d movement) {
+        BlockMovementProperties feet = BlockMovementProperties.of(block(world, floor(position.x),
+                floor(position.y), floor(position.z)));
+        if (feet.velocityMultiplier() != 1 || feet.ignoresSupportVelocity()) return feet.velocityMultiplier();
+        Vector3d support = grounded ? supportingBlock(world, position, position, halfWidth) : null;
+        if (grounded && support == null) {
+            // Entity.updateSupportingBlockPos retries the pre-horizontal-move footprint at an edge.
+            support = supportingBlock(world, position,
+                    new Vector3d(position).sub(movement.x, 0, movement.z), halfWidth);
+        }
+        return support == null ? supportProperties(world, position).velocityMultiplier()
+                : BlockMovementProperties.of(block(world, floor(support.x),
+                        floor(position.y - (double) 0.500001f), floor(support.z))).velocityMultiplier();
+    }
+
+    private static Vector3d supportingBlock(World world, Vector3d position, Vector3d footprint, double halfWidth) {
+        CollisionShapeRegistry registry = CollisionShapeRegistry.getInstance();
+        Vector3d nearest = null;
+        double distance = Double.POSITIVE_INFINITY;
+        // Vanilla probes a 1e-6-deep slice below the feet and picks the nearest
+        // block center (ties: greatest BlockPos, ordered Y/Z/X).
+        for (int y = floor(footprint.y - 1.0e-6 - registry.maxY()) + 1;
+                y <= Math.ceil(footprint.y - registry.minY()) - 1; y++) {
+            for (int z = floor(footprint.z - halfWidth - registry.maxZ()) + 1;
+                    z <= Math.ceil(footprint.z + halfWidth - registry.minZ()) - 1; z++) {
+                for (int x = floor(footprint.x - halfWidth - registry.maxX()) + 1;
+                        x <= Math.ceil(footprint.x + halfWidth - registry.minX()) - 1; x++) {
+                    if (!registry.intersects(block(world, x, y, z).stateId(), x, y, z,
+                            footprint.x - halfWidth, footprint.y - 1.0e-6, footprint.z - halfWidth,
+                            footprint.x + halfWidth, footprint.y, footprint.z + halfWidth)) continue;
+                    double candidate = position.distanceSquared(x + 0.5, y + 0.5, z + 0.5);
+                    if (candidate <= distance) {
+                        distance = candidate;
+                        nearest = new Vector3d(x, y, z);
+                    }
+                }
+            }
+        }
+        return nearest;
+    }
+
     public static BlockMovementProperties landingProperties(World world, Vector3d position) {
         return BlockMovementProperties.of(block(world, floor(position.x),
                 floor(position.y - (double) 0.2f), floor(position.z)));
