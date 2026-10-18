@@ -468,6 +468,13 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
             }
         }
         ElytraFlightController.Decision applied = decision;
+        if (lowAltitude && !lowPursuit() && flightConfiguration.isLegacy()
+                && movementSync.getFlightScopeRouter().route(
+                        xin.bbtt.flight.ScopeRouter.Scope.UNDERROOF_GOTO,
+                        "minecraft:the_end".equals(movementSync.getRecoveryDimension()), false)
+                        == xin.bbtt.flight.ScopeRouter.Route.SHADOW) {
+            movementSync.getShadowFlightDiagnostics().submit(movementSync, controlSource, lowRoute, applied);
+        }
         var envelope = lowAltitude ? xin.bbtt.physics.FlightControlAdmission.prepare(movementSync,
                 this, controlSource, applied, lowRoute,
                 () -> lifecycle.execute(movementSync, applied, equipmentAction)) : null;

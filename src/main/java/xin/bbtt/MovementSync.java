@@ -183,6 +183,10 @@ public class MovementSync implements Plugin {
 
     public xin.bbtt.flight.PhysicsTickTrace getLastPhysicsTickTrace() { return lastPhysicsTickTrace; }
 
+    private final xin.bbtt.flight.ShadowFlightDiagnostics shadowFlightDiagnostics =
+            new xin.bbtt.flight.ShadowFlightDiagnostics();
+    public xin.bbtt.flight.ShadowFlightDiagnostics getShadowFlightDiagnostics() { return shadowFlightDiagnostics; }
+
     private final AtomicBoolean gliding = new AtomicBoolean();
     private boolean awaitingNewFlight;
     private volatile boolean dead;
