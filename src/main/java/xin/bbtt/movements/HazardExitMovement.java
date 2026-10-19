@@ -69,7 +69,7 @@ public final class HazardExitMovement extends Movement {
                 finished = true;
                 return;
             }
-            sync.yaw.set(command.yaw());
+            sync.setYawToward(command.yaw());
             owned = command.input();
             sync.setInput(owned);
         })) finished = true;

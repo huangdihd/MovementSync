@@ -462,6 +462,13 @@ public class MovementSync implements Plugin {
     }
 
     /** Selects a hotbar rocket; acceleration waits for server-confirmed entity attachment. */
+    private long lastFireworkRequestTick = Long.MIN_VALUE;
+
+    /** Shared request latch survives navigation handoffs; requests are not attachments. */
+    public synchronized boolean fireworkRequestReady() {
+        return lastFireworkRequestTick == Long.MIN_VALUE || physicsTickVersion - lastFireworkRequestTick >= 40;
+    }
+
     public synchronized boolean useFirework() {
         if (!isGliding()) return false;
         int rocketSlot = hotbarFireworks().firstSlot();
@@ -473,6 +480,7 @@ public class MovementSync implements Plugin {
         }
         queueBeforeMovement(new ServerboundUseItemPacket(
                 Hand.MAIN_HAND, Bot.INSTANCE.getAndIncreaseSequence(), yaw.get(), pitch.get()));
+        lastFireworkRequestTick = physicsTickVersion;
         return true;
     }
 

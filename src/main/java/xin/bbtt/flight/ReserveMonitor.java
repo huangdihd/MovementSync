@@ -10,6 +10,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import xin.bbtt.MovementSync;
 import xin.bbtt.physics.FlightControlAdmission;
 import xin.bbtt.physics.HazardRecovery;
+import xin.bbtt.physics.KnownLandingReserve;
 import xin.bbtt.world.World;
 
 /** Advisory actual-state reserve observer. Never owns, submits or applies flight controls. */
@@ -17,13 +18,16 @@ public final class ReserveMonitor {
     public static final int INTERVAL_TICKS = 10;
     public enum Status { SAFE, UNSAFE, UNKNOWN, STALE }
 
-    /** SAFE is HazardRecovery's admissible result, not admission of a future control.
-     * UNKNOWN includes exhausted search and unknown terrain: failure to prove a landing
-     * is not proof of impossibility. UNSAFE is reserved for a definitive negative proof;
-     * HazardRecovery currently exposes no such result.
+    /** SAFE means the selected observation policy succeeded: legacy recovery admission,
+     * or a valid known-site estimate (including its return threshold). It does not
+     * admit future controls. UNKNOWN and STALE forbid deeper exposure.
      */
     public record Report(Status status, long tick, long generation, long epoch,
-                         int simulatedSteps, String reason) {}
+                         int simulatedSteps, String reason, KnownLandingReserve.Result reserve) {
+        public Report(Status status, long tick, long generation, long epoch, int steps, String reason) {
+            this(status, tick, generation, epoch, steps, reason, null);
+        }
+    }
 
     private static final ExecutorService WORKER = Executors.newSingleThreadExecutor(r -> {
         Thread thread = new Thread(r, "flight-reserve");
@@ -32,13 +36,47 @@ public final class ReserveMonitor {
     });
     // Global admission gate: at most one running/submitted job, even across sessions.
     private static final AtomicBoolean BUSY = new AtomicBoolean();
+    private java.util.concurrent.Executor executor = WORKER;
+
+    /** Instance-scoped test scheduler; install before the first observation. */
+    synchronized void setExecutorForTesting(java.util.concurrent.Executor executor) {
+        if (observedSync != null) throw new IllegalStateException("Already observed");
+        this.executor = Objects.requireNonNull(executor);
+    }
+
     private MovementSync observedSync;
     private World observedWorld;
     private long generation, epoch, eventToken, revision;
     private HazardRecovery.Context observedContext;
+    private boolean observedKnownReturn;
     private long submittedRevision = -1;
     private long lastTick = Long.MIN_VALUE;
     private Report latest = new Report(Status.UNKNOWN, -1, -1, -1, 0, "Not observed");
+    private KnownLandingReserve.Result returnIntent;
+    private Report returnIntentReport;
+    private HazardRecovery.Context returnIntentResources;
+
+    public synchronized Report returnIntentReport() { return returnIntent() == null ? null : returnIntentReport; }
+    public synchronized HazardRecovery.Context returnIntentResources() {
+        return returnIntent() == null ? null : returnIntentResources;
+    }
+
+    /** Distinguish exhausted fuel from a failed proof; neither permits deeper exposure. */
+    public static String returnTrigger(KnownLandingReserve.Result reserve) {
+        if (reserve == null) return "NO_OBSERVATION";
+        if (reserve.status() != KnownLandingReserve.Status.VALID)
+            return "RESERVE_" + reserve.status();
+        return reserve.shouldReturn() ? "RESOURCE_THRESHOLD" : "POSITIVE_SURPLUS";
+    }
+
+    /** Retained return intent never grants permission to continue an expired prefix. */
+    public synchronized KnownLandingReserve.Result returnIntent() {
+        if (observedSync == null || observedSync.getWorld() != observedWorld
+                || observedSync.getNavigationGeneration() != generation
+                || observedSync.flightControlEpoch() != epoch) return null;
+        return returnIntent;
+    }
+
     private volatile CompletableFuture<Void> completion = CompletableFuture.completedFuture(null);
 
     /** Planner thread API, outside the MovementSync monitor. The token must change
@@ -53,6 +91,19 @@ public final class ReserveMonitor {
      */
     public boolean observe(MovementSync sync, FlightControlAdmission.Source source,
             long eventToken, HazardRecovery.Context context) {
+        return observe(sync, source, eventToken, context, false);
+    }
+
+    /** Known-supported-site resource policy; shares cadence and invalidation with observe.
+     * A SAFE report carries a valid reserve estimate, not necessarily positive surplus.
+     */
+    public boolean observeKnownReturn(MovementSync sync, FlightControlAdmission.Source source,
+            long eventToken, HazardRecovery.Context context) {
+        return observe(sync, source, eventToken, context, true);
+    }
+
+    private boolean observe(MovementSync sync, FlightControlAdmission.Source source,
+            long eventToken, HazardRecovery.Context context, boolean knownReturn) {
         Objects.requireNonNull(sync);
         Objects.requireNonNull(source);
         Objects.requireNonNull(context);
@@ -64,9 +115,13 @@ public final class ReserveMonitor {
                 stale("Source generation or epoch is obsolete");
                 return false;
             }
+            if (observedSync != sync || observedWorld != world || generation != source.generation()
+                    || epoch != source.epoch() || this.eventToken != eventToken
+                    || observedKnownReturn != knownReturn) returnIntent = null;
             boolean changed = observedSync != sync || observedWorld != world
                     || generation != source.generation() || epoch != source.epoch()
-                    || this.eventToken != eventToken || resourcesChanged(observedContext, context);
+                    || this.eventToken != eventToken || observedKnownReturn != knownReturn
+                    || resourcesChanged(observedContext, context);
             if (changed) {
                 revision++;
                 stale("Reserve inputs changed");
@@ -77,6 +132,7 @@ public final class ReserveMonitor {
             epoch = source.epoch();
             this.eventToken = eventToken;
             observedContext = context;
+            observedKnownReturn = knownReturn;
             boolean due = submittedRevision != revision || lastTick == Long.MIN_VALUE
                     || source.tick() < lastTick || source.tick() - lastTick >= INTERVAL_TICKS;
             if (!due) return false;
@@ -89,14 +145,23 @@ public final class ReserveMonitor {
             var finished = new CompletableFuture<Void>();
             completion = finished;
             try {
-                WORKER.execute(() -> {
+                executor.execute(() -> {
                     var budget = new HazardRecovery.Budget(HazardRecovery.DECISION_STEP_BUDGET);
                     try {
                         // No MovementSync lock is held across terrain queries or search.
-                        var result = HazardRecovery.assess(world, source.state(), parameters, context, budget);
-                        publish(sync, world, source, jobRevision, new Report(
-                                result.admissible() ? Status.SAFE : Status.UNKNOWN,
-                                source.tick(), source.generation(), source.epoch(), budget.steps(), result.reason()));
+                        if (knownReturn) {
+                            var result = KnownLandingReserve.assess(world, source.state(), parameters, context,
+                                    DangerousEntryGate.knownSites(world, source.state(), context), 10, 1);
+                            publish(sync, world, source, jobRevision, new Report(
+                                    result.status() == KnownLandingReserve.Status.VALID ? Status.SAFE : Status.UNKNOWN,
+                                    source.tick(), source.generation(), source.epoch(), 0,
+                                    result.status().name(), result));
+                        } else {
+                            var result = HazardRecovery.assess(world, source.state(), parameters, context, budget);
+                            publish(sync, world, source, jobRevision, new Report(
+                                    result.admissible() ? Status.SAFE : Status.UNKNOWN,
+                                    source.tick(), source.generation(), source.epoch(), budget.steps(), result.reason()));
+                        }
                     } catch (RuntimeException error) {
                         publish(sync, world, source, jobRevision, new Report(Status.UNKNOWN,
                                 source.tick(), source.generation(), source.epoch(), budget.steps(),
@@ -131,14 +196,35 @@ public final class ReserveMonitor {
 
     private synchronized void publish(MovementSync sync, World world,
             FlightControlAdmission.Source source, long jobRevision, Report report) {
-        if (revision != jobRevision || !current(sync, world, source)) {
-            latest = new Report(Status.STALE, source.tick(), source.generation(), source.epoch(),
-                    report.simulatedSteps(), "Discarded obsolete reserve observation");
-            return;
+        // An obsolete producer owns no publication rights. Invalidation already happened
+        // on the observation/consumer path; never overwrite a newer report with its discard.
+        if (revision != jobRevision || !current(sync, world, source)) return;
+        if (report.reserve() != null && report.reserve().shouldReturn()) {
+            returnIntent = report.reserve();
+            returnIntentReport = report;
+            returnIntentResources = observedContext;
         }
         latest = sync.physicsTickVersion() - source.tick() >= INTERVAL_TICKS
                 ? new Report(Status.STALE, report.tick(), report.generation(), report.epoch(),
                         report.simulatedSteps(), "Reserve observation expired during search") : report;
+    }
+
+    /** Explicit exact-return diagnostic: report the accepted trajectory's actual
+     * rocket consumption, not the conservative distance estimate. The periodic
+     * observer calls KnownLandingReserve.assess directly and never invokes this helper. */
+    static KnownLandingReserve.Result resolveReturnEstimate(World world,
+            xin.bbtt.physics.PhysicsState state, xin.bbtt.physics.MovementParameters parameters,
+            HazardRecovery.Context resources, KnownLandingReserve.Result estimate) {
+        if (estimate.status() != KnownLandingReserve.Status.UNPROVEN || estimate.returnSite() == null)
+            return estimate;
+        var plan = xin.bbtt.physics.KnownReturnPlan.preview(world, state, parameters,
+                resources, estimate.returnSite(), 10);
+        if (!plan.proven()) return estimate;
+        int required = plan.requiredRockets();
+        return new KnownLandingReserve.Result(KnownLandingReserve.Status.VALID,
+                estimate.returnSite(), required, estimate.safetyMarginRockets(),
+                resources.rocketFlightDurations().length - required - estimate.safetyMarginRockets(),
+                true, true);
     }
 
     private static boolean current(MovementSync sync, World world, FlightControlAdmission.Source source) {

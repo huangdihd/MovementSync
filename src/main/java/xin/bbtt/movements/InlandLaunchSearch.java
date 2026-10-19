@@ -98,7 +98,9 @@ final class InlandLaunchSearch {
                         parameters, resources, direct + offset);
                 try {
                     var plan = proof.get(remaining, TimeUnit.NANOSECONDS);
-                    if (plan != null && proof.status() == LowAltitudeFlightPlan.Status.COMPLETE)
+                    if (LowAltitudeFlightPlan.usableLaunch(world,
+                            new PhysicsState(candidate.feet(), new Vector3d(), true), goal,
+                            parameters, resources, plan, proof.status()))
                         return new Result(new Vector3i(node), start, List.copyOf(path), plan.yaw());
                 } finally {
                     if (!proof.isDone()) proof.cancel(true);

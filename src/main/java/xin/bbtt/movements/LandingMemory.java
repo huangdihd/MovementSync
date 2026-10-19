@@ -23,6 +23,19 @@ public final class LandingMemory {
         sampleOffset = 0;
     }
 
+    /**
+     * Forget route-local anchors on a discontinuous authoritative correction, not
+     * ordinary anti-cheat reconciliation. Use pre-packet speed: a teleport's new
+     * velocity must not make its own displacement look like ordinary flight.
+     */
+    public synchronized void authoritativeCorrection(Vector3d before, Vector3d corrected,
+                                                       Vector3d previousVelocity) {
+        // Eight blocks tolerates small reconciliation; faster flight gets one
+        // tick of its actual speed plus two blocks of reconciliation slack.
+        double plausibleTick = Math.max(8.0, previousVelocity.length() + 2.0);
+        if (before.distance(corrected) > plausibleTick) clear();
+    }
+
     public synchronized void dimension(String value) {
         if (!java.util.Objects.equals(dimension, value)) clear();
         dimension = value;
@@ -67,6 +80,13 @@ public final class LandingMemory {
         long key = ((long) x << 32) | (z & 0xffffffffL);
         sites.putIfAbsent(key, new Vector3d(site));
         while (sites.size() > 64) sites.remove(sites.keySet().iterator().next());
+    }
+
+    /** Detached snapshot of bounded observations and pinned departure/touchdown sites. */
+    public synchronized java.util.List<Vector3d> snapshot() {
+        return java.util.stream.Stream.concat(sites.values().stream(),
+                java.util.stream.Stream.of(takeoff, lastLanding).filter(java.util.Objects::nonNull))
+                .map(Vector3d::new).toList();
     }
 
     public synchronized Vector3d nearest(Vector3d position) {

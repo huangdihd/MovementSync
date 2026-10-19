@@ -127,6 +127,39 @@ final class LowAltitudeFlightPlan {
         return result;
     }
 
+    /** A distant shore requires only a loaded prefix plus a known return reserve.
+     * COMPLETE retains its geometric meaning; callers must not relabel partial routes.
+     */
+    static boolean usableLaunch(World world, PhysicsState state, Vector3d destination,
+            MovementParameters parameters, HazardRecovery.Context resources, Result result, Status status) {
+        if (result == null) return false;
+        if (status == Status.COMPLETE) return true;
+        if (status != Status.PARTIAL) return false;
+        if (!KnownLandingReserve.nearLava(world, state)) return true;
+        var sites = new java.util.ArrayList<>(xin.bbtt.flight.DangerousEntryGate.knownSites(world, state, resources));
+        var shore = ElytraFlightController.landingSite(world, state.position().x, state.position().z,
+                state.position().y);
+        if (shore != null) sites.add(shore);
+        // The supported sample costs zero; it is not the launch/deployment excursion.
+        boolean excursion = state.onGround() && shore != null && FlightHazards.safeLanding(world, state.position());
+        KnownLandingReserve.LaunchResult launch = excursion ? KnownLandingReserve.launchAssessment(world,
+                deployment(world, state, parameters, result.yaw(), result.pitch()), parameters,
+                resources, result.yaw(), result.pitch(), sites) : null;
+        var reserve = excursion ? launch.reserve()
+                : KnownLandingReserve.assess(world, state, parameters, resources, sites, 10, 1);
+        var reason = excursion ? launch.reason() : KnownLandingReserve.launchReason(reserve);
+        if (reason == KnownLandingReserve.LaunchReason.ADMITTED) return true;
+        xin.bbtt.MovementSync.getLogger().info(
+                "Low-altitude launch rejected: reason={} state={} velocity={} onGround={} pose={} fall={} inventory={} cooldown={} boost={} attached={} source={} shore={} sites={} yaw={} pitch={} attempts={} checkpoint={} reserve={}",
+                reason, state.position(), state.velocity(), state.onGround(), state.pose(), state.fallDistance(),
+                java.util.Arrays.toString(resources.rocketFlightDurations()), resources.cooldownTicks(),
+                resources.guaranteedBoostTicks(), resources.attached(),
+                excursion ? "deployment-excursion/knownSites+current-shore" : "current-state/knownSites+current-shore",
+                shore, sites, result.yaw(), result.pitch(),
+                launch == null ? java.util.List.of() : launch.attemptedPitches(), launch, reserve);
+        return false;
+    }
+
     private static WaypointFlightTarget emergencyRoute(World world, PhysicsState state,
             MovementParameters parameters, HazardRecovery.Context context) {
         // Every candidate, including remembered ground, needs a complete loaded corridor.

@@ -179,6 +179,15 @@ public final class TravelMovement extends Movement {
             child = null;
             currentChild.onStop();
             if (stopped || finished || !movementSync.isNavigationRequestCurrent(generation)) return;
+            // A reserve return is a safe abort, not a new departure toward the original goal.
+            // Never turn a returned lava crossing into an ocean walking search.
+            if (currentChild instanceof ElytraFlyMovement flight && flight.completedPlannedReturn()) {
+                // A safe return still failed the requested flight; retain an explicit outcome
+                // before aborting, since the normal landed-flight fallback is bypassed.
+                lowFlightFailure = "planned reserve return completed on known support";
+                abortTravel(movementSync, lowFlightFailure);
+                return;
+            }
             if (currentChild instanceof ElytraFlyMovement flight && flight.completedAboveRoof()) {
                 movementSync.runIfNavigationRequestCurrent(generation, () -> {
                     MovementSync.getLogger().info(LangManager.get("movementsync.command.goto.target_below_roof"));
@@ -374,10 +383,15 @@ public final class TravelMovement extends Movement {
             }
             return rejectLowFlight(originalDeploymentFailure == null ? reason : originalDeploymentFailure);
         }
-        if (relocatedYaw != null && status != LowAltitudeFlightPlan.Status.COMPLETE)
-            return rejectLowFlight(originalDeploymentFailure);
         if (result.origin().distanceSquared(sync.position.get()) > .25)
             return rejectLowFlight("launch position changed during planning");
+        if (!LowAltitudeFlightPlan.usableLaunch(sync.getWorld(),
+                new xin.bbtt.physics.PhysicsState(sync.position.get(), sync.velocity.get(), sync.onGround.get(), sync.fallDistance.get()),
+                new Vector3d(goal.x + .5, goal.y, goal.z + .5), sync.getMovementParameters(),
+                new xin.bbtt.physics.HazardRecovery.Context(sync.inventoryManager.getHotbarFireworkFlightDurations(),
+                        0, sync.hasAttachedFirework(), sync.getLandingMemory()), result, status))
+            return rejectLowFlight(originalDeploymentFailure == null
+                    ? "insufficient known-landing return reserve" : originalDeploymentFailure);
         if (result.destination().distanceSquared(new Vector3d(goal.x + .5, goal.y, goal.z + .5)) > .01)
             return rejectLowFlight("route destination changed");
         sync.runIfNavigationRequestCurrent(generation, () -> {

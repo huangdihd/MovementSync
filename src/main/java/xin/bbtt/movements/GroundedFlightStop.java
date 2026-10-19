@@ -28,7 +28,7 @@ public final class GroundedFlightStop {
         hold(sync);
         var velocity = sync.velocity.get();
         float reverse = (float) Math.toDegrees(Math.atan2(velocity.x, -velocity.z));
-        sync.yaw.set(reverse);
+        sync.setYawToward(reverse);
         sync.pitch.set(0f);
         PhysicsState state = new PhysicsState(sync.position.get(), velocity, true,
                 sync.fallDistance.get(), PlayerPose.GLIDING);

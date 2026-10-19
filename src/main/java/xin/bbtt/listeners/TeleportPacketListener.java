@@ -67,6 +67,13 @@ public class TeleportPacketListener extends SessionAdapter {
                 currentYaw, currentPitch, position, velocity, yaw, pitch,
                 MovementSync.INSTANCE.isGliding(), MovementSync.INSTANCE.onGround.get(),
                 MovementSync.INSTANCE.getLastFlightTick());
+        // Match LandingMemory's pre-packet one-tick tolerance. Retire async publication
+        // rights under this same lock, before acknowledgement or any corrected-state reader.
+        // Ordinary reconciliation (including plausible fast flight) retains its epoch.
+        if (current.distance(position) > Math.max(8.0, MovementSync.INSTANCE.velocity.get().length() + 2.0))
+            MovementSync.INSTANCE.invalidateFlightControls();
+        MovementSync.INSTANCE.getLandingMemory().authoritativeCorrection(
+                current, position, MovementSync.INSTANCE.velocity.get());
         MovementSync.INSTANCE.position.set(position);
         MovementSync.INSTANCE.pitch.set(pitch);
         MovementSync.INSTANCE.yaw.set(yaw);

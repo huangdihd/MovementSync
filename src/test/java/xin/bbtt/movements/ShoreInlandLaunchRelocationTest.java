@@ -140,10 +140,49 @@ class ShoreInlandLaunchRelocationTest extends ElytraCommandTestSupport {
     }
 
     @Test void recordedLongCrossingDoesNotBypassFullResourceProofByRelocating() throws Exception {
-        // The reported goal is about 535 horizontal blocks from the recorded shore,
-        // often called the 600-block case. Do not replace its full proof with a partial route.
-        install(false, 760, 64);
-        rejectWithoutJump(new Vector3i(778, 40, -31));
+        // Full-exit proof is superseded by known-landing return reserve; deployment remains physical.
+        World world = install(false, 760, 64);
+        Vector3i goal = new Vector3i(778, 40, -31);
+        TravelMovement travel = new TravelMovement(goal, movementSync.beginStaticNavigationRequest(goal), true);
+        var physics = new updateMotionTask();
+        Method tick = updateMotionTask.class.getDeclaredMethod("tick");
+        tick.setAccessible(true);
+        boolean walkedInland = false;
+        boolean jumped = false;
+        boolean deployed = false;
+        travel.init();
+        try {
+            for (int i = 0; i < 400 && !travel.isFinished() && !deployed; i++) {
+                awaitWorkers(travel);
+                Vector3d before = new Vector3d(movementSync.position.get());
+                travel.onTick();
+                if (!jumped && movementSync.onGround.get() && before.x < START.x - .5) walkedInland = true;
+                int packetStart = packets.size();
+                tick.invoke(physics);
+                Vector3d after = movementSync.position.get();
+                assertTrue(after.distance(before) < 1, "approach must move by physics, not teleport");
+                assertTrue(after.y >= 33 && after.x < 246, "approach/deployment must stay on the safe shore");
+                assertTrue(movementSync.fallDistance.get() < 3, "no damaging fall during relocation");
+                if (!movementSync.onGround.get() && !movementSync.isGliding()) {
+                    assertTrue(walkedInland, "no jump until physically walking inland");
+                    jumped = true;
+                }
+                for (Object packet : packets.subList(packetStart, packets.size())) {
+                    if (packet instanceof ServerboundPlayerCommandPacket command
+                            && command.getState() == PlayerState.START_ELYTRA_FLYING) {
+                        assertTrue(walkedInland && jumped, "deployment must follow the real approach and jump");
+                        assertTrue(DeploymentSafety.assess(world, state(), movementSync.getMovementParameters(),
+                                movementSync.yaw.get(), movementSync.pitch.get()).safe(), "actual launch must be safe");
+                        // Explicit simulated server acknowledgement; local prediction is not acceptance.
+                        movementSync.applySharedFlags((byte) 0x80);
+                        assertTrue(movementSync.isGliding());
+                        deployed = true;
+                    }
+                }
+            }
+            assertTrue(walkedInland, "Travel must choose and physically reach an inland launch");
+            assertTrue(deployed, "reserve-backed long crossing must actually send START_ELYTRA_FLYING");
+        } finally { travel.onStop(); }
     }
 
     @Test void allNearbyLaunchesDangerousRejectWithoutJumpOrDeploymentRetries() throws Exception {

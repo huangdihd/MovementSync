@@ -66,6 +66,24 @@ public final class LocalGotoController implements AutoCloseable {
     public boolean request(MovementSync sync, Object owner, FlightControlAdmission.Source source,
             WaypointFlightTarget route, Vector3d goal, boolean allowedRocket, Runnable accepted,
             LocalLookaheadSolver.MovingTarget tracking) {
+        return request(sync, owner, source, route, goal, allowedRocket, accepted, tracking,
+                new HazardRecovery.Context(sync.inventoryManager.getHotbarFireworkFlightDurations(),
+                        0, sync.hasAttachedFirework(), sync.getLandingMemory()), true);
+    }
+
+    public boolean request(MovementSync sync, Object owner, FlightControlAdmission.Source source,
+            WaypointFlightTarget route, Vector3d goal, boolean allowedRocket, Runnable accepted,
+            LocalLookaheadSolver.MovingTarget tracking, HazardRecovery.Context resources,
+            boolean allowExposedProgress) {
+        return request(sync, owner, source, route, goal, allowedRocket, accepted, tracking,
+                resources, allowExposedProgress, false);
+    }
+
+    /** Explicit opt-in for static lava goto; shared Follow/End callers retain legacy entry proof. */
+    public boolean request(MovementSync sync, Object owner, FlightControlAdmission.Source source,
+            WaypointFlightTarget route, Vector3d goal, boolean allowedRocket, Runnable accepted,
+            LocalLookaheadSolver.MovingTarget tracking, HazardRecovery.Context resources,
+            boolean allowExposedProgress, boolean knownReturn) {
         Objects.requireNonNull(sync);
         Objects.requireNonNull(owner);
         Objects.requireNonNull(source);
@@ -100,7 +118,7 @@ public final class LocalGotoController implements AutoCloseable {
             worker.execute(() -> {
                 try {
                     compute(sync, owner, source, snapshot, endpoint, world, movement, yaw, pitch,
-                            attached, allowedRocket, accepted, tracking);
+                            attached, allowedRocket, accepted, tracking, resources, allowExposedProgress, knownReturn);
                     synchronized (LocalGotoController.this) { busy = false; }
                     finished.complete(null);
                 } catch (Throwable failure) {
@@ -115,7 +133,8 @@ public final class LocalGotoController implements AutoCloseable {
     private void compute(MovementSync sync, Object owner, FlightControlAdmission.Source source,
             WaypointFlightTarget route, Vector3d goal, World world, MovementParameters movement,
             float yaw, float pitch, boolean attached, boolean allowedRocket, Runnable accepted,
-            LocalLookaheadSolver.MovingTarget tracking) {
+            LocalLookaheadSolver.MovingTarget tracking, HazardRecovery.Context resources,
+            boolean allowExposedProgress, boolean knownReturn) {
         var points = route.waypoints();
         if (workerRoute == null || workerEpoch != source.epoch() || workerGeneration != source.generation()
                 || !points.equals(workerPoints)) {
@@ -165,7 +184,14 @@ public final class LocalGotoController implements AutoCloseable {
             var budget = new LocalLookaheadSolver.Budget(600, HORIZON, 25_000_000);
             unpowered = solver.solvePrefix(anchors, source.state(), world, movement, yaw, pitch, attached, budget, scoringTarget);
             prefix = unpowered.prefix();
-            boolean arriving = tracking == null && source.state().position().distance(goal) < 32;
+            boolean supportedGoal = tracking == null && normalLanding(world,
+                    new PhysicsState(goal, new Vector3d(), true, 0, PlayerPose.STANDING), goal);
+            // Height overshoot is descent, not another cruise leg. A spherical arrival
+            // radius lets a supported goal directly below us trigger repeated boosts.
+            boolean arriving = tracking == null && (source.state().position().distance(goal) < 32
+                    || supportedGoal && source.state().position().y >= goal.y
+                    && Math.hypot(source.state().position().x - goal.x,
+                            source.state().position().z - goal.z) < 32);
             boolean needsClimb = source.state().position().y < goal.y - 1;
             if (allowedRocket && !attached && accepted != null && (!arriving || needsClimb)) {
                 powered = solver.solvePrefix(anchors, source.state(), world, movement, yaw, pitch, true, budget, scoringTarget);
@@ -191,7 +217,22 @@ public final class LocalGotoController implements AutoCloseable {
                     }
                 }
             }
-            if (arriving && !needsClimb) {
+            // Preserve maneuvering margin over lava rather than matching a dangerously
+            // low route at minimum speed. Follow/End never opt in to this policy.
+            boolean lavaMargin = knownReturn && tracking == null && needsLavaMargin(world, source.state());
+            if (lavaMargin && (attached || allowedRocket && accepted != null)) {
+                // Existing thrust still needs escape steering: the ordinary solver may
+                // track a descending route straight back toward lava. Do not stack a
+                // rocket; retain the escape's same-control no-thrust commitment bound.
+                var escape = poweredEscape(world, movement, source.state(), forward, goal);
+                if (!escape.isEmpty()) {
+                    prefix = escape;
+                    rocket = !attached;
+                }
+            }
+            if (arriving && !needsClimb && !lavaMargin
+                    && normalLanding(world, new PhysicsState(goal, new Vector3d(), true, 0,
+                            PlayerPose.STANDING), goal)) {
                 var arrival = arrival(world, movement, source.state(), goal, attached, forward);
                 if (!arrival.isEmpty()) {
                     prefix = arrival;
@@ -228,7 +269,6 @@ public final class LocalGotoController implements AutoCloseable {
             var chosen = prefix.get(0).control();
             var end = replay(world, movement, source.state(), chosen, attached || rocket,
                     prefix.size(), goal, chosen.phase() == ElytraFlightController.Phase.LANDING).end();
-            var resources = new HazardRecovery.Context(new int[0], 0, false, null);
             var entry = end;
             if (!DangerousEntryGate.exposed(world, source.state())) {
                 for (var step : prefix) {
@@ -238,7 +278,13 @@ public final class LocalGotoController implements AutoCloseable {
                     }
                 }
             }
-            if (!DangerousEntryGate.permit(world, source.state(), entry, movement, resources)) {
+            if ((!allowExposedProgress && !DangerousEntryGate.exposed(world, source.state())
+                    && DangerousEntryGate.exposed(world, entry))
+                    || !(knownReturn
+                            ? DangerousEntryGate.permitKnownReturn(world, source.state(), entry, movement,
+                                    resources.afterTicks(prefix.size(), rocket))
+                            : DangerousEntryGate.permit(world, source.state(), entry, movement,
+                                    resources.afterTicks(prefix.size(), rocket)))) {
                 prefix = List.of();
                 reserve = List.of();
                 rocket = false;
@@ -248,8 +294,15 @@ public final class LocalGotoController implements AutoCloseable {
         synchronized (sync) {
             if (closed || sync.getWorld() != world || !current(sync, source)) return;
             sync.registerForwardFlightEmergency(owner, source, forward);
-            if (!prefix.isEmpty()) sync.publishFlightPrefix(owner, source, prefix, reserve, null,
-                    rocket ? accepted : () -> {});
+            if (!prefix.isEmpty()) {
+                var selected = prefix.get(0).control();
+                // Use the admitted heading for the use-item packet, including return turns.
+                sync.publishFlightPrefix(owner, source, prefix, reserve, null, rocket ? () -> {
+                    sync.setYawToward(selected.yaw());
+                    sync.pitch.set(selected.pitch());
+                    accepted.run();
+                } : () -> {});
+            }
             if (sync.getFlightScopeRouter().isShadowEnabled()
                     && (latest == null || source.tick() - latest.tick() >= 10 || status != latest.status()))
                 MovementSync.getLogger().info("Local goto tick={} status={} prefix={} rocket={} noVisibleAim={} unpoweredRejects={} poweredRejects={} maneuver={}",
@@ -288,6 +341,55 @@ public final class LocalGotoController implements AutoCloseable {
         return best;
     }
 
+    /** Eight blocks of vertical maneuvering room, or .8 blocks/tick of airspeed,
+     * are cruise targets, not permission to cross unobserved terrain. */
+    public static boolean needsLavaMargin(World world, PhysicsState state) {
+        if (state.onGround()) return false;
+        var p = state.position();
+        boolean low = world.readTerrain(() -> {
+            int x = (int) Math.floor(p.x), z = (int) Math.floor(p.z);
+            if (!world.chunkLoaded(x >> 4, z >> 4)) return false;
+            for (int y = (int) Math.floor(p.y); y >= Math.floor(p.y - 8); y--) {
+                var cell = new Vector3d(x + .5, y, z + .5);
+                String name = world.getBlockStateAt(cell).blockName();
+                if (name.equals("lava") || name.equals("minecraft:lava")) return true;
+                if (world.isSolid(cell)) return false;
+            }
+            return false;
+        });
+        // Nearby lava must not turn a slow, supported shore approach into another
+        // boost. Check the whole footprint, retaining rescue at an exposed edge.
+        return low || Math.hypot(state.velocity().x, state.velocity().z) < .8
+                && KnownLandingReserve.nearLava(world, state)
+                && DangerousEntryGate.exposed(world, state);
+    }
+
+    /** Finite terrain-checked rescue; never blindly fire into a roof or unknown chunk. */
+    static List<FlightControlAdmission.Step> poweredEscape(World world, MovementParameters movement,
+            PhysicsState state, float forward, Vector3d goal) {
+        List<FlightControlAdmission.Step> best = List.of();
+        double bestScore = Double.NEGATIVE_INFINITY;
+        for (float turn : new float[]{0, -30, 30, -60, 60, -90, 90, 180}) {
+            for (float pitch : new float[]{-35, -20, -10, 0}) {
+                var control = new ElytraFlightController.Decision(forward + turn, pitch, true,
+                        ElytraFlightController.Phase.CRUISE);
+                var powered = replay(world, movement, state, control, true, HORIZON, goal, false);
+                if (powered.steps().size() < HORIZON) continue;
+                var stalled = replay(world, movement, state, control, false, HORIZON, goal, false);
+                int count = Math.min(powered.steps().size(), stalled.steps().size());
+                if (count == 0) continue;
+                double score = (powered.end().position().y - state.position().y) * 2
+                        + Math.hypot(powered.end().velocity().x, powered.end().velocity().z)
+                        - Math.abs(turn) * .01;
+                if (score > bestScore) {
+                    bestScore = score;
+                    best = withFirstRocket(powered.steps().subList(0, count), true);
+                }
+            }
+        }
+        return best;
+    }
+
     static boolean preferPowered(int dualBranchTicks, double poweredScore,
             LocalLookaheadSolver.PrefixResult unpowered) {
         return dualBranchTicks > 0 && (dualBranchTicks > unpowered.prefix().size()
@@ -313,11 +415,22 @@ public final class LocalGotoController implements AutoCloseable {
         var steps = new ArrayList<FlightControlAdmission.Step>();
         var noRocket = new ElytraFlightController.Decision(control.yaw(), control.pitch(), false, control.phase());
         var physics = new GlidingPhysics(control.yaw(), control.pitch(), attached, PlayerInput.NONE, movement);
+        var travelPhysics = new GlidingPhysics(control.yaw(), control.pitch(), false, PlayerInput.NONE, movement);
         for (int i = 0; i < ticks; i++) {
             var next = physics.step(world, state, PlayerPose.HALF_WIDTH, PlayerPose.GLIDING.height());
+            // Attached thrust is applied after travel and masks the zero Y velocity
+            // produced by ceiling clipping. Inspect travel from this SAME powered
+            // state, not an independently evolving unpowered trajectory.
+            var travel = attached ? travelPhysics.step(world, state, PlayerPose.HALF_WIDTH,
+                    PlayerPose.GLIDING.height()) : next;
             var end = new PhysicsState(next.position(), next.velocity(), next.onGround(), next.fallDistance(),
                     PlayerPose.GLIDING);
-            if (next.collidedX() || next.collidedZ() || state.velocity().y > .003 && next.velocity().y == 0
+            // Reject hazardous arrival descent before touchdown: a long airborne dive
+            // can otherwise win arrival scoring and exhaust its safe fall margin.
+            // Cruise/Follow retain their airborne replay policy; fall distance alone
+            // is not touchdown damage while gliding toward a moving target.
+            if (landing && next.fallDistance() >= movement.safeFallDistance()
+                    || next.collidedX() || next.collidedZ() || state.velocity().y > .003 && travel.velocity().y == 0
                     || !LocalAirRoute.visible(world, state.position(), next.position(), PlayerPose.GLIDING)
                     || !hazardFree(world, state.position(), next.position())
                     || next.onGround() && (!landing || !normalLanding(world, end, goal)

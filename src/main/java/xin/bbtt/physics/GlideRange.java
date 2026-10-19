@@ -41,7 +41,56 @@ final class GlideRange {
     static long minimumBoostTicks(int flight) {
         // Yarn 1.21.11 FireworkRocketEntity: lifeTime = 10*(1+flight)+nextInt(6)+nextInt(7).
         // Use both random minima. Boost precedes ++life > lifeTime, including the expiry tick.
-        return 10L * (1 + Math.max(0L, flight)) + 1;
+        return FireworkSchedule.minimumBoostTicks(flight);
+    }
+
+    /** Bounded directional resource estimate for the lava reserve only. Unlike the legacy
+     * End estimate, respects firing cooldown and acknowledgement latency and checks every
+     * travel step against loaded terrain. Approach-plane reach is cross-track constrained
+     * and connected to the target by a checked body corridor; it is not a touchdown proof.
+     */
+    static boolean scheduledReach(World world, PhysicsState initial, MovementParameters parameters,
+            Vector3d target, int[] flights, int count, int cooldown, long confirmedBoost,
+            int confirmationDelay) {
+        return scheduledReach(world, initial, parameters, target, flights, count, cooldown,
+                confirmedBoost, confirmationDelay, false);
+    }
+
+    static boolean scheduledReach(World world, PhysicsState initial, MovementParameters parameters,
+            Vector3d target, int[] flights, int count, int cooldown, long confirmedBoost,
+            int confirmationDelay, boolean landingApproach) {
+        double dx = target.x - initial.position().x, dz = target.z - initial.position().z;
+        double distance = Math.hypot(dx, dz);
+        if (distance == 0) return initial.position().y >= target.y
+                && KnownLandingReserve.corridor(world, initial.position(), target);
+        float yaw = (float) Math.toDegrees(Math.atan2(-dx, dz));
+        for (float pitch : new float[] {0, -10, -30}) {
+            PhysicsState state = initial;
+            var schedule = FireworkSchedule.confirmed(flights, count, cooldown,
+                    confirmedBoost, confirmationDelay);
+            var powered = new GlidingPhysics(yaw, pitch, true, parameters.gravity(), parameters.slowFalling());
+            var unpowered = new GlidingPhysics(yaw, pitch, false, parameters.gravity(), parameters.slowFalling());
+            for (int tick = 0; tick < 600; tick++) {
+                if (Thread.currentThread().isInterrupted()) return false;
+                var step = (schedule.nextPowered() ? powered : unpowered).step(world, state,
+                        PlayerPose.HALF_WIDTH, PlayerPose.GLIDING.height());
+                if (!FlightSafety.knownStep(world, state, step)
+                        || step.collidedX() || step.collidedZ() || step.onGround()
+                        || FlightHazards.damage(world, state, step, DamageParameters.NONE, true).raw() > 0
+                        || FlightHazards.damage(world, state, step, DamageParameters.NONE, false).raw() > 0) break;
+                Vector3d next = step.position();
+                double projected = ((next.x - initial.position().x) * dx
+                        + (next.z - initial.position().z) * dz) / distance;
+                double crossTrack = Math.abs((next.x - initial.position().x) * dz
+                        - (next.z - initial.position().z) * dx) / distance;
+                if (projected >= distance && next.y >= target.y && crossTrack <= 2
+                        && KnownLandingReserve.corridor(world, next,
+                                landingApproach ? target : new Vector3d(target.x, next.y, target.z))) return true;
+                if (next.y < target.y && step.velocity().y < 0 && schedule.exhausted()) break;
+                state = new PhysicsState(next, step.velocity(), false, step.fallDistance(), PlayerPose.GLIDING);
+            }
+        }
+        return false;
     }
 
     private double atHeight(double height, long boostTicks) {
@@ -78,9 +127,11 @@ final class GlideRange {
         private final GlidingPhysics powered;
         private final GlidingPhysics unpowered;
         private final List<PhysicsState> states = new ArrayList<>();
+        private final FireworkSchedule schedule;
 
         private Trajectory(TrajectoryKey key) {
             this.key = key;
+            schedule = FireworkSchedule.consecutive(key.boostTicks());
             powered = new GlidingPhysics(key.yaw(), key.pitch(), true,
                     parameters.gravity(), parameters.slowFalling());
             unpowered = new GlidingPhysics(key.yaw(), key.pitch(), false,
@@ -95,7 +146,7 @@ final class GlideRange {
             for (int tick = 0; tick < TICKS; tick++) {
                 PhysicsState state = states.get(tick);
                 if (states.size() == tick + 1) {
-                    var result = (tick < key.boostTicks() ? powered : unpowered)
+                    var result = (schedule.nextPowered() ? powered : unpowered)
                             .step(empty, state, PlayerPose.HALF_WIDTH, PlayerPose.GLIDING.height());
                     states.add(new PhysicsState(result.position(), result.velocity(), false));
                 }
