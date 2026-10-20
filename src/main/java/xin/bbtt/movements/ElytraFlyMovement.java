@@ -413,6 +413,11 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
         boolean hasVanilla = flightConfiguration.modes().stream()
                 .anyMatch(mode -> mode instanceof xin.bbtt.flight.VanillaGlideMode);
         if (!hasVanilla && tickExtended(movementSync, state, equipmentAction, null)) return;
+        if (!emergencyLanding && equipmentAction == xin.bbtt.inventory.InventoryManager.ElytraAction.LAND) {
+            // Spare-equipment replacement must be attempted before latching this emergency.
+            emergencyLanding = true;
+            MovementSync.getLogger().warn("Elytra durability low; seeking solid emergency landing ground");
+        }
         boolean localClimb = localClimbEnabled(movementSync)
                 && climbHandoff.phase() == xin.bbtt.flight.LocalClimbHandoff.Phase.LOCAL_CLIMB;
         boolean localFollow = localFollowEnabled(movementSync);
@@ -582,11 +587,6 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
                     xin.bbtt.physics.DamageParameters.fromPlayer(movementSync.inventoryManager,
                             movementSync.getMovementParameterState().effectsSnapshot()),
                     movementSync.getMovementParameterState().health());
-            if (!emergencyLanding && equipmentAction == xin.bbtt.inventory.InventoryManager.ElytraAction.LAND) {
-                // Spare-equipment replacement must be attempted before latching this emergency.
-                emergencyLanding = true;
-                MovementSync.getLogger().warn("Elytra durability low; seeking solid emergency landing ground");
-            }
             boolean attached = movementSync.hasAttachedFirework();
             int fireworks = lifecycle.rocketCooldown() == 0 ? movementSync.countHotbarFireworks() : 0;
             int[] rocketFlights = lifecycle.rocketCooldown() == 0

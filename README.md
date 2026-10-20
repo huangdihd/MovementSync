@@ -68,6 +68,23 @@ English / [简体中文](README_CN.md)
 
 ---
 
+## World data API
+
+Plugins can read the current server-supplied world cache through `MovementSync.INSTANCE.getWorld()`.
+All coordinates passed to the methods below are block coordinates unless their names say `chunk`.
+Snapshots are safe to retain; `Optional`/`OptionalInt.empty()` means the chunk or value has not been
+received, not that its numeric value is zero.
+
+- Lighting: `getSkyLight(x, y, z)` and `getBlockLight(x, y, z)` return values from 0 to 15. MovementSync stores server updates and does not recompute light propagation.
+- Block entities: `getBlockEntityAt(x, y, z)` and `getBlockEntitiesInChunk(chunkX, chunkZ)` return immutable `BlockEntitySnapshot` values containing type and server NBT; `nbt()` is nullable when the server omits NBT.
+- Heightmaps: `getHeight(type, x, z)` returns the absolute world Y for a `HeightmapTypes` column.
+- Biomes: `getBiomeId(x, y, z)` returns the network ID; `getBiomeName(x, y, z)` resolves it through the latest biome registry.
+- Server chunk settings: `getChunkCacheCenter()`, `getChunkCacheRadius()`, and `getSimulationDistance()` expose the latest values received from the server.
+- Default spawn: `getDefaultSpawn()` returns the latest `DefaultSpawn` position and orientation.
+- `loadedChunks()` remains the immutable snapshot of loaded chunk coordinates. `readTerrain(...)` can group multiple reads under one read lock when a caller needs a consistent compound snapshot.
+
+Chunk unloads, dimension changes, disconnects, and `World.clear()` remove associated cached data.
+
 ## Flight in ceiling dimensions
 
 Static goto near observed lava uses a known-landing return reserve rather than requiring the entire opposite shore to be loaded. It shares `GlideRange`'s firework resource schedule (inventory order, cooldown, confirmation delay and conservative thrust lifetime). `ReserveMonitor` refreshes in the background about every ten physics ticks and on relevant events; newly loaded supported sites can replace earlier observations. Launch reserves an outward reuse window plus return resources. A planned return previews the complete momentum reversal, climb, return and supported touchdown using shared physics, then executes that control sequence with physical/resource checkpoint checks—not a terminal proof for every candidate each tick. A completed return aborts the original goto instead of walking back toward the unreachable destination; logs distinguish `Planned return` from arrival. End and follow retain their existing policies. The 64-rocket crossing, three-rocket prelaunch rejection and missing-far-shore physical return pass synthetic regression tests; this is not a general safety guarantee or live-server validation, particularly after external corrections, terrain changes or attachment timing divergence.

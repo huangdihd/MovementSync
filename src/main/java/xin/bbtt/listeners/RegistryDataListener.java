@@ -13,10 +13,12 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 public class RegistryDataListener extends SessionAdapter {
     @Getter
-    private static int biomeRegistrySize = -1;
+    private static volatile int biomeRegistrySize = -1;
+    private static volatile List<String> biomeNames = List.of();
     
     @Getter
     private static final Map<String, Integer> enchantmentIds = new HashMap<>();
@@ -35,7 +37,12 @@ public class RegistryDataListener extends SessionAdapter {
         String registryName = registryPacket.getRegistry().asString();
 
         if (registryName.equals("minecraft:worldgen/biome")) {
-            biomeRegistrySize = registryPacket.getEntries().size();
+            List<String> names = new ArrayList<>(registryPacket.getEntries().size());
+            for (var entry : registryPacket.getEntries()) {
+                names.add(entry.getId().asString());
+            }
+            biomeNames = List.copyOf(names);
+            biomeRegistrySize = names.size();
             log.debug("Got biomeRegistrySize: {}", biomeRegistrySize);
         } else if (registryName.equals("minecraft:enchantment")) {
             int index = 0;
@@ -61,6 +68,13 @@ public class RegistryDataListener extends SessionAdapter {
                 index++;
             }
         }
+    }
+
+    /** Returns the registry name for a server biome network ID, or empty if unknown. */
+    public static Optional<String> getBiomeName(int networkId) {
+        List<String> names = biomeNames;
+        return networkId >= 0 && networkId < names.size()
+                ? Optional.of(names.get(networkId)) : Optional.empty();
     }
 
     static void setCurrentDimension(int index) {

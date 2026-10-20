@@ -68,6 +68,22 @@
 
 ---
 
+## World 世界数据接口
+
+其他插件可通过 `MovementSync.INSTANCE.getWorld()` 读取服务端下发的当前世界缓存。除名称中明确写着
+`chunk` 的参数外，下列接口均使用方块坐标。返回的快照可安全保留；`Optional`／`OptionalInt.empty()`
+表示区块或该项数据尚未知，并不表示数值为零。
+
+- 光照：`getSkyLight(x, y, z)` 与 `getBlockLight(x, y, z)` 返回 0～15；MovementSync 只保存服务端更新，不在客户端重算光照传播。
+- 方块实体：`getBlockEntityAt(x, y, z)` 与 `getBlockEntitiesInChunk(chunkX, chunkZ)` 返回不可变 `BlockEntitySnapshot`，包含类型及服务端 NBT；服务端省略 NBT 时 `nbt()` 为 `null`。
+- 高度图：`getHeight(type, x, z)` 返回 `HeightmapTypes` 指定列的绝对世界 Y。
+- 生物群系：`getBiomeId(x, y, z)` 返回网络 ID；`getBiomeName(x, y, z)` 使用最新生物群系注册表解析名称。
+- 服务端区块设置：`getChunkCacheCenter()`、`getChunkCacheRadius()`、`getSimulationDistance()` 返回最近收到的值。
+- 默认出生点：`getDefaultSpawn()` 返回最近收到的 `DefaultSpawn` 位置及朝向。
+- `loadedChunks()` 仍返回已加载区块坐标的不可变快照；需要多个读取保持同一时刻的一致性时，可用 `readTerrain(...)` 将它们放在同一个读锁中。
+
+区块卸载、切换维度、断线及 `World.clear()` 都会清除对应缓存。
+
 ## 有屋顶维度的飞行
 
 静态 goto 在观测到的岩浆附近使用已知落点回程余量，不要求整个对岸预先加载。资源估算复用 `GlideRange` 的烟花调度，包含库存顺序、冷却、确认延迟和保守推力寿命。`ReserveMonitor` 在后台约每十个物理 tick 及相关事件刷新；新加载的有支撑落点可更新已知落点。起飞预算保留一个向外飞行的烟花复用窗口及回程资源。计划内折返用共享物理预演完整掉头、爬升、回程和支撑触地，再按物理／资源检查点执行控制序列，不做每 tick 每候选终局证明。回岸完成后终止原 goto，不再向不可达对岸步行寻路；日志以 `Planned return` 区分折返和到达。末地及 follow 保持原策略。64 枚跨海、3 枚起飞前拒绝及无对岸实际返岸的合成物理回归已通过；这不是通用安全保证，也未实机验证，尤其不保证外部修正、地形变化或附件时序偏离后的行为。

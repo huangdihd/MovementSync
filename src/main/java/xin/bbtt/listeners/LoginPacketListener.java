@@ -19,6 +19,8 @@ import java.util.List;
  * so {@code RegistryDataListener} can return the correct min/max world Y.
  */
 public class LoginPacketListener extends SessionAdapter {
+    private String currentWorldName;
+    private Integer currentDimension;
 
     @Override
     public void packetReceived(Session session, Packet packet) {
@@ -28,19 +30,29 @@ public class LoginPacketListener extends SessionAdapter {
             session.send(new ServerboundClientInformationPacket(
                     "en_us", 12, ChatVisibility.FULL, true, List.of(SkinPart.values()),
                     HandPreference.RIGHT_HAND, false, true, ParticleStatus.ALL));
+            String worldName = login.getCommonPlayerSpawnInfo().getWorldName().asString();
             if (MovementSync.INSTANCE != null) {
-                MovementSync.INSTANCE.setRecoveryDimension(login.getCommonPlayerSpawnInfo().getWorldName().asString());
+                MovementSync.INSTANCE.getWorld().clear();
+                MovementSync.INSTANCE.setRecoveryDimension(worldName);
             }
+            currentWorldName = worldName;
             int dim = login.getCommonPlayerSpawnInfo().getDimension();
+            currentDimension = dim;
             RegistryDataListener.setCurrentDimension(dim);
             MovementSync.getLogger().debug("Login: dimension index = {}", dim);
         } else if (packet instanceof ClientboundRespawnPacket respawn) {
+            String worldName = respawn.getCommonPlayerSpawnInfo().getWorldName().asString();
+            int dim = respawn.getCommonPlayerSpawnInfo().getDimension();
             if (MovementSync.INSTANCE != null) {
                 MovementSync.INSTANCE.onPlayerRespawn();
                 MovementSync.INSTANCE.suspendNavigationForRecovery();
-                MovementSync.INSTANCE.setRecoveryDimension(respawn.getCommonPlayerSpawnInfo().getWorldName().asString());
+                if (!worldName.equals(currentWorldName) || !Integer.valueOf(dim).equals(currentDimension)) {
+                    MovementSync.INSTANCE.getWorld().clear();
+                }
+                MovementSync.INSTANCE.setRecoveryDimension(worldName);
             }
-            int dim = respawn.getCommonPlayerSpawnInfo().getDimension();
+            currentWorldName = worldName;
+            currentDimension = dim;
             RegistryDataListener.setCurrentDimension(dim);
             MovementSync.getLogger().debug("Respawn: dimension index = {}", dim);
         }
