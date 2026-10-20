@@ -12,13 +12,23 @@ public class DStarLite {
     public record SearchDiagnostics(Termination termination, int expandedNodes, int budget,
                                     int openNodes, Node endpoint, int pathNodes) {}
 
+    /** Immutable path search result; cost is the exact accumulated winning edge cost. */
+    public record PathResult(List<PathStep> path, double cost, SearchDiagnostics diagnostics) {
+        public PathResult {
+            path = List.copyOf(path);
+        }
+        public boolean complete() { return diagnostics.termination() == Termination.COMPLETE; }
+    }
+
     private SearchDiagnostics diagnostics;
+    private double resultCost = Double.POSITIVE_INFINITY;
 
     /** Result of the most recent search, or null before findPath is called. */
     public SearchDiagnostics diagnostics() { return diagnostics; }
 
-    private List<PathStep> result(List<PathStep> path, Termination termination,
+    private List<PathStep> result(List<PathStep> path, double cost, Termination termination,
                                   int expanded, int budget, int openNodes) {
+        resultCost = cost;
         diagnostics = new SearchDiagnostics(termination, expanded, budget, openNodes,
                 path.isEmpty() ? null : path.get(path.size() - 1).getNode(), path.size());
         xin.bbtt.MovementSync.getLogger().debug(
@@ -61,12 +71,19 @@ public class DStarLite {
     }
 
     public List<PathStep> findPath(int maxIterations) {
-        if (maxIterations < 0) return result(new ArrayList<>(), Termination.INVALID_BUDGET, 0, maxIterations, 0);
+        if (maxIterations < 0) return result(new ArrayList<>(), Double.POSITIVE_INFINITY,
+                Termination.INVALID_BUDGET, 0, maxIterations, 0);
         if (start.equals(goal)) return result(new ArrayList<>(List.of(new PathStep(start, BuiltinMovementType.WALK))),
-                Termination.COMPLETE, 0, maxIterations, 0);
+                0, Termination.COMPLETE, 0, maxIterations, 0);
         try (StandablePositionResolver.SearchCache ignored = StandablePositionResolver.beginSearch()) {
             return search(maxIterations);
         }
+    }
+
+    /** Runs the search and returns both the path and its exact accumulated edge cost. */
+    public PathResult findRoute(int maxIterations) {
+        List<PathStep> path = findPath(maxIterations);
+        return new PathResult(path, resultCost, diagnostics);
     }
 
     private List<PathStep> search(int maxIterations) {
@@ -94,7 +111,8 @@ public class DStarLite {
             if (curr.equals(goal)) {
                 List<PathStep> path = reconstructPath(cameFromNode, cameFromType, curr);
                 xin.bbtt.MovementSync.getLogger().info(LangManager.get("movementsync.command.goto.success", path.size(), iterations, System.currentTimeMillis() - startTime));
-                return result(path, Termination.COMPLETE, iterations, maxIterations, active.size());
+                return result(path, gScore.get(curr), Termination.COMPLETE,
+                        iterations, maxIterations, active.size());
             }
             
             // Recognizing the goal is not an expansion (no outgoing edges).
@@ -111,7 +129,7 @@ public class DStarLite {
             // frontier reaches unknown terrain toward an unloaded goal.
             if (h <= minH && context.isUnloadedFrontier(curr, goal)
                     && active.values().stream().noneMatch(candidate -> context.getHeuristic(candidate.node, goal) < h)) {
-                return result(reconstructPath(cameFromNode, cameFromType, curr),
+                return result(reconstructPath(cameFromNode, cameFromType, curr), gScore.get(curr),
                         Termination.UNLOADED_FRONTIER, iterations, maxIterations, active.size());
             }
             
@@ -133,7 +151,8 @@ public class DStarLite {
         xin.bbtt.MovementSync.getLogger().debug(LangManager.get("movementsync.command.goto.not_found", goal.x, goal.y, goal.z, iterations));
         List<PathStep> partial = bestNode.equals(start) ? new ArrayList<>()
                 : reconstructPath(cameFromNode, cameFromType, bestNode);
-        return result(partial, active.isEmpty() ? Termination.EXHAUSTED : Termination.BUDGET_EXHAUSTED,
+        return result(partial, bestNode.equals(start) ? Double.POSITIVE_INFINITY : gScore.get(bestNode),
+                active.isEmpty() ? Termination.EXHAUSTED : Termination.BUDGET_EXHAUSTED,
                 iterations, maxIterations, active.size());
     }
 

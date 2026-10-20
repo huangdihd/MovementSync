@@ -18,11 +18,25 @@ import java.util.List;
 /** A single navigation generation owns all legs, including landing before ground fallback. */
 public final class TravelMovement extends Movement {
     public static final double FLIGHT_DISTANCE_THRESHOLD = 96;
+    static final double GROUND_EQUIVALENT_BLOCKS_PER_SECOND = 5.6;
     static final int TAKEOFF_SEARCH_RADIUS = 16;
     static final int MAX_TAKEOFF_PATH_ATTEMPTS = 16;
 
     interface Legs {
         List<PathStep> plan(Vector3i destination);
+        default double walkingCost(List<PathStep> path) {
+            double cost = 0;
+            for (int i = 1; i < path.size(); i++) {
+                Node previous = path.get(i - 1).getNode();
+                Node current = path.get(i).getNode();
+                double dx = current.x - previous.x;
+                double dy = current.y - previous.y;
+                double dz = current.z - previous.z;
+                cost += Math.sqrt(dx * dx + dy * dy + dz * dz);
+            }
+            return cost;
+        }
+        default double flightCost(Vector3i destination) { return Double.POSITIVE_INFINITY; }
         Movement walk(List<PathStep> path, Vector3i destination, boolean intermediate);
         Movement flight();
         default xin.bbtt.inventory.InventoryManager.ElytraAction prepareFlight() {
@@ -36,7 +50,15 @@ public final class TravelMovement extends Movement {
     private enum Stage { PREPARE, APPROACH, RELOCATE, TAKEOFF, FLIGHT, LAND, WALK }
     private final Vector3i goal;
     private final long generation;
-    private final boolean fly;
+    private final boolean allowFlight;
+    private final boolean routeCostMode;
+    private final boolean injectedLegs;
+    private boolean fly;
+    private boolean routeSelected;
+    private boolean flightRetryBlocked;
+    private Vector3d flightStartPosition;
+    private double lastWalkingCost = Double.POSITIVE_INFINITY;
+    private DStarLite.PathResult initialWalkingRoute;
     private Stage stage = Stage.PREPARE;
     private volatile Movement child;
     private volatile boolean stopped;
@@ -96,27 +118,59 @@ public final class TravelMovement extends Movement {
         });
     }
 
-    public TravelMovement(Vector3i goal, long generation, boolean fly) {
-        this(goal, generation, fly, null, new xin.bbtt.flight.FlightContextBuilder().addStandard());
+    public TravelMovement(Vector3i goal, long generation, boolean allowFlight) {
+        this(goal, generation, allowFlight, null,
+                new xin.bbtt.flight.FlightContextBuilder().addStandard(), true);
     }
 
-    public TravelMovement(Vector3i goal, long generation, boolean fly,
+    public TravelMovement(Vector3i goal, long generation, boolean allowFlight,
                           xin.bbtt.flight.FlightContextBuilder builder) {
-        this(goal, generation, fly, null, builder);
+        this(goal, generation, allowFlight, null, builder, true);
+    }
+
+    public TravelMovement(Vector3i goal, long generation, boolean allowFlight,
+                          xin.bbtt.flight.FlightContextBuilder builder,
+                          DStarLite.PathResult initialWalkingRoute) {
+        this(goal, generation, allowFlight, null, builder, true);
+        this.initialWalkingRoute = initialWalkingRoute;
     }
 
     TravelMovement(Vector3i goal, long generation, boolean fly, Legs legs) {
-        this(goal, generation, fly, legs, new xin.bbtt.flight.FlightContextBuilder().addStandard());
+        this(goal, generation, fly, legs,
+                new xin.bbtt.flight.FlightContextBuilder().addStandard(), false);
     }
 
     TravelMovement(Vector3i goal, long generation, boolean fly, Legs legs,
                    xin.bbtt.flight.FlightContextBuilder builder) {
+        this(goal, generation, fly, legs, builder, false);
+    }
+
+    TravelMovement(Vector3i goal, long generation, boolean allowFlight, Legs legs,
+                   xin.bbtt.flight.FlightContextBuilder builder, boolean routeCostMode) {
         this.flightConfiguration = builder.build();
         this.goal = new Vector3i(goal);
         this.generation = generation;
-        this.fly = fly;
+        this.allowFlight = allowFlight;
+        this.routeCostMode = routeCostMode;
+        this.injectedLegs = legs != null;
+        this.fly = allowFlight;
         this.legs = legs == null ? new Legs() {
             @Override public List<PathStep> plan(Vector3i destination) { return pathTo(destination); }
+            @Override public double walkingCost(List<PathStep> path) { return lastWalkingCost; }
+            @Override public double flightCost(Vector3i destination) {
+                MovementSync sync = MovementSync.INSTANCE;
+                boolean pluginFlight = hasPluginTakeoff();
+                if (!pluginFlight && (!sync.hasEquippedElytra() || !hasFlightBudget()
+                        || !sync.isGliding() && sync.countHotbarFireworks() == 0))
+                    return Double.POSITIVE_INFINITY;
+                Vector3d position = sync.position.get();
+                double distance = Math.hypot(position.x - (destination.x + .5),
+                        position.z - (destination.z + .5));
+                // Convert predicted flight time to DStarLite's block-effort scale using
+                // ordinary vanilla sprint speed; the estimate includes landing reserve.
+                return xin.bbtt.physics.ElytraDurability.estimateFlightSeconds(distance)
+                        * GROUND_EQUIVALENT_BLOCKS_PER_SECOND;
+            }
             @Override public Movement walk(List<PathStep> path, Vector3i destination, boolean intermediate) {
                 PathMovement movement = new PathMovement(path, -1, false, destination, -1, generation)
                         .yieldingUnexpectedFalls();
@@ -165,8 +219,76 @@ public final class TravelMovement extends Movement {
     @Override
     public void init() { holdForPlanning(MovementSync.INSTANCE); }
 
+    private boolean selectRouteByCost(MovementSync sync) {
+        if (!routeCostMode || routeSelected) return false;
+        DStarLite.PathResult initial = initialWalkingRoute;
+        initialWalkingRoute = null;
+        List<PathStep> walking = initial == null ? legs.plan(goal) : initial.path();
+        if (stopped || finished || !sync.isNavigationRequestCurrent(generation)) return true;
+        boolean completeWalking = initial == null
+                ? !walking.isEmpty() && walking.get(walking.size() - 1).getNode().equals(new Node(goal))
+                : initial.complete();
+        double walkingCost = completeWalking
+                ? initial == null ? legs.walkingCost(walking) : initial.cost()
+                : Double.POSITIVE_INFINITY;
+        double flightCost = allowFlight && !flightRetryBlocked
+                ? candidateFlightCost() : Double.POSITIVE_INFINITY;
+        if (!completeWalking && !Double.isFinite(flightCost) && allowFlight
+                && !injectedLegs && lowFlightFailure == null) {
+            String reason = !sync.hasEquippedElytra()
+                    ? "equipment unavailable or unsafe"
+                    : !legs.hasFlightBudget()
+                    ? "insufficient flight equipment budget"
+                    : "insufficient fireworks to start flight";
+            rejectLowFlight(reason);
+        }
+        fly = Double.isFinite(flightCost) && flightCost < walkingCost;
+        routeSelected = true;
+        MovementSync.getLogger().info("Travel: route costs walking={}, flight={}; selected={}",
+                walkingCost, flightCost, fly ? "flight" : "walking");
+        if (fly) {
+            if (injectedLegs) {
+                startFlight();
+                return true;
+            }
+            return false;
+        }
+        if (!walking.isEmpty()) {
+            stage = Stage.WALK;
+            startChild(legs.walk(walking, goal, false));
+            return true;
+        }
+        abortTravel(sync, "no walking or flight route to destination");
+        return true;
+    }
+
+    private double candidateFlightCost() {
+        try {
+            return legs.flightCost(goal);
+        } catch (RuntimeException exception) {
+            lowFlightFailure = "flight candidate preview failed: " + exception.getMessage();
+            MovementSync.getLogger().warn("Travel: {}; treating flight as unavailable",
+                    lowFlightFailure, exception);
+            return Double.POSITIVE_INFINITY;
+        }
+    }
+
+    /** Used by the command's synchronous first-route validation. */
+    public boolean hasFiniteFlightCandidate() {
+        return allowFlight && Double.isFinite(candidateFlightCost());
+    }
+
     @Override
     public void onTick() {
+        try {
+            tickTravel();
+        } catch (RuntimeException exception) {
+            MovementSync.getLogger().error("Travel: route planning failed", exception);
+            abortTravel(MovementSync.INSTANCE, "route planning failed: " + exception.getMessage());
+        }
+    }
+
+    private void tickTravel() {
         // Not under the navigation lock: path planning and flight previews here can be slow,
         // and cancellation must not wait for them. Children guard their own writes.
         MovementSync movementSync = MovementSync.INSTANCE;
@@ -217,8 +339,10 @@ public final class TravelMovement extends Movement {
             }
             holdForPlanning(movementSync);
             if (stage == Stage.TAKEOFF) {
-                stage = takeoffForLanding ? Stage.LAND : Stage.FLIGHT;
-                startChild(takeoffForLanding ? extendedLanding() : legs.flight());
+                if (takeoffForLanding) {
+                    stage = Stage.LAND;
+                    startChild(extendedLanding());
+                } else beginFlight(legs.flight());
                 return;
             }
             if (stage == Stage.RELOCATE) {
@@ -229,6 +353,17 @@ public final class TravelMovement extends Movement {
             if (stage == Stage.APPROACH && isOpen(movementSync.getWorld(), movementSync.position.get())) {
                 startFlight();
                 return;
+            }
+            if (routeCostMode && stage == Stage.FLIGHT
+                    && !atSupportedGoal(movementSync)) {
+                Vector3d start = flightStartPosition;
+                Vector3d now = movementSync.position.get();
+                // A failed deployment must not immediately win the same unchanged comparison.
+                flightRetryBlocked = start != null
+                        && Math.hypot(now.x - start.x, now.z - start.z) < 4;
+                routeSelected = false;
+                fly = false;
+                stage = Stage.PREPARE;
             }
             if (currentChild instanceof ElytraFlyMovement && !atSupportedGoal(movementSync)
                     && xin.bbtt.listeners.RegistryDataListener.hasCeiling()
@@ -243,6 +378,8 @@ public final class TravelMovement extends Movement {
                 movementSync.getWorld(), movementSync.position.get())
                 || xin.bbtt.pathfinding.EnvironmentalTraversal.climbing(
                         movementSync.getWorld(), movementSync.position.get());
+        if (stage == Stage.PREPARE && (movementSync.onGround.get() || environmental)
+                && selectRouteByCost(movementSync)) return;
         boolean belowRoof = xin.bbtt.listeners.RegistryDataListener.hasCeiling()
                 && !isOpen(movementSync.getWorld(), movementSync.position.get());
         if ((belowRoof || relocationAttempted) && stage == Stage.PREPARE) {
@@ -276,9 +413,8 @@ public final class TravelMovement extends Movement {
                     boolean cruise = fly && !belowRoof && legs.hasFlightBudget();
                     ElytraFlyMovement flight = new ElytraFlyMovement(
                             new Vector3d(goal.x + 0.5, goal.y, goal.z + 0.5), generation);
-                    stage = Stage.FLIGHT;
                     MovementSync.getLogger().info("Travel: airborne takeoff, cruise={}", cruise);
-                    startChild(cruise ? flight : flight.forSafeLanding());
+                    beginFlight(cruise ? flight : flight.forSafeLanding());
                 }
                 return;
             }
@@ -399,8 +535,7 @@ public final class TravelMovement extends Movement {
             var movement = legs.flight();
             if (!(movement instanceof ElytraFlyMovement flight)) return;
             flight.withLowAltitudePlan(result);
-            stage = Stage.FLIGHT;
-            startChild(flight);
+            beginFlight(flight);
         });
         return child != null;
     }
@@ -458,6 +593,19 @@ public final class TravelMovement extends Movement {
         return movement instanceof ElytraFlyMovement flight ? flight.forSafeLanding() : movement;
     }
 
+    private boolean hasPluginTakeoff() {
+        var context = transitionContext(false);
+        for (var mode : flightConfiguration.modes()) {
+            if (mode instanceof xin.bbtt.flight.VanillaGlideMode) continue;
+            var configuration = new xin.bbtt.flight.FlightConfiguration(List.of(mode),
+                    flightConfiguration.costs(), flightConfiguration.damageRules(),
+                    flightConfiguration.cruiseDamageFirst());
+            if (xin.bbtt.flight.FlightTransitions.select(configuration, context,
+                    xin.bbtt.flight.FlightTransitions.Kind.TAKEOFF) != null) return true;
+        }
+        return false;
+    }
+
     private boolean hasPluginTransition() {
         var context = transitionContext(!fly);
         for (var mode : flightConfiguration.modes()) {
@@ -511,8 +659,13 @@ public final class TravelMovement extends Movement {
             }
         }
         MovementSync.getLogger().info("Travel: flight to {}", goal);
+        beginFlight(legs.flight());
+    }
+
+    private void beginFlight(Movement movement) {
+        flightStartPosition = new Vector3d(MovementSync.INSTANCE.position.get());
         stage = Stage.FLIGHT;
-        startChild(legs.flight());
+        startChild(movement);
     }
 
     private void startChild(Movement movement) {
@@ -529,8 +682,10 @@ public final class TravelMovement extends Movement {
     private List<PathStep> pathTo(Vector3i destination) {
         Vector3d position = MovementSync.INSTANCE.position.get();
         Node start = new Node((int) Math.floor(position.x), StandablePositionResolver.nodeY(position.y), (int) Math.floor(position.z));
-        return new DStarLite(start, new Node(destination.x, destination.y, destination.z),
-                MovementSync.INSTANCE.getWorld()).findPath(5000);
+        DStarLite.PathResult result = new DStarLite(start, new Node(destination.x, destination.y, destination.z),
+                MovementSync.INSTANCE.getWorld()).findRoute(5000);
+        lastWalkingCost = result.complete() ? result.cost() : Double.POSITIVE_INFINITY;
+        return result.path();
     }
 
     private boolean approachTakeoff() {

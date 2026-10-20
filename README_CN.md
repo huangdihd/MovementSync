@@ -55,7 +55,7 @@
 | `container` | 显示当前容器内容 |
 | `ispassable` | 检查方块是否可通行 |
 | `lookatentity` | 通过 ID 看向实体 |
-| `goto` | 寻路至指定坐标;目标较远且有鞘翅和烟花时会自动飞过去(`goto <x> <y> <z> walk` 强制步行) |
+| `goto` | 寻路至指定坐标；比较完整步行路线与可行飞行路线的成本并选择更低者，普通落地后会重新比较（`goto <x> <y> <z> walk` 强制步行） |
 | `elytra` | 鞘翅飞行:`start`、`boost`、`status`、`fly <x> <z> [y]` |
 | `follow` | 通过 ID 跟随实体 |
 | `ride` | 骑乘实体或下车 |

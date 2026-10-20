@@ -9,7 +9,6 @@ import xin.bbtt.mcbot.LangManager;
 import xin.bbtt.pathfinding.DStarLite;
 import xin.bbtt.pathfinding.Node;
 import xin.bbtt.pathfinding.StandablePositionResolver;
-import xin.bbtt.movements.PathMovement;
 import xin.bbtt.world.World;
 
 import java.util.List;
@@ -47,7 +46,8 @@ public class GotoCommandExecutor extends TabHighlightExecutor {
             }
 
             Vector3d currentPos = MovementSync.INSTANCE.position.get();
-            Node start = new Node((int)Math.floor(currentPos.x), StandablePositionResolver.nodeY(currentPos.y), (int)Math.floor(currentPos.z));
+            Node start = new Node((int) Math.floor(currentPos.x),
+                    StandablePositionResolver.nodeY(currentPos.y), (int) Math.floor(currentPos.z));
             Node goal = new Node(tx, ty, tz);
 
             if (MovementSync.INSTANCE.getWorld().chunkLoaded(tx >> 4, tz >> 4)) {
@@ -63,43 +63,33 @@ public class GotoCommandExecutor extends TabHighlightExecutor {
             requestGeneration = MovementSync.INSTANCE.beginGotoNavigationRequest(
                     requestedGoal, args.length == 4, recovering);
 
-            boolean fly = xin.bbtt.movements.TravelMovement.shouldFly(
-                    Math.hypot(currentPos.x - (tx + 0.5), currentPos.z - (tz + 0.5)),
-                    MovementSync.INSTANCE.hasEquippedElytra(),
-                    MovementSync.INSTANCE.countHotbarFireworks() > 0,
-                    args.length == 4, MovementSync.INSTANCE.isGliding());
+            DStarLite.PathResult walkingRoute = new DStarLite(start, goal,
+                    MovementSync.INSTANCE.getWorld()).findRoute(5000);
             var flightBuilder = new xin.bbtt.flight.FlightContextBuilder().addStandard();
-            boolean pluginFlight = args.length != 4 && flightBuilder.build().modes().stream()
-                    .anyMatch(mode -> !(mode instanceof xin.bbtt.flight.VanillaGlideMode));
-            // Equipped walkers need a travel parent to receive an unexpected-fall result.
-            // The flight decision is unchanged: short/walk-only routes still pass fly=false.
-            if (fly || pluginFlight || !MovementSync.INSTANCE.onGround.get() || MovementSync.INSTANCE.hasEquippedElytra()) {
-                movementPublished = MovementSync.INSTANCE.addMovementIfNavigationRequestCurrent(
-                        requestGeneration, new xin.bbtt.movements.TravelMovement(requestedGoal, requestGeneration, fly || pluginFlight, flightBuilder));
-                return;
-            }
+            var travel = new xin.bbtt.movements.TravelMovement(requestedGoal, requestGeneration,
+                    args.length != 4, flightBuilder, walkingRoute);
 
-            DStarLite pathfinder = new DStarLite(start, goal, MovementSync.INSTANCE.getWorld());
-            List<xin.bbtt.pathfinding.PathStep> path = pathfinder.findPath(5000);
-
-            if (path.size() <= 1) {
+            if (walkingRoute.path().size() <= 1) {
                 if (start.equals(goal)) {
                     MovementSync.INSTANCE.runIfNavigationRequestCurrent(requestGeneration,
                             () -> MovementSync.INSTANCE.setActiveGoal(null));
                 }
-                MovementSync.getLogger().info(LangManager.get("movementsync.command.goto.no_path", tx, ty, tz));
-                return;
+                if (start.equals(goal) || !travel.hasFiniteFlightCandidate()) {
+                    MovementSync.getLogger().info(
+                            LangManager.get("movementsync.command.goto.no_path", tx, ty, tz));
+                    return;
+                }
             }
 
-            Node end = path.get(path.size() - 1).getNode();
-            if (!end.equals(goal)) {
-                MovementSync.getLogger().info(LangManager.get("movementsync.command.goto.partial", end.x, end.y, end.z));
+            Node end = walkingRoute.path().isEmpty() ? start
+                    : walkingRoute.path().get(walkingRoute.path().size() - 1).getNode();
+            if (!walkingRoute.complete() && !end.equals(start)) {
+                MovementSync.getLogger().info(
+                        LangManager.get("movementsync.command.goto.partial", end.x, end.y, end.z));
             }
 
             movementPublished = MovementSync.INSTANCE.addMovementIfNavigationRequestCurrent(
-                requestGeneration,
-                new PathMovement(path, -1, false, requestedGoal, -1, requestGeneration)
-            );
+                    requestGeneration, travel);
 
         } catch (NumberFormatException e) {
             MovementSync.getLogger().info(LangManager.get("movementsync.command.common.usage", command.getUsage()));

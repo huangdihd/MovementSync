@@ -137,6 +137,34 @@ class DStarLiteTest {
     }
 
     @Test
+    void routeReportsExactAccumulatedWinningEdgeCost() {
+        Node start = new Node(0, 0, 0);
+        Node expensive = new Node(1, 0, 0);
+        Node detour = new Node(0, 0, 1);
+        Node goal = new Node(2, 0, 0);
+        PathfindingContext context = new PathfindingContext() {
+            @Override public List<Edge> getEdges(Node node) {
+                if (node.equals(start)) return List.of(
+                        new Edge(expensive, 20, BuiltinMovementType.WALK),
+                        new Edge(detour, 2.5, BuiltinMovementType.JUMP));
+                if (node.equals(expensive)) return List.of(
+                        new Edge(goal, 1, BuiltinMovementType.WALK));
+                if (node.equals(detour)) return List.of(
+                        new Edge(goal, 3.25, BuiltinMovementType.FALL));
+                return List.of();
+            }
+            @Override public double getHeuristic(Node source, Node target) { return 0; }
+        };
+
+        DStarLite.PathResult route = new DStarLite(start, goal, context).findRoute(20);
+
+        assertTrue(route.complete());
+        assertEquals(List.of(start, detour, goal),
+                route.path().stream().map(PathStep::getNode).toList());
+        assertEquals(5.75, route.cost());
+    }
+
+    @Test
     void edgeTypesArePropagatedToPathSteps() {
         Node start = new Node(0, 0, 0);
         Node mid = new Node(1, 0, 0);
