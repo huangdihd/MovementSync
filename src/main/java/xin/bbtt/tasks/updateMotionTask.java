@@ -28,6 +28,7 @@ public class updateMotionTask implements Runnable {
     private static final double PLAYER_HALF_WIDTH = xin.bbtt.physics.PlayerPose.HALF_WIDTH;
     private PlayerInput lastInput = PlayerInput.NONE;
     private boolean lastSprinting;
+    private boolean deploymentDeferred;
     private int jumpCooldown;
     private xin.bbtt.physics.PlayerPose pose = xin.bbtt.physics.PlayerPose.STANDING;
 
@@ -109,19 +110,28 @@ public class updateMotionTask implements Runnable {
     @Override
     public void run() {
         if (!Bot.INSTANCE.isRunning() || !MovementSync.INSTANCE.getGotoRecovery().hasPosition()) return;
+        var session = Bot.INSTANCE.getSession();
+        if (session == null || !session.isConnected()) return;
 
         // A start request must not change flight physics or enqueue its action
         // between this tick's input snapshot and movement/tick-end packets.
         synchronized (MovementSync.INSTANCE) {
             try {
+                MovementSync.INSTANCE.beginPhysicsTickState();
                 tick();
             } catch (RuntimeException error) {
                 // scheduleAtFixedRate silently cancels a task that throws; keep ticking.
                 MovementSync.getLogger().error("Physics tick failed", error);
             } finally {
-                // Close the same atomic packet batch, including on failure.
-                sendIfConnected(
-                    org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.ServerboundClientTickEndPacket.INSTANCE);
+                MovementSync.INSTANCE.endPhysicsTickState();
+                // Close the same atomic packet batch, including on failure. A transient send
+                // failure must not escape scheduleAtFixedRate and cancel all future ticks.
+                try {
+                    sendIfConnected(
+                        org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.ServerboundClientTickEndPacket.INSTANCE);
+                } catch (RuntimeException error) {
+                    MovementSync.getLogger().warn("Client tick-end send failed", error);
+                }
             }
         }
         // Lock order is navigation lock, then MovementSync: movement threads hold the navigation
@@ -169,7 +179,12 @@ public class updateMotionTask implements Runnable {
 
         // Admit controls before observing rotation,
         // input or action packets. Embedded physics drivers share this boundary.
-        PlayerInput input = MovementSync.INSTANCE.snapshotInput();
+        boolean consumeDeferredDeployment = deploymentDeferred
+                && MovementSync.INSTANCE.hasQueuedGlideDeployment();
+        deploymentDeferred = false;
+        PlayerInput input = consumeDeferredDeployment
+                ? MovementSync.INSTANCE.snapshotDeferredDeploymentInput()
+                : MovementSync.INSTANCE.snapshotInput();
         xin.bbtt.physics.MovementParameters parameters = MovementSync.INSTANCE.getMovementParameters();
         if (input.sprint() && !parameters.canSprint()) {
             input = new PlayerInput(input.forward(), input.backward(), input.left(), input.right(),
@@ -193,9 +208,14 @@ public class updateMotionTask implements Runnable {
         java.util.List<Packet> actions = new java.util.ArrayList<>();
         java.util.List<Packet> deferredActions = new java.util.ArrayList<>();
         boolean releaseBeforeDeployment = false;
+        boolean retryDeployment = false;
         boolean deploying = false;
         Packet queuedAction;
         while ((queuedAction = MovementSync.INSTANCE.pollBeforeMovementPacket()) != null) {
+            if (retryDeployment) {
+                deferredActions.add(queuedAction);
+                continue;
+            }
             if (queuedAction instanceof ServerboundPlayerCommandPacket command
                     && command.getState() == PlayerState.START_ELYTRA_FLYING) {
                 if (lastInput.jump()) {
@@ -204,20 +224,43 @@ public class updateMotionTask implements Runnable {
                     MovementSync.INSTANCE.setGliding(false);
                     input = input.withJump(false);
                 } else {
-                    deploying = true;
-                    MovementSync.INSTANCE.setGliding(true);
-                    input = input.withJump(true);
-                    sendIfConnected(queuedAction);
+                    var dispatch = MovementSync.INSTANCE.sendBeforeMovementPacket(queuedAction, queuedAction);
+                    if (dispatch == MovementSync.BeforeMovementDispatch.SENT) {
+                        deploying = true;
+                        MovementSync.INSTANCE.setGliding(true);
+                        input = input.withJump(true);
+                    } else if (dispatch == MovementSync.BeforeMovementDispatch.RETRY) {
+                        retryDeployment = true;
+                        deferredActions.add(queuedAction);
+                    }
                 }
             } else {
                 actions.add(queuedAction);
             }
         }
-        if (releaseBeforeDeployment) {
+        if (releaseBeforeDeployment || retryDeployment) {
+            deploymentDeferred = releaseBeforeDeployment;
             deferredActions.addAll(actions);
             actions.clear();
             for (Packet action : deferredActions) MovementSync.INSTANCE.queueBeforeMovement(action);
         }
+        if (deploying) {
+            // Deployment requires its jump edge; inventory UI input must be neutral.
+            // Serialize them instead of publishing contradictory controls in one tick.
+            for (var iterator = actions.iterator(); iterator.hasNext();) {
+                Packet action = iterator.next();
+                if (action instanceof org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.inventory.ServerboundContainerClickPacket) {
+                    MovementSync.INSTANCE.queueBeforeMovement(action);
+                    iterator.remove();
+                }
+            }
+        }
+        // Inventory UI operations release movement keys, including planning's ledge
+        // sneak. Publish the release before the click and use it for this same travel
+        // step; leave the owner's request intact for the next non-inventory tick.
+        if (actions.stream().anyMatch(action -> action instanceof
+                org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.inventory.ServerboundContainerClickPacket))
+            input = PlayerInput.NONE;
         if (!input.equals(lastInput)) {
             sendIfConnected(new ServerboundPlayerInputPacket(
                     input.forward(), input.backward(), input.left(), input.right(), input.jump(), input.sneak(), input.sprint()));
@@ -230,13 +273,20 @@ public class updateMotionTask implements Runnable {
                     : PlayerState.STOP_SPRINTING));
             lastSprinting = input.sprint();
         }
-        for (Packet action : actions) {
+        for (int index = 0; index < actions.size(); index++) {
+            Packet queued = actions.get(index);
+            Packet outbound = queued;
             // Steering can change after a rocket is queued. Use the rotation of
             // the tick that actually sends it, not the request thread's snapshot.
-            if (action instanceof org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundUseItemPacket useItem) {
-                action = useItem.withYRot(tickYaw).withXRot(tickPitch);
+            if (queued instanceof org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundUseItemPacket useItem) {
+                outbound = useItem.withYRot(tickYaw).withXRot(tickPitch);
             }
-            sendIfConnected(action);
+            var dispatch = MovementSync.INSTANCE.sendBeforeMovementPacket(queued, outbound);
+            if (dispatch == MovementSync.BeforeMovementDispatch.RETRY) {
+                for (int retry = index; retry < actions.size(); retry++)
+                    MovementSync.INSTANCE.queueBeforeMovement(actions.get(retry));
+                break;
+            }
         }
         Vector3d initialVelocity = MovementSync.INSTANCE.velocity.get();
         Vector3d velocity = new Vector3d(initialVelocity);
@@ -282,8 +332,7 @@ public class updateMotionTask implements Runnable {
         MovementSync.INSTANCE.position.set(position);
         MovementSync.INSTANCE.applyPersistentGazeIfIdle();
 
-        MovementSync.INSTANCE.completePhysicsStep();
-        MovementSync.INSTANCE.recordFlightTick(new MovementSync.FlightTickTrace(
+        MovementSync.INSTANCE.completePhysicsStep(new MovementSync.FlightTickTrace(
                 new Vector3d(position), new Vector3d(velocity), result.onGround(), collidedX, collidedZ,
                 gliding, MovementSync.INSTANCE.hasAttachedFirework(), tickYaw, tickPitch, input, result.fallDistance()));
         boolean horizontalCollision = collidedX || collidedZ;

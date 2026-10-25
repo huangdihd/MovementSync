@@ -105,7 +105,10 @@ class P5SharedClimbFollowTest extends ElytraCommandTestSupport {
                 movementSync.velocity.set(next.velocity());
                 movementSync.onGround.set(next.onGround());
                 movementSync.fallDistance.set(next.fallDistance());
-                movementSync.completePhysicsStep();
+                movementSync.completePhysicsStep(new xin.bbtt.MovementSync.FlightTickTrace(
+                        next.position(), next.velocity(), next.onGround(), next.collidedX(), next.collidedZ(),
+                        gliding, movementSync.hasAttachedFirework(), movementSync.yaw.get(), movementSync.pitch.get(),
+                        input, next.fallDistance()));
                 if (rocketTicks > 0 && --rocketTicks == 0) world.getEntities().remove(9001);
             }
             assertTrue(climbed);

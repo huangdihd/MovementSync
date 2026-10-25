@@ -5,6 +5,9 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.util.List;
 import org.joml.Vector3d;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+import xin.bbtt.Block.BlockStateParser;
 import xin.bbtt.world.World;
 
 final class EnvironmentalTraversalTest {
@@ -24,6 +27,59 @@ final class EnvironmentalTraversalTest {
         assertTrue(EnvironmentalTraversal.position(waterWorld(102), new Node(0, 1, 0)).isEmpty());
         assertTrue(EnvironmentalTraversal.position(waterWorld(86), new Node(0, 0, 0)).isEmpty());
         assertTrue(new EnvironmentalStrategy().findEdges(new Node(0, 1, 0), waterWorld(102)).isEmpty());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"kelp", "kelp_plant", "seagrass", "tall_seagrass"})
+    void aquaticPlantsAllowVerticalRecoveryToOpenWater(String name) {
+        World world = waterWorld(stateId(name));
+        Node submerged = new Node(0, -3, 0);
+        Vector3d center = new Vector3d(0.5, -3, 0.5);
+        assertTrue(EnvironmentalTraversal.inWater(world, center));
+        assertTrue(EnvironmentalTraversal.position(world, submerged).isEmpty());
+        assertAll(
+                () -> assertEquals(center, EnvironmentalTraversal.recoveryPosition(world, submerged).orElseThrow()),
+                () -> assertEquals(center, EnvironmentalTraversal.destination(world, submerged).orElseThrow()),
+                () -> assertEquals(1 - 1.0 / 9 - 0.25,
+                        EnvironmentalTraversal.position(world, new Node(0, 1, 0)).orElseThrow().y, 1.0e-9));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"kelp", "kelp_plant", "seagrass", "tall_seagrass"})
+    void aquaticPlantRecoveryOffersOnlyUpwardSwimEdge(String name) {
+        World world = waterWorld(stateId(name));
+        List<Edge> edges = new EnvironmentalStrategy().findEdges(new Node(0, -3, 0), world);
+        assertEquals(1, edges.size());
+        assertTrue(hasEdge(edges, new Node(0, -2, 0), BuiltinMovementType.SWIM));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"kelp", "kelp_plant", "seagrass", "tall_seagrass"})
+    void ceilingAboveAquaticPlantsBlocksRecovery(String name) {
+        int plant = stateId(name);
+        int stone = stateId("stone");
+        World world = new World() {
+            @Override public boolean chunkLoaded(int x, int z) { return true; }
+            @Override public int getBlockAt(Vector3d position) {
+                if (position.y >= 1 && position.y < 2) return stone;
+                return position.y < 1 && position.y >= -5 ? plant : 0;
+            }
+        };
+        Node submerged = new Node(0, -3, 0);
+        assertTrue(EnvironmentalTraversal.inWater(world, new Vector3d(0.5, -3, 0.5)));
+        assertTrue(EnvironmentalTraversal.recoveryPosition(world, submerged).isEmpty());
+        assertTrue(EnvironmentalTraversal.position(world, new Node(0, 1, 0)).isEmpty());
+        assertTrue(new EnvironmentalStrategy().findEdges(submerged, world).isEmpty());
+    }
+
+    @Test
+    void waterloggedSolidCannotBecomeRecoveryOrSurfaceDestination() {
+        World world = waterWorld(stateId("oak_slab", "waterlogged", "true", "type", "top"));
+        Node submerged = new Node(0, -3, 0);
+        assertTrue(EnvironmentalTraversal.inWater(world, new Vector3d(0.5, -3, 0.5)));
+        assertTrue(EnvironmentalTraversal.recoveryPosition(world, submerged).isEmpty());
+        assertTrue(EnvironmentalTraversal.position(world, new Node(0, 1, 0)).isEmpty());
+        assertTrue(new EnvironmentalStrategy().findEdges(submerged, world).isEmpty());
     }
 
     @Test
@@ -100,6 +156,19 @@ final class EnvironmentalTraversalTest {
         assertEquals(goal, path.get(path.size() - 1).getNode());
         assertTrue(path.stream().anyMatch(step -> step.getType() == BuiltinMovementType.SWIM));
         assertFalse(path.stream().anyMatch(step -> step.getType() == BuiltinMovementType.BRIDGE));
+    }
+
+    private static int stateId(String name, String... properties) {
+        for (int id = 0; id < BlockStateParser.getBlockStateRegistrySize(); id++) {
+            var state = BlockStateParser.Instance.parseStateId(id);
+            if (!state.blockName().equals(name)) continue;
+            boolean matches = true;
+            for (int index = 0; index < properties.length; index += 2) {
+                matches &= properties[index + 1].equals(state.getProperty(properties[index]));
+            }
+            if (matches) return id;
+        }
+        throw new AssertionError("Unknown state " + name);
     }
 
     private static boolean hasEdge(List<Edge> edges, Node target, BuiltinMovementType type) {

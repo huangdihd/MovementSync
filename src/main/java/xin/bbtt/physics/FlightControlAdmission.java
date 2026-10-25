@@ -34,10 +34,14 @@ public final class FlightControlAdmission {
     }
     public record Envelope(Object owner, Source source, List<Step> steps,
                            WaypointFlightTarget corridor, Runnable accepted, List<Step> recovery,
-                           ReturnWitness witness) {
+                           ReturnWitness witness, boolean requireAirborne) {
+        public Envelope(Object owner, Source source, List<Step> steps, WaypointFlightTarget corridor,
+                Runnable accepted, List<Step> recovery, ReturnWitness witness) {
+            this(owner, source, steps, corridor, accepted, recovery, witness, false);
+        }
         public Envelope(Object owner, Source source, List<Step> steps, WaypointFlightTarget corridor,
                 Runnable accepted, List<Step> recovery) {
-            this(owner, source, steps, corridor, accepted, recovery, null);
+            this(owner, source, steps, corridor, accepted, recovery, null, false);
         }
         public Envelope { steps = List.copyOf(steps); recovery = List.copyOf(recovery); }
     }
@@ -58,34 +62,66 @@ public final class FlightControlAdmission {
     private long lastReturnActionTick = Long.MIN_VALUE;
     private Source emergencySource;
     private float emergencyYaw;
+    private WaypointFlightTarget emergencyCorridor;
 
     /** Copy the solver's exact executable prefix and fixed reserve; never search for a terminal. */
     public static Envelope createPrefix(Object owner, Source source, List<Step> prefix,
             List<Step> recovery, WaypointFlightTarget route, Runnable accepted) {
-        var corridor = route == null ? null : new WaypointFlightTarget(route.waypoints(), route.goal(),
-                route.landed(), route.partial(), route.corridorRadius());
+        return createPrefix(owner, source, prefix, recovery, route, accepted, false);
+    }
+
+    /** Moving pursuit prefixes must remain airborne when replayed from a newer live state. */
+    public static Envelope createPrefix(Object owner, Source source, List<Step> prefix,
+            List<Step> recovery, WaypointFlightTarget route, Runnable accepted,
+            boolean requireAirborne) {
+        var corridor = route == null ? null : route.corridorSnapshot();
         if (recovery.stream().anyMatch(step -> step.control().firework()))
             throw new IllegalArgumentException("Fixed recovery cannot request rockets");
         if (!prefix.isEmpty() && recovery.stream().anyMatch(step -> step.control().pitch() > 0
                 || Math.cos(Math.toRadians(step.control().yaw() - prefix.get(0).control().yaw())) <= 0))
             recovery = List.of(); // A targetless reserve is not permission for reverse descent.
-        return new Envelope(owner, source, prefix, corridor, accepted, recovery);
+        return new Envelope(owner, source, prefix, corridor, accepted, recovery, null, requireAirborne);
     }
 
     /** Caller holds sync. Invalid/stale publication never displaces the active prefix. */
     public boolean publishPrefix(MovementSync sync, Object publisher, Source source, List<Step> prefix,
             List<Step> recovery, WaypointFlightTarget route, Runnable accepted) {
-        if (mode != Mode.LOCAL_SOLVER || owner != publisher || !currentSource(sync, source)) return false;
-        submit(createPrefix(publisher, source, prefix, recovery, route, accepted));
+        return publishPrefix(sync, publisher, source, prefix, recovery, route, accepted, false);
+    }
+
+    /** Caller holds sync. Invalid/stale publication never displaces the active prefix. */
+    public boolean publishPrefix(MovementSync sync, Object publisher, Source source, List<Step> prefix,
+            List<Step> recovery, WaypointFlightTarget route, Runnable accepted,
+            boolean requireAirborne) {
+        if (mode != Mode.LOCAL_SOLVER || owner != publisher || !currentSource(sync, source)
+                || emergencySource != null && emergencySource != source) return false;
+        submit(createPrefix(publisher, source, prefix, recovery, route, accepted, requireAirborne));
         return true;
     }
 
-    /** Caller holds sync. Forward is supplied by the route, never inferred by targetless search. */
-    public boolean registerForwardEmergency(MovementSync sync, Object publisher, Source source, float yaw) {
+    public boolean registerForwardEmergency(MovementSync sync, Object publisher, Source source,
+            float yaw) {
+        return registerForwardEmergency(sync, publisher, source, yaw, null);
+    }
+
+    /** Caller holds sync. Heading and corridor are one immutable physical checkpoint. */
+    public boolean registerForwardEmergency(MovementSync sync, Object publisher, Source source,
+            float yaw, WaypointFlightTarget route) {
         if (mode != Mode.LOCAL_SOLVER || owner != publisher || !currentSource(sync, source)
                 || !Float.isFinite(yaw)
                 || emergencySource != null && source.tick() < emergencySource.tick()) return false;
         emergencySource = source;
+        emergencyYaw = yaw;
+        emergencyCorridor = route == null ? null : route.corridorSnapshot();
+        return true;
+    }
+
+    /** A worker may refine only the exact checkpoint that launched it. */
+    public boolean refineForwardEmergency(MovementSync sync, Object publisher, Source source,
+            float yaw, WaypointFlightTarget route) {
+        if (mode != Mode.LOCAL_SOLVER || owner != publisher || !currentSource(sync, source)
+                || !Float.isFinite(yaw) || emergencySource != source || emergencyCorridor == null
+                || route == null || !emergencyCorridor.sameCorridor(route)) return false;
         emergencyYaw = yaw;
         return true;
     }
@@ -119,8 +155,7 @@ public final class FlightControlAdmission {
     /** Immutable controls and corridor copy; no planner references cross into the physics monitor. */
     public static Envelope prepare(MovementSync sync, Object owner, Source source,
             ElytraFlightController.Decision selected, WaypointFlightTarget route, Runnable accepted) {
-        var corridor = route == null ? null : new WaypointFlightTarget(route.waypoints(), route.goal(),
-                route.landed(), route.partial(), route.corridorRadius());
+        var corridor = route == null ? null : route.corridorSnapshot();
         var steps = new ArrayList<Step>();
         var state = source.state();
         var parameters = sync.getMovementParameters();
@@ -203,16 +238,35 @@ public final class FlightControlAdmission {
             mode = null;
         }
     }
-    public void clear() { pending = null; active = null; batch = null; owner = null; mode = null; emergencySource = null; epoch++; }
+    public void clear() { pending = null; active = null; batch = null; owner = null; mode = null; emergencySource = null; emergencyCorridor = null; epoch++; }
+
+    /** Terminal failure or an explicit landing handoff ends this physical fallback episode. */
+    public void retireFallback(MovementSync sync) {
+        if (fallbackActive) {
+            sync.yaw.set(fallbackPriorYaw);
+            sync.pitch.set(fallbackPriorPitch);
+        }
+        fallbackAnchor = null;
+        fallbackTicks = 0;
+        fallbackRecoveryTicks = 0;
+        fallbackRecoveryPhysicsTick = Long.MIN_VALUE;
+        fallbackAttitudePending = false;
+        fallbackRequested = false;
+        fallbackActive = false;
+        if (failure != null && failure.responsibleOwner().equals("physics hazard owner")) failure = null;
+    }
 
     /** Called under MovementSync only. Never takes navigation/controller locks or invokes search. */
     public void consume(MovementSync sync) {
         appliedThisTick = false;
-        try { consumeOwned(sync); }
-        finally {
-            if (!appliedThisTick) hardFallback(sync);
-            else releaseFallback(sync, "admitted-owner", Double.NaN);
+        // Once a checked low/slow rescue owns the body, do not first accept a prefix
+        // (or its action callback) that this same boundary would immediately suppress.
+        if (fallbackActive) {
+            hardFallback(sync);
+            if (fallbackActive) return;
         }
+        try { consumeOwned(sync); }
+        finally { if (!appliedThisTick) hardFallback(sync); }
     }
 
     private boolean appliedThisTick;
@@ -223,8 +277,9 @@ public final class FlightControlAdmission {
             return;
         }
         if (pending != null && pending.witness() != null) {
-            // Retire the outward emergency heading together with its old local prefix.
+            // Retire the outward emergency heading together with its old return episode.
             emergencySource = null;
+            emergencyCorridor = null;
             var candidate = pending;
             pending = null;
             candidate = rebaseReturn(sync, candidate);
@@ -283,8 +338,8 @@ public final class FlightControlAdmission {
                     sync.acceptFlightAction(candidate.accepted());
             } else if (fresh && active == null && candidate.source().generation() == sync.getNavigationGeneration()
                     && age >= 0 && age <= 8 && !candidate.recovery().isEmpty()) {
-                var reserve = new Envelope(candidate.owner(), candidate.source(), candidate.recovery(), null,
-                        () -> {}, List.of());
+                var reserve = new Envelope(candidate.owner(), candidate.source(), candidate.recovery(),
+                        candidate.corridor(), () -> {}, List.of(), null, candidate.requireAirborne());
                 if (revalidate(sync, reserve, 0)) {
                     active = reserve;
                     traceActivation++;
@@ -312,8 +367,8 @@ public final class FlightControlAdmission {
             // Never silently keep an expired navigation command. Normal airborne recovery
             // owns the next planning tick; do not fabricate touchdown or disable gliding.
             if (!recovering && !active.recovery().isEmpty()) {
-                var reserve = new Envelope(active.owner(), active.source(), active.recovery(), null,
-                        () -> {}, List.of());
+                var reserve = new Envelope(active.owner(), active.source(), active.recovery(),
+                        active.corridor(), () -> {}, List.of(), null, active.requireAirborne());
                 if (revalidate(sync, reserve, 0)) {
                     active = reserve;
                     traceActivation++;
@@ -343,10 +398,19 @@ public final class FlightControlAdmission {
     // An owner/epoch handoff is not physical progress and must not replenish this budget.
     private org.joml.Vector3d fallbackAnchor;
     private int fallbackTicks;
+    private int fallbackRecoveryTicks;
+    private long fallbackRecoveryPhysicsTick = Long.MIN_VALUE;
+    private boolean fallbackAttitudePending;
+    private float fallbackYaw;
     private boolean fallbackRequested;
     private boolean fallbackActive;
+    private float fallbackPriorYaw;
+    private float fallbackPriorPitch;
 
     private void releaseFallback(MovementSync sync, String reason, double height) {
+        fallbackRecoveryTicks = 0;
+        fallbackRecoveryPhysicsTick = Long.MIN_VALUE;
+        fallbackAttitudePending = false;
         if (!fallbackActive) return;
         MovementSync.getLogger().info("Flight fallback release: reason={} pos={} height={} owner={}",
                 reason, sync.position.get(), height, owner == null ? "none" : owner.getClass().getName());
@@ -355,6 +419,11 @@ public final class FlightControlAdmission {
     }
 
     private void hardFallback(MovementSync sync) {
+        if (sync.requiresNaturalDescent()) {
+            releaseFallback(sync, "terminal-navigation-failure", Double.NaN);
+            fallbackAnchor = null;
+            return;
+        }
         if (!sync.isGliding() || sync.onGround.get()) {
             releaseFallback(sync, "not-airborne", Double.NaN);
             fallbackAnchor = null;
@@ -362,21 +431,57 @@ public final class FlightControlAdmission {
         }
         // Movement-owned DIRECT/TRANSITION controls include independent landing, which
         // does not necessarily publish an envelope on every motion tick.
-        if (owner instanceof xin.bbtt.movements.ElytraFlyMovement && mode != Mode.LOCAL_SOLVER) {
+        if (owner instanceof xin.bbtt.movements.ElytraFlyMovement movement
+                && movement.ownsIndependentLandingControl()) {
             releaseFallback(sync, "movement-landing-owner", Double.NaN);
+            return;
+        }
+        if (mode == Mode.LOCAL_SOLVER && emergencySource != null
+                && emergencySource.epoch() == epoch
+                && emergencySource.generation() == sync.getNavigationGeneration()
+                && sync.hasAttachedFirework() && failure != null
+                && failure.reason().startsWith("UNPROVEN_EMERGENCY")) {
+            // A rejected powered route may not be replaced by an unrelated climb
+            // heading merely because the generic low/slow sweep has a shorter horizon.
+            releaseFallback(sync, "registered-powered-emergency-unproven", Double.NaN);
             return;
         }
         var state = snapshot(sync).state();
         var velocity = state.velocity();
-        double height = fallbackHazardHeight(sync, state);
-        if (!state.position().isFinite() || !velocity.isFinite()
-                || !Float.isFinite(sync.yaw.get())
-                // An already attached, rising boost has recovered; do not retain emergency ownership.
-                || (sync.hasAttachedFirework() && velocity.y > .05)
-                || (velocity.y > .05 && Math.hypot(velocity.x, velocity.z) >= .8)
-                || !Double.isFinite(height)) {
-            releaseFallback(sync, "outside-low-slow-hazard-band", height);
+        if (!state.position().isFinite() || !velocity.isFinite() || !Float.isFinite(sync.yaw.get())) {
+            releaseFallback(sync, "invalid-physical-state", Double.NaN);
             return;
+        }
+        var hazard = fallbackHazard(sync, state);
+        if (hazard.status() == Observation.UNKNOWN) {
+            fallbackRecoveryTicks = 0;
+            fallbackRecoveryPhysicsTick = Long.MIN_VALUE;
+            holdFallbackAttitude(sync, Double.NaN);
+            return;
+        }
+        if (hazard.status() == Observation.CLEAR) {
+            releaseFallback(sync, "outside-low-slow-hazard-band", Double.NaN);
+            return;
+        }
+        double height = hazard.height();
+        boolean recoveringNow = sync.hasAttachedFirework() && velocity.y > .05
+                || velocity.y > .05 && Math.hypot(velocity.x, velocity.z) >= .8;
+        if (recoveringNow) {
+            // Count committed physical samples, not repeated calls to the shared input boundary.
+            long physicalTick = sync.physicsTickVersion();
+            if (!fallbackActive) return;
+            if (fallbackRecoveryPhysicsTick != physicalTick) {
+                if (fallbackRecoveryPhysicsTick != Long.MIN_VALUE
+                        && physicalTick != fallbackRecoveryPhysicsTick + 1) fallbackRecoveryTicks = 0;
+                fallbackRecoveryPhysicsTick = physicalTick;
+                if (++fallbackRecoveryTicks >= 4) {
+                    releaseFallback(sync, "sustained-recovery", height);
+                    return;
+                }
+            }
+        } else {
+            fallbackRecoveryTicks = 0;
+            fallbackRecoveryPhysicsTick = Long.MIN_VALUE;
         }
         var position = state.position();
         // Corrections, including alternating distant points, are not proven progress.
@@ -384,52 +489,97 @@ public final class FlightControlAdmission {
         if (fallbackAnchor == null) {
             fallbackAnchor = position;
             fallbackTicks = 0;
+            fallbackYaw = sync.yaw.get();
             fallbackRequested = false;
+            fallbackAttitudePending = false;
         }
         if (fallbackTicks >= 24) {
             releaseFallback(sync, "stationary-episode-budget", height);
             return;
         }
-        float yaw = sync.yaw.get();
+        float yaw = fallbackYaw;
         float pitch = -55f;
-        boolean[] checked = {false, false};
+        SweepStatus[] checked = {SweepStatus.BLOCKED, SweepStatus.BLOCKED};
         sync.getWorld().readTerrain(() -> {
-            checked[0] = fallbackSweep(sync, state, yaw, pitch, sync.hasAttachedFirework());
-            checked[1] = checked[0] && fallbackSweep(sync, state, yaw, pitch, true);
-            return checked[0];
+            // Metadata may expire or arrive after this physical snapshot. Both futures
+            // must be safe before fallback may steer or request another rocket.
+            checked[0] = fallbackSweep(sync, state, yaw, pitch, false);
+            checked[1] = checked[0] == SweepStatus.SAFE
+                    ? fallbackSweep(sync, state, yaw, pitch, true) : checked[0];
+            return checked[0] == SweepStatus.SAFE;
         });
-        if (!checked[0]) {
+        if (checked[0] == SweepStatus.UNKNOWN) {
+            fallbackRecoveryTicks = 0;
+            fallbackRecoveryPhysicsTick = Long.MIN_VALUE;
+            holdFallbackAttitude(sync, height);
+            return;
+        }
+        if (checked[0] == SweepStatus.BLOCKED) {
             releaseFallback(sync, "blocked-climb-sweep", height);
             return;
         }
-        if (!fallbackActive) MovementSync.getLogger().info(
-                "Flight fallback takeover: reason=low-slow-hazard pos={} height={} owner={}",
-                position, height, owner == null ? "none" : owner.getClass().getName());
+        if (!fallbackActive) {
+            MovementSync.getLogger().info(
+                    "Flight fallback takeover: reason=low-slow-hazard pos={} height={} owner={}",
+                    position, height, owner == null ? "none" : owner.getClass().getName());
+            fallbackPriorYaw = sync.yaw.get();
+            fallbackPriorPitch = sync.pitch.get();
+        }
         fallbackActive = true;
-        fallbackTicks++;
+        countFallbackAttitudeTick(sync);
         failure = new Failure(sync.physicsTickVersion(), sync.getNavigationGeneration(), epoch,
                 "HARD_FALLBACK: bounded checked hazard climb", "physics hazard owner");
         sync.setYawToward(yaw);
         sync.pitch.set(pitch);
-        if (checked[1] && !fallbackRequested && !sync.hasAttachedFirework() && sync.fireworkRequestReady()
+        if (checked[1] == SweepStatus.SAFE && !fallbackRequested && !sync.hasAttachedFirework() && sync.fireworkRequestReady()
                 && sync.countHotbarFireworks() > 0) {
             fallbackRequested = true;
             sync.acceptFlightAction(() -> sync.useFirework());
         }
     }
 
+    private void holdFallbackAttitude(MovementSync sync, double height) {
+        if (!fallbackActive) return;
+        if (fallbackTicks >= 24) {
+            releaseFallback(sync, "stationary-episode-budget", height);
+            return;
+        }
+        sync.setYawToward(fallbackYaw);
+        sync.pitch.set(-55f);
+        countFallbackAttitudeTick(sync);
+    }
+
+    private void countFallbackAttitudeTick(MovementSync sync) {
+        fallbackAttitudePending = true;
+    }
+
+    /** Count only an attitude that actually reached a committed physics result. */
+    public void completePhysicsStep() {
+        if (!fallbackAttitudePending) return;
+        fallbackAttitudePending = false;
+        fallbackTicks++;
+    }
+
     /** Only a nearby known hazardous surface (or the void boundary) is an emergency.
      * A distant hot column and accumulated fall distance are not climb permissions.
      */
-    private static double fallbackHazardHeight(MovementSync sync, PhysicsState state) {
+    private enum Observation { HAZARD, CLEAR, UNKNOWN }
+    private record HazardObservation(Observation status, double height) {}
+    private enum SweepStatus { SAFE, BLOCKED, UNKNOWN }
+
+    private static HazardObservation fallbackHazard(MovementSync sync, PhysicsState state) {
         var world = sync.getWorld();
         var feet = state.position();
         final double[] height = {Double.NaN};
+        final boolean[] known = {true};
         world.readTerrain(() -> {
             double radius = PlayerPose.HALF_WIDTH;
             for (int x = (int) Math.floor(feet.x - radius); x <= Math.floor(feet.x + radius); x++) {
                 for (int z = (int) Math.floor(feet.z - radius); z <= Math.floor(feet.z + radius); z++) {
-                    if (!world.chunkLoaded(x >> 4, z >> 4)) { height[0] = Double.NaN; return false; }
+                    if (!world.chunkLoaded(x >> 4, z >> 4)) {
+                        known[0] = false;
+                        return false;
+                    }
                     boolean supported = false;
                     for (int y = (int) Math.floor(feet.y); y >= Math.max(
                             xin.bbtt.world.World.getMinWorldY(), (int) Math.ceil(feet.y - 12)); y--) {
@@ -447,11 +597,19 @@ public final class FlightControlAdmission {
             }
             return true;
         });
-        return height[0];
+        if (!known[0]) return new HazardObservation(Observation.UNKNOWN, Double.NaN);
+        return Double.isFinite(height[0])
+                ? new HazardObservation(Observation.HAZARD, height[0])
+                : new HazardObservation(Observation.CLEAR, Double.NaN);
     }
 
-    private static boolean fallbackSweep(MovementSync sync, PhysicsState state,
+    private static SweepStatus fallbackSweep(MovementSync sync, PhysicsState state,
             float yaw, float pitch, boolean powered) {
+        return fallbackSweep(sync, state, yaw, pitch, powered, null);
+    }
+
+    private static SweepStatus fallbackSweep(MovementSync sync, PhysicsState state,
+            float yaw, float pitch, boolean powered, WaypointFlightTarget corridor) {
         // Six unpowered delay ticks and twelve powered ticks, no terminal search.
         for (int i = 0; i < (powered ? 12 : 6); i++) {
             var next = new GlidingPhysics(yaw, pitch, powered, PlayerInput.NONE,
@@ -461,11 +619,17 @@ public final class FlightControlAdmission {
             var travel = powered ? new GlidingPhysics(yaw, pitch, false, PlayerInput.NONE,
                     sync.getMovementParameters()).step(sync.getWorld(), state,
                             PlayerPose.HALF_WIDTH, PlayerPose.GLIDING.height()) : next;
-            if (!FlightSafety.knownStep(sync.getWorld(), state, next)
-                    || next.onGround() || travel.velocity().y == 0 || !safe(sync, state, next, null)) return false;
+            if (!FlightSafety.knownStep(sync.getWorld(), state, next)) {
+                var position = next.position();
+                return position.y < xin.bbtt.world.World.getMinWorldY()
+                        || position.y + PlayerPose.GLIDING.height() > xin.bbtt.world.World.getMaxWorldY()
+                        ? SweepStatus.BLOCKED : SweepStatus.UNKNOWN;
+            }
+            if (next.onGround() || travel.velocity().y == 0 || !safe(sync, state, next, corridor))
+                return SweepStatus.BLOCKED;
             state = new PhysicsState(next.position(), next.velocity(), next.onGround(), next.fallDistance(), next.pose());
         }
-        return true;
+        return SweepStatus.SAFE;
     }
 
     private Envelope rebaseReturn(MovementSync sync, Envelope candidate) {
@@ -524,15 +688,20 @@ public final class FlightControlAdmission {
                 owner == null ? "legacy movement planner" : owner.getClass().getName());
         active = null;
         batch = null;
-        if (mode == Mode.LOCAL_SOLVER && emergencySource != null
+        if (mode == Mode.LOCAL_SOLVER && emergencySource != null && emergencyCorridor != null
                 && emergencySource.epoch() == epoch
                 && emergencySource.generation() == sync.getNavigationGeneration()) {
             // Registration is not permission to override normal descent or climb
             // through a roof. Legacy shallow recovery needs an actual safe sweep.
             var state = snapshot(sync).state();
             boolean checked = sync.getWorld().readTerrain(() ->
-                    (state.fallDistance() <= 1 || Double.isFinite(fallbackHazardHeight(sync, state)))
-                    && fallbackSweep(sync, state, emergencyYaw, -20f, sync.hasAttachedFirework()));
+                    (state.fallDistance() <= 1
+                        || fallbackHazard(sync, state).status() == Observation.HAZARD)
+                    // Attachment may begin or end after this snapshot; both futures must be safe.
+                    && fallbackSweep(sync, state, emergencyYaw, -20f,
+                            false, emergencyCorridor) == SweepStatus.SAFE
+                    && fallbackSweep(sync, state, emergencyYaw, -20f,
+                            true, emergencyCorridor) == SweepStatus.SAFE);
             if (checked) {
                 sync.setYawToward(emergencyYaw);
                 sync.pitch.set(-20f);
@@ -548,7 +717,8 @@ public final class FlightControlAdmission {
             var control = envelope.steps().get(i).control();
             var result = new GlidingPhysics(control.yaw(), control.pitch(), true, PlayerInput.NONE,
                     sync.getMovementParameters()).step(sync.getWorld(), state, PlayerPose.HALF_WIDTH, PlayerPose.GLIDING.height());
-            if (!safeTravel(sync, state, result, control, i < 6 ? envelope.corridor() : null)) return false;
+            if (result.onGround() || !safeTravel(sync, state, result, control, envelope.corridor(),
+                    envelope.requireAirborne())) return false;
             state = new PhysicsState(result.position(), result.velocity(), result.onGround(), result.fallDistance(), result.pose());
         }
         return true;
@@ -563,7 +733,8 @@ public final class FlightControlAdmission {
             var result = new GlidingPhysics(control.yaw(), control.pitch(), sync.hasAttachedFirework(),
                     PlayerInput.NONE, sync.getMovementParameters()).step(sync.getWorld(), state,
                     PlayerPose.HALF_WIDTH, PlayerPose.GLIDING.height());
-            if (!safeTravel(sync, state, result, control, i < 6 ? envelope.corridor() : null)) return false;
+            if (!safeTravel(sync, state, result, control, envelope.corridor(),
+                    envelope.requireAirborne())) return false;
             state = new PhysicsState(result.position(), result.velocity(), result.onGround(), result.fallDistance(), result.pose());
             if (result.onGround()) break;
         }
@@ -574,14 +745,14 @@ public final class FlightControlAdmission {
         if (mode == Mode.LOCAL_SOLVER
                 && envelope.steps().get(index).control().phase() == ElytraFlightController.Phase.LANDING
                 && !state.onGround() && state.fallDistance() > 1
-                && !checkedLanding(sync, state, envelope.steps().get(index).control())) {
+                && !checkedLanding(sync, state, envelope.steps().get(index).control(), envelope.corridor())) {
             float yaw = envelope.steps().get(index).control().yaw();
             for (int i = 0; i < 6; i++) {
                 var result = new GlidingPhysics(yaw, -55f, sync.hasAttachedFirework(),
                         PlayerInput.NONE, sync.getMovementParameters()).step(sync.getWorld(), state,
                                 PlayerPose.HALF_WIDTH, PlayerPose.GLIDING.height());
                 if (result.fallDistance() >= sync.getMovementParameters().safeFallDistance()
-                        || !safe(sync, state, result, null)) return false;
+                        || !safe(sync, state, result, envelope.corridor())) return false;
                 state = new PhysicsState(result.position(), result.velocity(), result.onGround(),
                         result.fallDistance(), result.pose());
                 if (result.onGround()) break;
@@ -594,7 +765,7 @@ public final class FlightControlAdmission {
      * A phase label or solid column alone is not a completion proof.
      */
     private static boolean checkedLanding(MovementSync sync, PhysicsState state,
-            ElytraFlightController.Decision control) {
+            ElytraFlightController.Decision control, WaypointFlightTarget route) {
         if (control.phase() != ElytraFlightController.Phase.LANDING || control.firework()
                 || sync.hasAttachedFirework()) return false;
         for (int i = 0; i < 80; i++) {
@@ -602,8 +773,11 @@ public final class FlightControlAdmission {
                     sync.getMovementParameters()).step(sync.getWorld(), state,
                             PlayerPose.HALF_WIDTH, PlayerPose.GLIDING.height());
             if (!FlightSafety.knownStep(sync.getWorld(), state, next)
-                    || !safe(sync, state, next, null)) return false;
-            if (next.onGround()) return FlightHazards.safeLanding(sync.getWorld(), next.position())
+                    || !safe(sync, state, next, route)) return false;
+            if (next.onGround()) return (route == null
+                        ? FlightHazards.safeLanding(sync.getWorld(), next.position())
+                        : route.acceptsLanding(sync.getWorld(), new PhysicsState(next.position(), next.velocity(), true,
+                                next.fallDistance(), next.pose())))
                     && new FlightSafety(sync.getMovementParameters(), DamageParameters.NONE, 20)
                             .collisionDamage(sync.getWorld(), state, next, control.yaw(), control.pitch(), false).raw() == 0;
             state = new PhysicsState(next.position(), next.velocity(), false, next.fallDistance(), next.pose());
@@ -613,7 +787,11 @@ public final class FlightControlAdmission {
 
     /** Inspect pre-thrust travel from the same state: thrust can hide a ceiling-clipped Y. */
     private static boolean safeTravel(MovementSync sync, PhysicsState before, PhysicsResult after,
-            ElytraFlightController.Decision control, WaypointFlightTarget corridor) {
+            ElytraFlightController.Decision control, WaypointFlightTarget corridor,
+            boolean requireAirborne) {
+        if (requireAirborne && (before.onGround() || after.onGround())) return false;
+        if (after.onGround() && (sync.hasAttachedFirework() || corridor != null
+                && !corridor.acceptsLanding(sync.getWorld(), FlightSafety.nextState(after)))) return false;
         if (before.velocity().y > .003 && !after.onGround()) {
             var travel = new GlidingPhysics(control.yaw(), control.pitch(), false, PlayerInput.NONE,
                     sync.getMovementParameters()).step(sync.getWorld(), before,

@@ -15,6 +15,7 @@ import xin.bbtt.world.World;
 public final class LocalClimbHandoff {
     public enum Phase { DEPLOYMENT, LOCAL_CLIMB, CRUISE }
     public static final int STABLE_TICKS = 10;
+    private static final double PHYSICAL_CLIMB_CORRIDOR = 4;
     private Phase phase = Phase.DEPLOYMENT;
     private long lastTick = Long.MIN_VALUE;
     private int stableTicks;
@@ -22,6 +23,13 @@ public final class LocalClimbHandoff {
 
     public Phase phase() { return phase; }
     public int stableTicks() { return stableTicks; }
+
+    /** An authoritative state discontinuity must prove clearance again at the new position. */
+    public void resetClearance() {
+        if (phase != Phase.LOCAL_CLIMB) return;
+        lastTick = Long.MIN_VALUE;
+        stableTicks = 0;
+    }
 
     /** An already-gliding leg is not a fresh deployment; preserve existing cruise. */
     public void inheritAirborne() { phase = Phase.CRUISE; }
@@ -34,6 +42,11 @@ public final class LocalClimbHandoff {
 
     /** Ten consecutive, distinct physical observations; duplicate calls never add time. */
     public boolean observe(long tick, boolean clear) {
+        return observe(tick, clear, true);
+    }
+
+    /** Replay accumulates evidence, but only its current boundary may commit ownership. */
+    public boolean observe(long tick, boolean clear, boolean handoffBoundary) {
         if (phase != Phase.LOCAL_CLIMB) return phase == Phase.CRUISE;
         if (tick == lastTick) {
             if (!clear) stableTicks = 0;
@@ -42,7 +55,7 @@ public final class LocalClimbHandoff {
         if (lastTick == Long.MIN_VALUE || tick != lastTick + 1) stableTicks = 0;
         lastTick = tick;
         stableTicks = clear ? stableTicks + 1 : 0;
-        if (stableTicks >= STABLE_TICKS) phase = Phase.CRUISE;
+        if (handoffBoundary && stableTicks >= STABLE_TICKS) phase = Phase.CRUISE;
         return phase == Phase.CRUISE;
     }
 
@@ -56,7 +69,8 @@ public final class LocalClimbHandoff {
         Vector3d end = new Vector3d(p).add(direction);
         end.y = Math.min(World.getMaxWorldY() - PlayerPose.GLIDING.height() - 2,
                 Math.max(departureY + 16, p.y + 8));
-        return new WaypointFlightTarget(List.of(p, end), end, false);
+        return new WaypointFlightTarget(List.of(p, end), end, false, false,
+                PHYSICAL_CLIMB_CORRIDOR);
     }
 
     /** Height is relative to local collision terrain/departure, never a fixed goal Y.

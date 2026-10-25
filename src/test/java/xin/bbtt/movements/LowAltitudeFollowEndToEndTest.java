@@ -28,7 +28,6 @@ import xin.bbtt.ElytraCommandTestSupport;
 import xin.bbtt.MovementSync;
 import xin.bbtt.listeners.EntityPacketListener;
 import xin.bbtt.listeners.RegistryDataListener;
-import xin.bbtt.mcbot.Bot;
 import xin.bbtt.mcbot.events.ReceivePacketEvent;
 import xin.bbtt.physics.GlidingPhysics;
 import xin.bbtt.physics.PhysicsResult;
@@ -147,7 +146,8 @@ final class LowAltitudeFollowEndToEndTest extends ElytraCommandTestSupport {
                 var input = movementSync.snapshotInput();
                 var packet = movementSync.pollBeforeMovementPacket();
                 while (packet != null) {
-                    Bot.INSTANCE.getSession().send(packet);
+                    assertEquals(MovementSync.BeforeMovementDispatch.SENT,
+                            movementSync.sendBeforeMovementPacket(packet, packet));
                     if (packet instanceof ServerboundPlayerCommandPacket command
                             && command.getState() == PlayerState.START_ELYTRA_FLYING) {
                         assertFalse(movementSync.onGround.get(), "deployment requires the real jump");
@@ -207,6 +207,7 @@ final class LowAltitudeFollowEndToEndTest extends ElytraCommandTestSupport {
                 movementSync.velocity.set(next.velocity());
                 movementSync.onGround.set(next.onGround());
                 movementSync.fallDistance.set(next.fallDistance());
+                movementSync.completePhysicsStep();
                 pose = pose.afterTravel(world, p, gliding, false, input.sneak());
                 if (rocketTicks > 0 && --rocketTicks == 0) world.getEntities().remove(ROCKET_ID);
                 if (gliding && next.onGround()) {

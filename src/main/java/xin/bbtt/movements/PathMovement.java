@@ -24,7 +24,7 @@ public class PathMovement extends Movement {
     private int currentIndex = 0;
     private PlayerInput issuedInput;
     private boolean issuedRidingInput;
-    private boolean stopped;
+    private volatile boolean stopped;
     private volatile boolean repathRequested = false;
     private boolean immediateRepathRequested;
     private int repathThrottler = 0;
@@ -49,7 +49,7 @@ public class PathMovement extends Movement {
     private org.joml.Vector3i navigationGoal;
     private boolean intermediateLeg;
     public enum Completion { NORMAL, UNEXPECTED_FALL, FAILED }
-    public enum FailureReason { NO_PROGRESS, UNSAFE_ROUTE }
+    public enum FailureReason { NO_PROGRESS, UNSAFE_ROUTE, INVALID_GOAL }
     private final java.util.Set<xin.bbtt.pathfinding.ExcludingPathfindingContext.Transition> rejectedTransitions =
             new java.util.HashSet<>();
     private Completion completion = Completion.NORMAL;
@@ -221,6 +221,7 @@ public class PathMovement extends Movement {
         if (immediateRepathRequested) return;
 
         if (waitingForRoute) {
+            maintainPlanningInput();
             if (ticksSinceRepath >= 20) scheduleRepath();
             return;
         }
@@ -652,7 +653,9 @@ public class PathMovement extends Movement {
                     && requestedGoal.equals(MovementSync.INSTANCE.getActiveGoal())) {
                 if (completion == Completion.FAILED) {
                     MovementSync.INSTANCE.abandonNavigationRequest(requestGeneration,
-                            "pathfinding " + failureReason + (failureReason == FailureReason.UNSAFE_ROUTE
+                            "pathfinding " + failureReason + (failureReason == FailureReason.INVALID_GOAL
+                                    ? ": loaded destination has no supported arrival position"
+                                    : failureReason == FailureReason.UNSAFE_ROUTE
                                     ? ": no continuation after unsafe departure was excluded"
                                     : ": no new node for " + MAX_TICKS_WITHOUT_NODE_PROGRESS + " execution ticks"));
                 } else {
@@ -697,18 +700,67 @@ public class PathMovement extends Movement {
         return support.append(']').toString();
     }
 
+    private PlayerInput planningInput() {
+        var sync = MovementSync.INSTANCE;
+        if (stopped || isFinished() || sync.isRiding()) return PlayerInput.NONE;
+        Vector3d position = sync.position.get();
+        if (!xin.bbtt.pathfinding.EnvironmentalTraversal.inWater(sync.getWorld(), position)) return PlayerInput.NONE;
+        // Recovery validates an unobstructed column to an exposed surface. Do not
+        // turn a route wait in a submerged tunnel into a blind ascent command.
+        Node column = new Node((int) Math.floor(position.x), (int) Math.floor(position.y),
+                (int) Math.floor(position.z));
+        if (xin.bbtt.pathfinding.EnvironmentalTraversal.recoveryPosition(sync.getWorld(), column).isEmpty()
+                && xin.bbtt.pathfinding.EnvironmentalTraversal.recoveryPosition(sync.getWorld(),
+                        new Node(column.x, column.y - 1, column.z)).isEmpty()) return PlayerInput.NONE;
+        return PlayerInput.NONE.withJump(true);
+    }
+
+    /** Called under the navigation and sync locks. */
+    private void maintainPlanningInput() {
+        stopHorizontal();
+        issuePlanningInput(planningInput());
+    }
+
+    private void issuePlanningInput(PlayerInput input) {
+        if (stopped || isFinished() || input == PlayerInput.NONE) return;
+        issuedInput = input;
+        MovementSync.INSTANCE.setInput(issuedInput);
+    }
+
     private void scheduleRepath() {
         stopHorizontal();
         immediateRepathRequested = true;
     }
 
     private void repathInternally() {
-        // Release owned keys before synchronous planning; physics runs independently.
-        stopHorizontal();
+        // Release route keys first, then validate water support without holding the
+        // navigation lock over world reads. Publish only for the still-current owner.
         try {
+            if (!MovementSync.INSTANCE.runIfNavigationRequestCurrent(requestGeneration, () -> {
+                synchronized (MovementSync.INSTANCE) {
+                    stopHorizontal();
+                }
+            }) || stopped) return;
+            PlayerInput input = planningInput();
+            if (!MovementSync.INSTANCE.runIfNavigationRequestCurrent(requestGeneration, () -> {
+                synchronized (MovementSync.INSTANCE) {
+                    issuePlanningInput(input);
+                }
+            }) || stopped) return;
+            // The full search may be slow; physics now retains vertical-only water input.
             computeRepath();
         } finally {
             progressWatchdog.excludeElapsedTime();
+            if (!MovementSync.INSTANCE.runIfNavigationRequestCurrent(requestGeneration, () -> {
+                synchronized (MovementSync.INSTANCE) {
+                    if (stopped) stopHorizontal();
+                }
+            })) {
+                synchronized (MovementSync.INSTANCE) {
+                    stopHorizontal();
+                }
+                setFinished(true);
+            }
         }
     }
 
@@ -737,6 +789,25 @@ public class PathMovement extends Movement {
         Vector3d currentPos = MovementSync.INSTANCE.position.get();
         Node start = new Node((int)Math.floor(currentPos.x), StandablePositionResolver.nodeY(currentPos.y), (int)Math.floor(currentPos.z));
         Node goalNode = new Node(targetNodePos.x, targetNodePos.y, targetNodePos.z);
+        // Distant goals are admitted while unknown. Once loaded, do not keep
+        // searching toward air above a water surface. Follow and digging routes
+        // have different destination semantics and retain their existing policy.
+        var world = MovementSync.INSTANCE.getWorld();
+        // Keep loaded/support checks atomic against chunk unload, but release
+        // the terrain lock before publishing under the navigation lock below.
+        boolean invalidGoal = requestedFollowTargetId == -1 && !allowDigging
+                && world.readTerrain(() -> world.chunkLoaded(goalNode.x >> 4, goalNode.z >> 4)
+                && StandablePositionResolver.feetY(world, goalNode.x, goalNode.y, goalNode.z).isEmpty()
+                && xin.bbtt.pathfinding.EnvironmentalTraversal.position(world, goalNode).isEmpty());
+        if (invalidGoal) {
+            MovementSync.INSTANCE.runIfNavigationRequestCurrent(requestGeneration, () -> {
+                if (stopped) return;
+                completion = Completion.FAILED;
+                failureReason = FailureReason.INVALID_GOAL;
+                markFinished();
+            });
+            return;
+        }
         
         if (start.equals(goalNode) && requestedFollowTargetId == -1) {
             // Sharing the planner's integer cell is not supported 3D arrival.
@@ -759,7 +830,11 @@ public class PathMovement extends Movement {
                 start, goalNode, rejectedTransitions.size(), context.rejectedLabels(), pathfinder.diagnostics());
 
         if (!MovementSync.INSTANCE.runIfNavigationRequestCurrent(
-                requestGeneration, () -> applyRepathResult(newPath, start))) {
+                requestGeneration, () -> {
+                    synchronized (MovementSync.INSTANCE) {
+                        if (!stopped) applyRepathResult(newPath, start);
+                    }
+                })) {
             setFinished(true);
         }
     }
@@ -779,14 +854,14 @@ public class PathMovement extends Movement {
         } else if (!rejectedTransitions.isEmpty()) {
             failUnsafeRoute();
         } else if (requestedFollowTargetId != -1) {
-            stopHorizontal();
+            maintainPlanningInput();
 
             this.path = List.of(new PathStep(start, BuiltinMovementType.WALK));
             this.currentIndex = 0;
         } else {
             // No continuation is not arrival: unloaded terrain can become available
             // later. Keep the original goal and watchdog history across retries.
-            stopHorizontal();
+            maintainPlanningInput();
             waitingForRoute = true;
         }
     }
@@ -855,6 +930,16 @@ public class PathMovement extends Movement {
 
     private boolean isPathDeviated(Vector3d currentPos, Node targetNode) {
         if (MovementSync.INSTANCE.isRiding()) return false;
+        // A submerged recovery node is rounded upward, so its next vertical SWIM
+        // node can be >1.2 blocks above fractional feet. This is planned ascent,
+        // not a fall below a walking floor. Require the same checked open column.
+        if (path.get(currentIndex).getType() == BuiltinMovementType.SWIM
+                && targetNode.x == (int) Math.floor(currentPos.x)
+                && targetNode.z == (int) Math.floor(currentPos.z)
+                && xin.bbtt.pathfinding.EnvironmentalTraversal.inWater(MovementSync.INSTANCE.getWorld(), currentPos)
+                && xin.bbtt.pathfinding.EnvironmentalTraversal.recoveryPosition(MovementSync.INSTANCE.getWorld(),
+                        new Node(targetNode.x, StandablePositionResolver.nodeY(currentPos.y), targetNode.z)).isPresent())
+            return false;
         double expectedFloor = targetNode.y;
         if (currentIndex > 0 && path.get(currentIndex).getType() == BuiltinMovementType.JUMP) {
             // A planned boosted ascent starts below its landing node; deviation is
@@ -880,11 +965,13 @@ public class PathMovement extends Movement {
 
     @Override
     public void onStop() {
-        stopped = true;
-        immediateRepathRequested = false;
-        repathRequested = false;
+        synchronized (MovementSync.INSTANCE) {
+            stopped = true;
+            immediateRepathRequested = false;
+            repathRequested = false;
+            stopHorizontal();
+        }
         if (placement != null) placement.onStop();
-        stopHorizontal();
         resetEdgeProgress();
         progressWatchdog.pause();
     }

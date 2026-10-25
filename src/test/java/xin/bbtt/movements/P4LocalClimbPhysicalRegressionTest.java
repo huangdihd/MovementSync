@@ -82,7 +82,16 @@ class P4LocalClimbPhysicalRegressionTest extends ElytraCommandTestSupport {
         fly(new Vector3d(245.5, 33, 20.5), "minecraft:overworld", Double.POSITIVE_INFINITY, false, true);
     }
 
+    @Test void slowerPlannerStillHandsBackToCruise() throws Exception {
+        fly(new Vector3d(245.5, 33, 20.5), "minecraft:overworld", Double.POSITIVE_INFINITY, false, false, 2);
+    }
+
     private void fly(Vector3d start, String dimension, double roof, boolean delayed, boolean denied) throws Exception {
+        fly(start, dimension, roof, delayed, denied, 1);
+    }
+
+    private void fly(Vector3d start, String dimension, double roof, boolean delayed, boolean denied,
+                     int plannerInterval) throws Exception {
         boolean nether = dimension.equals("minecraft:the_nether");
         boolean expectHandoff = !nether && !denied && Double.isInfinite(roof);
         dimensions.clear();
@@ -152,7 +161,7 @@ class P4LocalClimbPhysicalRegressionTest extends ElytraCommandTestSupport {
                     assertTrue(started.await(5, TimeUnit.SECONDS), "actual worker must start blocker");
                     delayedOnce = true;
                 }
-                owner.onTick();
+                if (tick % plannerInterval == 0) owner.onTick();
                 if (handoff.phase() == LocalClimbHandoff.Phase.LOCAL_CLIMB) climbObserved = true;
                 if (handoff.phase() == LocalClimbHandoff.Phase.CRUISE && handoffAt < 0) {
                     assertTrue(climbObserved, "cruise must follow an observed local climb");
@@ -222,7 +231,10 @@ class P4LocalClimbPhysicalRegressionTest extends ElytraCommandTestSupport {
                 movementSync.velocity.set(next.velocity());
                 movementSync.onGround.set(next.onGround());
                 movementSync.fallDistance.set(next.fallDistance());
-                movementSync.completePhysicsStep();
+                movementSync.completePhysicsStep(new xin.bbtt.MovementSync.FlightTickTrace(
+                        next.position(), next.velocity(), next.onGround(), next.collidedX(), next.collidedZ(),
+                        gliding, movementSync.hasAttachedFirework(), movementSync.yaw.get(), movementSync.pitch.get(),
+                        input, next.fallDistance()));
                 pose = pose.afterTravel(world, next.position(), gliding, false, input.sneak());
                 if (rocketTicks > 0 && --rocketTicks == 0) world.getEntities().remove(ROCKET_ID);
                 if (delayThisTick) {

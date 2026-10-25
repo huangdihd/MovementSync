@@ -124,7 +124,12 @@ final class TravelNearbyLandingHandoffTest {
     @Test void twentyBlocksBelowGoalCannotArrive() {
         World world = new World() {
             @Override public boolean chunkLoaded(int x, int z) { return true; }
-            @Override public BlockState getBlockStateAt(Vector3d p) { return p.y < 40 ? STONE : AIR; }
+            @Override public BlockState getBlockStateAt(Vector3d p) {
+                // Keep the high goal valid: this tests premature arrival, not invalid-goal failure.
+                boolean goalSupport = Math.floor(p.x) == 175 && Math.floor(p.z) == -32
+                        && Math.floor(p.y) == 59;
+                return p.y < 40 || goalSupport ? STONE : AIR;
+            }
         };
         MovementSync sync = ready(world, new Vector3d(175.5, 40, -31.5));
         Vector3i goal = new Vector3i(175, 60, -32);

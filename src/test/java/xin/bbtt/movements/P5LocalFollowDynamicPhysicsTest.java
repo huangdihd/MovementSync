@@ -16,7 +16,6 @@ import xin.bbtt.Entity.Entity;
 import xin.bbtt.ElytraCommandTestSupport;
 import xin.bbtt.flight.LocalGotoController;
 import xin.bbtt.flight.ScopeRouter;
-import xin.bbtt.mcbot.Bot;
 import xin.bbtt.physics.EntityFlightTarget;
 import xin.bbtt.physics.GlidingPhysics;
 import xin.bbtt.physics.PhysicsState;
@@ -187,7 +186,8 @@ final class P5LocalFollowDynamicPhysicsTest extends ElytraCommandTestSupport {
             var input = movementSync.snapshotInput();
             var packet = movementSync.pollBeforeMovementPacket();
             while (packet != null) {
-                Bot.INSTANCE.getSession().send(packet);
+                assertEquals(xin.bbtt.MovementSync.BeforeMovementDispatch.SENT,
+                        movementSync.sendBeforeMovementPacket(packet, packet));
                 assertFalse(packet instanceof ServerboundPlayerCommandPacket,
                         "acknowledged flight must not redeploy: " + context(tick));
                 if (packet instanceof ServerboundUseItemPacket) {

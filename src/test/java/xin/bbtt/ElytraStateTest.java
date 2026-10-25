@@ -79,17 +79,25 @@ final class ElytraStateTest {
             assertTrue(movementSync.useFirework());
             var use = assertInstanceOf(org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundUseItemPacket.class, movementSync.pollBeforeMovementPacket());
             assertEquals(org.geysermc.mcprotocollib.protocol.data.game.entity.player.Hand.MAIN_HAND, use.getHand());
+            assertEquals(MovementSync.BeforeMovementDispatch.SENT,
+                    movementSync.sendBeforeMovementPacket(use, use));
             assertFalse(movementSync.hasAttachedFirework());
             assertEquals(3, inventory[36].getAmount());
             inventory[40] = inventory[36];
             inventory[36] = null;
+            for (int tick = 0; tick < 40; tick++) movementSync.completePhysicsStep();
             assertTrue(movementSync.useFirework());
             var switchSlot = assertInstanceOf(org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundSetCarriedItemPacket.class, movementSync.pollBeforeMovementPacket());
             assertEquals(4, switchSlot.getSlot());
+            assertEquals(MovementSync.BeforeMovementDispatch.SENT,
+                    movementSync.sendBeforeMovementPacket(switchSlot, switchSlot));
             var hotbar = assertInstanceOf(org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundUseItemPacket.class, movementSync.pollBeforeMovementPacket());
             assertEquals(org.geysermc.mcprotocollib.protocol.data.game.entity.player.Hand.MAIN_HAND, hotbar.getHand());
+            assertEquals(MovementSync.BeforeMovementDispatch.SENT,
+                    movementSync.sendBeforeMovementPacket(hotbar, hotbar));
+            packets.clear();
             assertTrue(movementSync.stopGliding());
-            assertTrue(packets.isEmpty(), "actions are queued; stop must not send a start/toggle packet");
+            assertTrue(packets.isEmpty(), "stop must not send a start/toggle packet");
             movementSync.setGliding(true);
             addAttachedFirework(7, OptionalInt.of(42));
             new xin.bbtt.listeners.TeleportPacketListener().packetReceived(

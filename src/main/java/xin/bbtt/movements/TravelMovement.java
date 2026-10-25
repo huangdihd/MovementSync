@@ -319,6 +319,11 @@ public final class TravelMovement extends Movement {
                 });
                 return;
             }
+            if (currentChild instanceof ElytraFlyMovement flight
+                    && flight.completion() == ElytraFlyMovement.Completion.FAILED) {
+                abortTravel(movementSync, "flight leg failed before destination arrival");
+                return;
+            }
             if (currentChild instanceof PathMovement path
                     && path.completion() == PathMovement.Completion.FAILED) {
                 abortTravel(movementSync, "walking leg failed: " + path.failureReason());

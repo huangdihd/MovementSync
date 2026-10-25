@@ -127,7 +127,12 @@ public final class EnvironmentalTraversal {
     }
 
     private static boolean isWater(BlockState state) {
-        return "water".equals(state.blockName()) || "bubble_column".equals(state.blockName());
+        // These collision-free plants contain source water in EnvironmentalPhysics.
+        // Do not treat arbitrary waterlogged solids as navigable water columns.
+        return switch (state.blockName()) {
+            case "water", "bubble_column", "kelp", "kelp_plant", "seagrass", "tall_seagrass" -> true;
+            default -> false;
+        };
     }
 
     private static boolean isClimbable(BlockState state) {

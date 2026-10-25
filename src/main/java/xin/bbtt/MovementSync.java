@@ -77,7 +77,21 @@ public class MovementSync implements Plugin {
     public synchronized long physicsTickVersion() { return physicsTickVersion; }
 
     /** Advances the physical clock only after a physics step's result has been committed. */
-    public synchronized void completePhysicsStep() { physicsTickVersion++; }
+    public synchronized void completePhysicsStep() {
+        physicsTickVersion++;
+        flightControls.completePhysicsStep();
+        flightTickCursor = new FlightTickCursor(physicsTickVersion, flightTickContinuity);
+    }
+
+    /** Production boundary: publish the committed physical state with its clock atomically. */
+    public synchronized void completePhysicsStep(FlightTickTrace trace) {
+        physicsTickVersion++;
+        flightControls.completePhysicsStep();
+        recordFlightTick(trace);
+        recentFlightTicks.addLast(new FlightTickSample(physicsTickVersion, flightTickContinuity, lastFlightTick));
+        while (recentFlightTicks.size() > 64) recentFlightTicks.removeFirst();
+        flightTickCursor = new FlightTickCursor(physicsTickVersion, flightTickContinuity);
+    }
 
     public synchronized void submitFlightControls(xin.bbtt.physics.FlightControlAdmission.Envelope envelope) {
         flightControls.submit(envelope);
@@ -85,7 +99,19 @@ public class MovementSync implements Plugin {
 
     public synchronized boolean registerForwardFlightEmergency(Object owner,
             xin.bbtt.physics.FlightControlAdmission.Source source, float yaw) {
-        return flightControls.registerForwardEmergency(this, owner, source, yaw);
+        return registerForwardFlightEmergency(owner, source, yaw, null);
+    }
+
+    public synchronized boolean registerForwardFlightEmergency(Object owner,
+            xin.bbtt.physics.FlightControlAdmission.Source source, float yaw,
+            xin.bbtt.physics.WaypointFlightTarget route) {
+        return flightControls.registerForwardEmergency(this, owner, source, yaw, route);
+    }
+
+    public synchronized boolean refineForwardFlightEmergency(Object owner,
+            xin.bbtt.physics.FlightControlAdmission.Source source, float yaw,
+            xin.bbtt.physics.WaypointFlightTarget route) {
+        return flightControls.refineForwardEmergency(this, owner, source, yaw, route);
     }
 
     public synchronized boolean publishFlightPrefix(Object owner,
@@ -93,7 +119,17 @@ public class MovementSync implements Plugin {
             java.util.List<xin.bbtt.physics.FlightControlAdmission.Step> steps,
             java.util.List<xin.bbtt.physics.FlightControlAdmission.Step> recovery,
             xin.bbtt.physics.WaypointFlightTarget route, Runnable accepted) {
-        return flightControls.publishPrefix(this, owner, source, steps, recovery, route, accepted);
+        return publishFlightPrefix(owner, source, steps, recovery, route, accepted, false);
+    }
+
+    public synchronized boolean publishFlightPrefix(Object owner,
+            xin.bbtt.physics.FlightControlAdmission.Source source,
+            java.util.List<xin.bbtt.physics.FlightControlAdmission.Step> steps,
+            java.util.List<xin.bbtt.physics.FlightControlAdmission.Step> recovery,
+            xin.bbtt.physics.WaypointFlightTarget route, Runnable accepted,
+            boolean requireAirborne) {
+        return flightControls.publishPrefix(this, owner, source, steps, recovery, route, accepted,
+                requireAirborne);
     }
 
     public synchronized void revokeFlightControls(Object owner) { flightControls.revoke(owner); }
@@ -114,6 +150,20 @@ public class MovementSync implements Plugin {
     /** Shared physical-input boundary, including embedded/manual physics drivers. */
     public synchronized PlayerInput snapshotInput() {
         flightControls.consume(this);
+        return snapshotRawInput();
+    }
+
+    /** Revalidates current controls while preserving only the already-admitted deferred batch. */
+    public synchronized PlayerInput snapshotDeferredDeploymentInput() {
+        long deferredEpoch = flightControls.epoch();
+        flightControls.consume(this);
+        long currentEpoch = flightControls.epoch();
+        if (currentEpoch != deferredEpoch)
+            flightActionEpochs.replaceAll((packet, epoch) -> epoch == deferredEpoch ? currentEpoch : epoch);
+        return snapshotRawInput();
+    }
+
+    private PlayerInput snapshotRawInput() {
         if (inventoryManager.isInventorySwapOpen()) return PlayerInput.NONE;
         PlayerInput keys = input.get();
         return jumpRequested.getAndSet(false) ? keys.withJump(true) : keys;
@@ -143,18 +193,57 @@ public class MovementSync implements Plugin {
 
     public synchronized void queueBeforeMovement(Packet packet) {
         Objects.requireNonNull(packet, "packet");
-        if (acceptingFlightAction && packet instanceof org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundUseItemPacket)
-            flightActionEpochs.put(packet, flightControls.epoch());
+        if (acceptingFlightAction) flightActionEpochs.put(packet, flightControls.epoch());
         beforeMovementPackets.add(packet);
     }
 
     public synchronized Packet pollBeforeMovementPacket() {
         Packet packet;
         while ((packet = beforeMovementPackets.poll()) != null) {
-            Long epoch = flightActionEpochs.remove(packet);
+            Long epoch = flightActionEpochs.get(packet);
             if (epoch == null || epoch == flightControls.epoch()) return packet;
+            flightActionEpochs.remove(packet);
+            if (packet == pendingFireworkSlotSelection) pendingFireworkSlotSelection = null;
+            if (packet == pendingFireworkRequest) pendingFireworkRequest = null;
         }
         return null;
+    }
+
+    public enum BeforeMovementDispatch { SENT, DISCARDED, RETRY }
+
+    /** Sends a polled action, confirming firework cooldown only after session.send accepts it. */
+    public synchronized BeforeMovementDispatch sendBeforeMovementPacket(Packet queuedPacket, Packet outboundPacket) {
+        Objects.requireNonNull(queuedPacket, "queuedPacket");
+        Objects.requireNonNull(outboundPacket, "outboundPacket");
+        Long epoch = flightActionEpochs.get(queuedPacket);
+        if (epoch != null && epoch != flightControls.epoch()) {
+            flightActionEpochs.remove(queuedPacket);
+            if (queuedPacket == pendingFireworkSlotSelection) pendingFireworkSlotSelection = null;
+            if (queuedPacket == pendingFireworkRequest) pendingFireworkRequest = null;
+            return BeforeMovementDispatch.DISCARDED;
+        }
+        var session = Bot.INSTANCE == null ? null : Bot.INSTANCE.getSession();
+        if (session == null || !session.isConnected()) return BeforeMovementDispatch.RETRY;
+        try {
+            session.send(outboundPacket);
+        } catch (RuntimeException error) {
+            return BeforeMovementDispatch.RETRY;
+        }
+        flightActionEpochs.remove(queuedPacket);
+        if (queuedPacket == pendingFireworkSlotSelection) pendingFireworkSlotSelection = null;
+        if (queuedPacket == pendingFireworkRequest) {
+            lastFireworkRequestTick = physicsTickVersion;
+            pendingFireworkRequest = null;
+        }
+        if (outboundPacket instanceof org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundSetCarriedItemPacket carried)
+            inventoryManager.setHeldSlot(carried.getSlot());
+        return BeforeMovementDispatch.SENT;
+    }
+
+    public synchronized boolean hasQueuedGlideDeployment() {
+        return beforeMovementPackets.stream().anyMatch(packet ->
+                packet instanceof ServerboundPlayerCommandPacket command
+                && command.getState() == PlayerState.START_ELYTRA_FLYING);
     }
 
     public AtomicReference<Float> pitch = new AtomicReference<>(0f);
@@ -169,9 +258,33 @@ public class MovementSync implements Plugin {
     public final AtomicReference<Double> fallDistance = new AtomicReference<>(0.0);
     public record FlightTickTrace(Vector3d position, Vector3d velocity, boolean onGround,
             boolean collidedX, boolean collidedZ, boolean gliding, boolean attached,
-            float yaw, float pitch, PlayerInput input, double fallDistance) {}
+            float yaw, float pitch, PlayerInput input, double fallDistance) {
+        public FlightTickTrace {
+            position = new Vector3d(position);
+            velocity = new Vector3d(velocity);
+        }
+        @Override public Vector3d position() { return new Vector3d(position); }
+        @Override public Vector3d velocity() { return new Vector3d(velocity); }
+    }
+    public record FlightTickSample(long tick, long continuity, FlightTickTrace trace) {}
+    public record FlightTickCursor(long tick, long continuity) {}
+    private volatile FlightTickCursor flightTickCursor = new FlightTickCursor(0, 0);
+    /** Initialization may hold navigation/queue locks: never acquire the physics monitor here. */
+    public FlightTickCursor flightTickCursor() { return flightTickCursor; }
     private volatile FlightTickTrace lastFlightTick;
+    private final java.util.ArrayDeque<FlightTickSample> recentFlightTicks = new java.util.ArrayDeque<>();
+    private long flightTickContinuity;
     public FlightTickTrace getLastFlightTick() { return lastFlightTick; }
+    public synchronized long flightTickContinuity() { return flightTickContinuity; }
+    public synchronized java.util.List<FlightTickSample> flightTicksAfter(long tick, long continuity) {
+        return recentFlightTicks.stream()
+                .filter(sample -> sample.continuity() == continuity && sample.tick() > tick).toList();
+    }
+    public synchronized void invalidateFlightTickContinuity() {
+        flightTickContinuity++;
+        recentFlightTicks.clear();
+        flightTickCursor = new FlightTickCursor(physicsTickVersion, flightTickContinuity);
+    }
     public synchronized void recordFlightTick(FlightTickTrace trace) {
         lastFlightTick = trace;
         if (physicsTraceEnabled) {
@@ -227,6 +340,7 @@ public class MovementSync implements Plugin {
 
     public void setRecoveryDimension(String dimension) {
         landingMemory.dimension(dimension);
+        if (!java.util.Objects.equals(recoveryDimension, dimension)) invalidateFlightTickContinuity();
         recoveryDimension = dimension;
     }
 
@@ -248,6 +362,7 @@ public class MovementSync implements Plugin {
             gotoRecovery.suspend();
             landingMemory.clear();
             inventoryManager.resetSession();
+            clearQueuedSessionActions();
             reconnectAirRecovery.reset();
             if (gotoRecovery.isPending()) getLogger().info("Static goto suspended for reconnect");
             advanceNavigationGeneration();
@@ -267,7 +382,7 @@ public class MovementSync implements Plugin {
             // than replacing it with an independent landing that forgets the entity.
             synchronized (navigationLock) {
                 if (followTargetId != -1) return;
-                cancelNavigation(true, "authoritative position correction");
+                cancelNavigation(false, "authoritative position correction");
             }
         }
     }
@@ -416,6 +531,8 @@ public class MovementSync implements Plugin {
     public synchronized void resetFlightMetadataSession() {
         dead = false;
         awaitingNewFlight = false;
+        naturalDescentGeneration = Long.MIN_VALUE;
+        invalidateFlightTickContinuity();
         clearFlightState();
     }
 
@@ -429,13 +546,20 @@ public class MovementSync implements Plugin {
         resetRespawnFlightState(false);
     }
 
+    private synchronized void clearQueuedSessionActions() {
+        beforeMovementPackets.clear();
+        flightActionEpochs.clear();
+        pendingFireworkSlotSelection = null;
+        pendingFireworkRequest = null;
+    }
+
     private synchronized void resetRespawnFlightState(boolean dead) {
         this.dead = dead;
         awaitingNewFlight = true;
+        invalidateFlightTickContinuity();
         clearFlightState();
         clearInput();
-        beforeMovementPackets.clear();
-        flightActionEpochs.clear();
+        clearQueuedSessionActions();
         velocity.set(new Vector3d());
         fallDistance.set(0.0);
         vehicleId = -1;
@@ -463,24 +587,27 @@ public class MovementSync implements Plugin {
 
     /** Selects a hotbar rocket; acceleration waits for server-confirmed entity attachment. */
     private long lastFireworkRequestTick = Long.MIN_VALUE;
+    private Packet pendingFireworkSlotSelection;
+    private ServerboundUseItemPacket pendingFireworkRequest;
 
     /** Shared request latch survives navigation handoffs; requests are not attachments. */
     public synchronized boolean fireworkRequestReady() {
-        return lastFireworkRequestTick == Long.MIN_VALUE || physicsTickVersion - lastFireworkRequestTick >= 40;
+        return pendingFireworkRequest == null
+                && (lastFireworkRequestTick == Long.MIN_VALUE || physicsTickVersion - lastFireworkRequestTick >= 40);
     }
 
     public synchronized boolean useFirework() {
-        if (!isGliding()) return false;
+        if (!isGliding() || !fireworkRequestReady()) return false;
         int rocketSlot = hotbarFireworks().firstSlot();
         if (rocketSlot < 0) return false;
         if (Bot.INSTANCE == null || Bot.INSTANCE.getSession() == null || !Bot.INSTANCE.getSession().isConnected()) return false;
         if (inventoryManager.getHeldSlot() != rocketSlot) {
-            queueBeforeMovement(new org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundSetCarriedItemPacket(rocketSlot));
-            inventoryManager.setHeldSlot(rocketSlot);
+            pendingFireworkSlotSelection = new org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundSetCarriedItemPacket(rocketSlot);
+            queueBeforeMovement(pendingFireworkSlotSelection);
         }
-        queueBeforeMovement(new ServerboundUseItemPacket(
-                Hand.MAIN_HAND, Bot.INSTANCE.getAndIncreaseSequence(), yaw.get(), pitch.get()));
-        lastFireworkRequestTick = physicsTickVersion;
+        pendingFireworkRequest = new ServerboundUseItemPacket(
+                Hand.MAIN_HAND, Bot.INSTANCE.getAndIncreaseSequence(), yaw.get(), pitch.get());
+        queueBeforeMovement(pendingFireworkRequest);
         return true;
     }
 
@@ -514,7 +641,23 @@ public class MovementSync implements Plugin {
         return item != null && name.equals(item.getName());
     }
 
+    private final ThreadLocal<Boolean> physicsTickAttached = new ThreadLocal<>();
+
+    /** Freeze asynchronous entity metadata for one complete outbound physics/input batch. */
+    public synchronized void beginPhysicsTickState() {
+        physicsTickAttached.set(hasLiveAttachedFirework());
+    }
+
+    public synchronized void endPhysicsTickState() {
+        physicsTickAttached.remove();
+    }
+
     public boolean hasAttachedFirework() {
+        Boolean attached = physicsTickAttached.get();
+        return attached != null ? attached : hasLiveAttachedFirework();
+    }
+
+    private boolean hasLiveAttachedFirework() {
         if (!isGliding() || entityId < 0) return false;
         for (xin.bbtt.Entity.Entity entity : world.getEntities().values()) {
             if (entity.getType() != org.geysermc.mcprotocollib.protocol.data.game.entity.type.EntityType.FIREWORK_ROCKET) continue;
@@ -747,31 +890,41 @@ public class MovementSync implements Plugin {
         }
     }
 
+    private volatile long naturalDescentGeneration = Long.MIN_VALUE;
+
+    /** A terminal failed request relinquishes even the ownerless hazard fallback. */
+    public synchronized boolean requiresNaturalDescent() {
+        return naturalDescentGeneration == navigationGeneration.get();
+    }
+
     /** Failure is terminal, but never an arrival; stale owners cannot clear newer intent. */
     public void abandonNavigationRequest(long generation, String reason) {
-        long safetyGeneration;
         synchronized (navigationLock) {
             if (!isNavigationRequestCurrent(generation)) return;
             activeGoal = null;
             clearRecoverableGoto("failed: " + reason);
-            safetyGeneration = advanceNavigationGeneration();
+            advanceNavigationGenerationForFailure();
             movementController.cancelAll();
+            safetyLanding = null;
             clearInput();
-            clearAbandonedFlightActions();
+            clearAbandonedFlightActions(false);
             followTargetId = -1;
         }
-        startSafetyExit(safetyGeneration);
     }
 
     /** Discard abandoned flight actions without dropping inventory transaction packets.
-     * An airborne glide still needs its pending start for the safety landing owner;
-     * a rejected/cleared glide must never be restarted by a stale queued request.
+     * Only an explicit user cancellation may retain an accepted glide's pending
+     * start for the independent safety-landing owner.
      */
-    private synchronized void clearAbandonedFlightActions() {
+    private synchronized void clearAbandonedFlightActions(boolean preserveAcceptedGlideStart) {
+        beforeMovementPackets.removeIf(packet -> packet == pendingFireworkSlotSelection
+                || packet instanceof ServerboundUseItemPacket
+                || (!preserveAcceptedGlideStart || !isGliding())
+                && packet instanceof ServerboundPlayerCommandPacket command
+                && command.getState() == PlayerState.START_ELYTRA_FLYING);
         flightActionEpochs.clear();
-        beforeMovementPackets.removeIf(packet -> packet instanceof ServerboundUseItemPacket
-                || (!isGliding() && packet instanceof ServerboundPlayerCommandPacket command
-                && command.getState() == PlayerState.START_ELYTRA_FLYING));
+        pendingFireworkSlotSelection = null;
+        pendingFireworkRequest = null;
     }
 
     private xin.bbtt.movements.ElytraFlyMovement safetyLanding;
@@ -794,33 +947,38 @@ public class MovementSync implements Plugin {
 
     private void cancelNavigation(boolean land, String reason) {
         long safetyGeneration;
+        xin.bbtt.movements.ElytraFlyMovement landing = null;
         synchronized (navigationLock) {
             if (land && !dead && safetyLanding != null && !safetyLanding.isFinished()) {
                 getLogger().info("正在安全落地,落地后停止");
                 return;
             }
             clearRecoverableGoto(reason);
-            safetyGeneration = advanceNavigationGeneration();
-            movementController.cancelAll();
+            if (land && !dead && !isRiding() && isGliding())
+                landing = new xin.bbtt.movements.ElytraFlyMovement(position.get()).forIndependentLanding();
+            safetyGeneration = landing == null
+                    ? advanceNavigationGeneration()
+                    : advanceNavigationGenerationForLanding(landing);
             activeGoal = null;
             followTargetId = -1;
-            safetyLanding = null;
+            safetyLanding = landing;
             clearInput();
-            clearAbandonedFlightActions();
+            clearAbandonedFlightActions(land);
+            if (landing == null) movementController.cancelAll();
+            else movementController.cancelAllPreservingFlightControls();
         }
-        if (land) startSafetyExit(safetyGeneration);
+        if (land) startSafetyExit(safetyGeneration, landing);
     }
 
     /** Terrain checks run outside the navigation lock; publication rechecks ownership. */
-    private void startSafetyExit(long generation) {
+    private void startSafetyExit(long generation, xin.bbtt.movements.ElytraFlyMovement landing) {
         if (dead || isRiding()) return;
-        boolean gliding = isGliding();
-        boolean hazard = !gliding && xin.bbtt.movements.HazardExitMovement.needed(this);
+        boolean hazard = landing == null && !isGliding()
+                && xin.bbtt.movements.HazardExitMovement.needed(this);
         synchronized (navigationLock) {
             if (!isNavigationRequestCurrent(generation) || dead || isRiding()) return;
-            if (gliding && isGliding()) {
-                safetyLanding = new xin.bbtt.movements.ElytraFlyMovement(position.get()).forIndependentLanding();
-                movementController.addMovement(safetyLanding);
+            if (landing != null && safetyLanding == landing) {
+                movementController.addMovement(landing);
             } else if (hazard && !isGliding()) {
                 movementController.addMovement(new xin.bbtt.movements.HazardExitMovement(generation));
             }
@@ -832,6 +990,23 @@ public class MovementSync implements Plugin {
     private synchronized long advanceNavigationGeneration() {
         flightControls.clear();
         return navigationGeneration.incrementAndGet();
+    }
+
+    private synchronized long advanceNavigationGenerationForLanding(
+            xin.bbtt.movements.ElytraFlyMovement landing) {
+        flightControls.clear();
+        flightControls.retireFallback(this);
+        long generation = navigationGeneration.incrementAndGet();
+        flightControls.claim(landing, xin.bbtt.physics.FlightControlAdmission.Mode.DIRECT);
+        return generation;
+    }
+
+    private synchronized long advanceNavigationGenerationForFailure() {
+        flightControls.clear();
+        flightControls.retireFallback(this);
+        long generation = navigationGeneration.incrementAndGet();
+        naturalDescentGeneration = generation;
+        return generation;
     }
 
     // Lock-free by design: physical admission reads this while holding MovementSync.

@@ -1,5 +1,6 @@
 package xin.bbtt.movements;
 
+import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundUseItemPacket;
 import org.joml.Vector3d;
 import org.junit.jupiter.api.BeforeEach;
 import xin.bbtt.ElytraCommandTestSupport;
@@ -10,6 +11,8 @@ import xin.bbtt.physics.PhysicsStepper;
 import xin.bbtt.physics.PlayerPose;
 import xin.bbtt.physics.WalkingPhysics;
 import xin.bbtt.world.World;
+
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Manual driver: only a simulated and committed physics step advances the clock. */
 abstract class PhysicalClockTestSupport extends ElytraCommandTestSupport {
@@ -23,6 +26,18 @@ abstract class PhysicalClockTestSupport extends ElytraCommandTestSupport {
         movementSync.position.set(new Vector3d(0, 1000, 0));
         movementSync.velocity.set(new Vector3d(0, 0, .3));
         movementSync.onGround.set(false);
+    }
+
+    protected int dispatchQueuedFireworks() {
+        int dispatches = 0;
+        for (var packet = movementSync.pollBeforeMovementPacket(); packet != null;
+                packet = movementSync.pollBeforeMovementPacket()) {
+            if (packet instanceof ServerboundUseItemPacket) dispatches++;
+            org.junit.jupiter.api.Assertions.assertEquals(
+                    MovementSync.BeforeMovementDispatch.SENT,
+                    movementSync.sendBeforeMovementPacket(packet, packet));
+        }
+        return dispatches;
     }
 
     protected void physicalTick() {

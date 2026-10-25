@@ -13,7 +13,6 @@ import xin.bbtt.physics.PhysicsState;
 final class VanillaGlideLifecycle {
     private int takeoffTicks;
     private int rocketCooldown;
-    private long lastCooldownPhysicsTick;
     private long flightTicks;
     private long rocketRequestTick;
     private long rocketRequestPhysicsTick;
@@ -135,12 +134,11 @@ final class VanillaGlideLifecycle {
 
     void tickCooldown(MovementSync sync) {
         flightTicks++;
-        long physical = sync.physicsTickVersion();
-        // Embedded lifecycle callers may have no physical input driver. Once one
-        // exists, planning frequency must never extend or accelerate the lease.
-        long elapsed = physical == 0 ? 1 : Math.max(0, physical - lastCooldownPhysicsTick);
-        rocketCooldown = (int) Math.max(0, rocketCooldown - elapsed);
-        lastCooldownPhysicsTick = physical;
+        // Preserve the established cruise budget: expensive planning must not make
+        // rockets spend faster than one per forty decisions. MovementSync's shared
+        // request latch independently enforces forty committed physical ticks across
+        // lifecycle and owner handoffs.
+        if (rocketCooldown > 0) rocketCooldown--;
         confirmedBoostTicks(sync, sync.hasAttachedFirework());
     }
 
@@ -180,7 +178,6 @@ final class VanillaGlideLifecycle {
             int[] flights = sync.inventoryManager.getHotbarFireworkFlightDurations();
             if (sync.useFirework()) {
                 rocketCooldown = 40;
-                lastCooldownPhysicsTick = sync.physicsTickVersion();
                 rocketRequestTick = flightTicks;
                 rocketRequestPhysicsTick = sync.physicsTickVersion();
                 var frame = sync.getPlacementFrame();

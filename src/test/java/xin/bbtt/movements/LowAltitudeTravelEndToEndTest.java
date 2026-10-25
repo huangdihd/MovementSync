@@ -29,7 +29,6 @@ import xin.bbtt.ElytraCommandTestSupport;
 import xin.bbtt.MovementSync;
 import xin.bbtt.listeners.EntityPacketListener;
 import xin.bbtt.listeners.RegistryDataListener;
-import xin.bbtt.mcbot.Bot;
 import xin.bbtt.mcbot.events.ReceivePacketEvent;
 import xin.bbtt.physics.GlidingPhysics;
 import xin.bbtt.physics.PhysicsResult;
@@ -197,7 +196,8 @@ final class LowAltitudeTravelEndToEndTest extends ElytraCommandTestSupport {
                 var input = movementSync.snapshotInput();
                 var packet = movementSync.pollBeforeMovementPacket();
                 while (packet != null) {
-                    Bot.INSTANCE.getSession().send(packet);
+                    assertEquals(MovementSync.BeforeMovementDispatch.SENT,
+                            movementSync.sendBeforeMovementPacket(packet, packet));
                     if (packet instanceof ServerboundPlayerCommandPacket command
                             && command.getState() == PlayerState.START_ELYTRA_FLYING) {
                         assertFalse(movementSync.onGround.get(), "deployment requires the real jump");
@@ -261,9 +261,16 @@ final class LowAltitudeTravelEndToEndTest extends ElytraCommandTestSupport {
                 movementSync.velocity.set(next.velocity());
                 movementSync.onGround.set(next.onGround());
                 movementSync.fallDistance.set(next.fallDistance());
+                movementSync.completePhysicsStep();
                 pose = pose.afterTravel(world, p, gliding, false, input.sneak());
                 if (rocketTicks > 0 && --rocketTicks == 0) world.getEntities().remove(ROCKET_ID);
                 if (gliding && next.onGround()) {
+                    assertTrue(p.distance(new Vector3d(goal.x + .5, goal.y, goal.z + .5)) <= 1.5,
+                            "flight leg touched down before the physical endpoint: " + diagnostic
+                                    + " before=" + state + " resultVelocity=" + next.velocity()
+                                    + " yaw=" + movementSync.yaw.get() + " pitch=" + movementSync.pitch.get()
+                                    + " attached=" + movementSync.hasAttachedFirework()
+                                    + " admissionFailure=" + movementSync.getFlightControlFailure());
                     assertTrue(movementSync.isGliding(), "contact alone does not clear client flight");
                     sharedFlags(false);
                     groundedAcknowledgements++;

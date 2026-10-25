@@ -66,14 +66,21 @@ class FailureHazardExitTest extends ElytraCommandTestSupport {
         }
     }
 
-    @Test void failureAndCancelClearOldKeysAndQueueIndependentSafetyOwner() throws Exception {
+    @Test void failureClearsOldKeysWithoutQueueingSafetySteering() throws Exception {
         install("fire", 2);
         movementSync.movementController.pause();
         var stale = new PlayerInput(true, false, true, false, true, false, true);
         movementSync.setInput(stale);
         movementSync.abandonNavigationRequest(movementSync.getNavigationGeneration(), "UNSAFE_ROUTE");
         assertEquals(PlayerInput.NONE, movementSync.snapshotInput());
-        assertInstanceOf(HazardExitMovement.class, movementSync.movementController.getMovements().get(0));
+        assertTrue(movementSync.movementController.getMovements().isEmpty(),
+                "terminal failure must leave natural physics in control");
+    }
+
+    @Test void explicitCancelStillQueuesIndependentSafetyOwner() throws Exception {
+        install("fire", 2);
+        movementSync.movementController.pause();
+        var stale = new PlayerInput(true, false, true, false, true, false, true);
         movementSync.setInput(stale);
         movementSync.cancelNavigation();
         assertEquals(PlayerInput.NONE, movementSync.snapshotInput());

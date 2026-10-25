@@ -41,6 +41,7 @@ class LocalClimbHandoffTest {
         var route = handoff.route(state, new Vector3d(0, 31, 1000), 0);
         assertEquals(24, route.goal().z, 1.0e-9);
         assertEquals(86, route.goal().y, 1.0e-9);
+        assertEquals(4, route.corridorRadius(), 1.0e-9);
         assertFalse(route.landed());
     }
 

@@ -19,7 +19,6 @@ import xin.bbtt.Entity.Entity;
 import xin.bbtt.Entity.EntityRegistry;
 import xin.bbtt.ElytraCommandTestSupport;
 import xin.bbtt.listeners.EntityPacketListener;
-import xin.bbtt.mcbot.Bot;
 import xin.bbtt.mcbot.events.ReceivePacketEvent;
 import xin.bbtt.physics.EntityFlightTarget;
 import xin.bbtt.physics.GlidingPhysics;
@@ -84,7 +83,8 @@ final class GlidingArmorStandFullPursuitTest extends ElytraCommandTestSupport {
                 assertInstanceOf(ElytraFlyMovement.class, field(follow, "child"), context);
                 var request = movementSync.pollBeforeMovementPacket();
                 while (request != null) {
-                    Bot.INSTANCE.getSession().send(request);
+                    assertEquals(xin.bbtt.MovementSync.BeforeMovementDispatch.SENT,
+                            movementSync.sendBeforeMovementPacket(request, request));
                     assertFalse(request instanceof ServerboundPlayerCommandPacket, "acknowledged flight must not redeploy: " + context);
                     if (request instanceof ServerboundUseItemPacket) {
                         assertEquals(0, rocketTicks, "attached rockets must not stack: " + context);
@@ -117,6 +117,7 @@ final class GlidingArmorStandFullPursuitTest extends ElytraCommandTestSupport {
                 movementSync.velocity.set(next.velocity());
                 movementSync.onGround.set(next.onGround());
                 movementSync.fallDistance.set(next.fallDistance());
+                movementSync.completePhysicsStep();
                 if (rocketTicks > 0 && --rocketTicks == 0) world.getEntities().remove(9001);
             }
             assertEquals(297, updates);

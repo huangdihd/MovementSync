@@ -16,9 +16,11 @@ import org.geysermc.mcprotocollib.protocol.data.game.entity.metadata.EntityMetad
 import org.geysermc.mcprotocollib.protocol.data.game.entity.metadata.MetadataTypes;
 import org.geysermc.mcprotocollib.protocol.data.game.entity.metadata.type.ObjectEntityMetadata;
 import org.geysermc.mcprotocollib.protocol.data.game.entity.type.EntityType;
+import org.geysermc.mcprotocollib.protocol.data.game.entity.player.Hand;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.entity.ClientboundRemoveEntitiesPacket;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.entity.ClientboundSetEntityDataPacket;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundMovePlayerPosPacket;
+import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundUseItemPacket;
 import org.joml.Vector3d;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -38,6 +40,7 @@ final class UpdateMotionGlidingTest {
     private static final int FIREWORK_ID = 42;
     private final List<Object> sentPackets = new ArrayList<>();
     private final EntityPacketListener entityListener = new EntityPacketListener();
+    private Runnable duringUseItemSend = () -> {};
     private MovementSync movementSync;
     private updateMotionTask task;
 
@@ -65,7 +68,10 @@ final class UpdateMotionGlidingTest {
             (proxy, method, arguments) -> {
                 if (method.getName().equals("isConnected")) return true;
                 // The per-tick end marker is asserted separately; keep it out of movement-packet counts.
-                if (method.getName().equals("send") && !(arguments[0] instanceof org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.ServerboundClientTickEndPacket)) sentPackets.add(arguments[0]);
+                if (method.getName().equals("send") && !(arguments[0] instanceof org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.ServerboundClientTickEndPacket)) {
+                    sentPackets.add(arguments[0]);
+                    if (arguments[0] instanceof ServerboundUseItemPacket) duringUseItemSend.run();
+                }
                 Class<?> returnType = method.getReturnType();
                 if (!returnType.isPrimitive()) return null;
                 if (returnType == boolean.class) return false;
@@ -156,6 +162,45 @@ final class UpdateMotionGlidingTest {
 
         assertVector(movementSync.velocity.get(), 0, BASE_Y, BASE_Z);
         assertTravelPosition();
+    }
+
+    @Test
+    void attachmentObservedWhileSendingUseItemStartsOnNextPhysicsTick() {
+        duringUseItemSend = () -> attachFirework(movementSync.entityId);
+        movementSync.queueBeforeMovement(new ServerboundUseItemPacket(Hand.MAIN_HAND, 1, 0, 0));
+
+        task.run();
+
+        assertVector(movementSync.velocity.get(), 0, BASE_Y, BASE_Z);
+        assertFalse(movementSync.getLastFlightTick().attached(),
+                "one physical tick must use a single tick-start attachment snapshot");
+        assertTrue(movementSync.hasAttachedFirework(), "the received attachment remains live server state");
+
+        double firstZ = movementSync.velocity.get().z;
+        task.run();
+        assertTrue(movementSync.getLastFlightTick().attached());
+        assertTrue(movementSync.velocity.get().z > firstZ, "the next tick may consume the observed boost");
+    }
+
+    @Test
+    void attachmentRemovedWhileSendingActionStopsOnNextPhysicsTick() {
+        attachFirework(movementSync.entityId);
+        duringUseItemSend = () -> entityListener.OnRemoveEntity(new ReceivePacketEvent<>(
+                new ClientboundRemoveEntitiesPacket(new int[]{FIREWORK_ID}),
+                ClientboundRemoveEntitiesPacket.class));
+        movementSync.queueBeforeMovement(new ServerboundUseItemPacket(Hand.MAIN_HAND, 1, 0, 0));
+
+        task.run();
+
+        assertVector(movementSync.velocity.get(), 0, BASE_Y / 2, 0.85 + BASE_Z / 2);
+        assertTrue(movementSync.getLastFlightTick().attached(),
+                "tick-start attachment removal cannot change the current physics result or trace");
+        assertFalse(movementSync.hasAttachedFirework(), "the removal remains live server state");
+
+        resetAirborneState();
+        task.run();
+        assertVector(movementSync.velocity.get(), 0, BASE_Y, BASE_Z);
+        assertFalse(movementSync.getLastFlightTick().attached());
     }
 
     @Test

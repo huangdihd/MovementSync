@@ -40,6 +40,22 @@ class P5fFallbackBoundaryTest extends P5eFallbackOwnerTest {
         assertEquals(23f, sync.pitch.get());
         assertEquals(0, uses());
     }
+    @Test void ordinaryDirectElytraOwnerStillGetsCheckedFallback() {
+        lava = true;
+        var cruise = new ElytraFlyMovement(new Vector3d(.5, 40, 80));
+        sync.claimFlightControlOwner(cruise, FlightControlAdmission.Mode.DIRECT);
+        motion.run();
+        assertEquals(-55f, sync.pitch.get());
+        assertEquals(1, uses());
+    }
+    @Test void ordinaryTransitionElytraOwnerStillGetsCheckedFallback() {
+        lava = true;
+        var transition = new ElytraFlyMovement(new Vector3d(.5, 40, 80));
+        sync.claimFlightControlOwner(transition, FlightControlAdmission.Mode.TRANSITION);
+        motion.run();
+        assertEquals(-55f, sync.pitch.get());
+        assertEquals(1, uses());
+    }
     @Test void risingAttachmentDoesNotKeepEmergencyClimbOwnership() {
         lava = true;
         attach();

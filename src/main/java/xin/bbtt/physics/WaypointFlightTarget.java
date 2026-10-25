@@ -13,6 +13,7 @@ public final class WaypointFlightTarget implements FlightTarget {
     private final boolean partial;
     private final double corridorRadius;
     private final World geometry;
+    private final List<List<Vector3d>> executionPaths;
     private int index;
     private boolean pursuit;
     private FlightTarget followed;
@@ -62,8 +63,16 @@ public final class WaypointFlightTarget implements FlightTarget {
 
     WaypointFlightTarget(List<Vector3d> waypoints, Vector3d goal, boolean landing,
             boolean partial, double corridorRadius, World geometry) {
+        this(waypoints, goal, landing, partial, corridorRadius, geometry, List.of());
+    }
+
+    private WaypointFlightTarget(List<Vector3d> waypoints, Vector3d goal, boolean landing,
+            boolean partial, double corridorRadius, World geometry,
+            List<List<Vector3d>> executionPaths) {
         if (waypoints.isEmpty() || !goal.isFinite() || !Double.isFinite(corridorRadius)
-                || corridorRadius < 0 || waypoints.stream().anyMatch(p -> !p.isFinite()))
+                || corridorRadius < 0 || waypoints.stream().anyMatch(p -> !p.isFinite())
+                || executionPaths.stream().anyMatch(path -> path.size() < 2
+                        || path.stream().anyMatch(p -> !p.isFinite())))
             throw new IllegalArgumentException("Invalid geometric route");
         this.waypoints = waypoints.stream().map(Vector3d::new).toList();
         this.goal = new Vector3d(goal);
@@ -71,8 +80,18 @@ public final class WaypointFlightTarget implements FlightTarget {
         this.partial = partial;
         this.corridorRadius = corridorRadius;
         this.geometry = geometry;
+        this.executionPaths = executionPaths.stream()
+                .map(path -> path.stream().map(Vector3d::new).toList()).toList();
         // Planner routes include their starting point as the first corridor vertex.
         this.index = waypoints.size() > 1 ? 1 : 0;
+    }
+
+    /** Immutable exact fixed-control trajectories. The epsilon only absorbs replay
+     * arithmetic; it is not a navigation or arrival tolerance. */
+    public static WaypointFlightTarget executionWitness(List<List<Vector3d>> paths,
+            Vector3d goal, boolean landing) {
+        if (paths.isEmpty()) throw new IllegalArgumentException("Missing execution path");
+        return new WaypointFlightTarget(paths.get(0), goal, landing, false, 0, null, paths);
     }
 
     public Vector3d goal() { return new Vector3d(goal); }
@@ -80,6 +99,24 @@ public final class WaypointFlightTarget implements FlightTarget {
     public int index() { return index; }
     public boolean partial() { return partial; }
     public double corridorRadius() { return corridorRadius; }
+    public boolean landingIntent() { return landing && !partial; }
+    public boolean executionWitness() { return !executionPaths.isEmpty(); }
+    /** Independent cursor snapshot retaining live planner geometry for admission checks. */
+    public WaypointFlightTarget corridorSnapshot() {
+        var snapshot = new WaypointFlightTarget(waypoints, goal, landing, partial, corridorRadius,
+                geometry, executionPaths);
+        snapshot.index = index;
+        return snapshot;
+    }
+
+    /** Geometric checkpoint equality for an asynchronous controller publication. */
+    public boolean sameCorridor(WaypointFlightTarget other) {
+        return other != null && index == other.index && landing == other.landing
+                && partial == other.partial
+                && Double.compare(corridorRadius, other.corridorRadius) == 0
+                && goal.equals(other.goal) && waypoints.equals(other.waypoints)
+                && executionPaths.equals(other.executionPaths);
+    }
     /** Planner-backed routes carry geometric terrain validation only, not an executable
      * control or recovery certificate. Budget exhaustion cannot turn this into proof. */
     public boolean terrainValidated() { return geometry != null; }
@@ -88,10 +125,26 @@ public final class WaypointFlightTarget implements FlightTarget {
     @Override public boolean landed() { return !pursuit && landing && !partial && index == waypoints.size() - 1; }
     @Override public boolean lost() { return false; }
 
+    /** Exact supported goto completion; admission and the controller share these bounds. */
+    public static boolean normalLanding(World world, PhysicsState state, Vector3d goal) {
+        Vector3d p = state.position();
+        double r = PlayerPose.HALF_WIDTH;
+        return state.onGround() && p.isFinite() && goal.isFinite()
+                && Math.abs(p.y - goal.y) <= 1 && Math.hypot(p.x - goal.x, p.z - goal.z) <= 2
+                && LocalAirRoute.visible(world, p, p, PlayerPose.STANDING)
+                && FlightHazards.safeLanding(world, p)
+                && world.isBoxColliding(p.x - r, p.y - .05, p.z - r, p.x + r, p.y, p.z + r);
+    }
+
+    public boolean acceptsLanding(World world, PhysicsState state) {
+        return landingIntent() && normalLanding(world, state, goal);
+    }
+
     /** A segment must fit in one convex corridor capsule (never cut across a bend).
      * Terrain must additionally be revalidated by the controller's safety prediction. */
     public boolean contains(Vector3d from, Vector3d to) {
         if (!from.isFinite() || !to.isFinite()) return false;
+        if (!executionPaths.isEmpty()) return exactContains(from, to);
         if (geometry != null) return expandedContains(from, to);
         if (waypoints.size() == 1) return from.distance(waypoints.get(0)) <= corridorRadius
                 && to.distance(waypoints.get(0)) <= corridorRadius;
@@ -101,6 +154,14 @@ public final class WaypointFlightTarget implements FlightTarget {
             if (distance(from, waypoints.get(i - 1), waypoints.get(i)) <= radius
                     && distance(to, waypoints.get(i - 1), waypoints.get(i)) <= radius) return true;
         }
+        return false;
+    }
+
+    private boolean exactContains(Vector3d from, Vector3d to) {
+        final double epsilon = 1.0e-5;
+        for (var path : executionPaths) for (int i = 1; i < path.size(); i++)
+            if (distance(from, path.get(i - 1), path.get(i)) <= epsilon
+                    && distance(to, path.get(i - 1), path.get(i)) <= epsilon) return true;
         return false;
     }
 

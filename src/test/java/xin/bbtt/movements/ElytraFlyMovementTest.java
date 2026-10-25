@@ -71,6 +71,205 @@ final class ElytraFlyMovementTest extends ElytraCommandTestSupport {
     }
 
     @Test
+    void skippedMovementTicksStillHandInitialClimbBackToDirectCruise() throws Exception {
+        var world = new xin.bbtt.world.World() {
+            @Override public boolean chunkLoaded(int x, int z) { return true; }
+        };
+        var worldField = MovementSync.class.getDeclaredField("world");
+        worldField.setAccessible(true);
+        worldField.set(movementSync, world);
+        movementSync.getMovementController().pause();
+        movementSync.position.set(new Vector3d(0, 70, 0));
+        movementSync.velocity.set(new Vector3d(0, .1, 1));
+        movementSync.onGround.set(true);
+
+        var flight = new ElytraFlyMovement(new Vector3d(0, 70, 3000));
+        flight.init();
+        movementSync.onGround.set(false);
+        movementSync.setGliding(true);
+        flight.onTick();
+        var handoffField = ElytraFlyMovement.class.getDeclaredField("climbHandoff");
+        handoffField.setAccessible(true);
+        var handoff = (xin.bbtt.flight.LocalClimbHandoff) handoffField.get(flight);
+        assertEquals(xin.bbtt.flight.LocalClimbHandoff.Phase.LOCAL_CLIMB, handoff.phase());
+
+        for (int tick = 1; tick <= xin.bbtt.flight.LocalClimbHandoff.STABLE_TICKS; tick++) {
+            var position = new Vector3d(0, 79 + tick * .1, tick);
+            var velocity = new Vector3d(0, .1, 1);
+            movementSync.position.set(position);
+            movementSync.velocity.set(velocity);
+            movementSync.completePhysicsStep(new MovementSync.FlightTickTrace(position, velocity, false,
+                    false, false, true, false, 0, -20, xin.bbtt.physics.PlayerInput.NONE, 0));
+            if (tick % 2 == 0) flight.onTick(); // production movement ticks can miss physical versions
+        }
+
+        assertEquals(xin.bbtt.flight.LocalClimbHandoff.Phase.CRUISE, handoff.phase(),
+                "every recorded physical state was clear, so planner cadence must not retain local ownership");
+        flight.onStop();
+    }
+
+    @Test
+    void correctionDiscardsOldClimbProofAndUnpublishedTicksCannotCompleteIt() throws Exception {
+        var world = new xin.bbtt.world.World() {
+            @Override public boolean chunkLoaded(int x, int z) { return true; }
+        };
+        var worldField = MovementSync.class.getDeclaredField("world");
+        worldField.setAccessible(true);
+        worldField.set(movementSync, world);
+        movementSync.getMovementController().pause();
+        movementSync.position.set(new Vector3d(0, 70, 0));
+        movementSync.onGround.set(true);
+        var flight = new ElytraFlyMovement(new Vector3d(0, 70, 3000));
+        flight.init();
+        movementSync.onGround.set(false);
+        movementSync.setGliding(true);
+        flight.onTick();
+        var field = ElytraFlyMovement.class.getDeclaredField("climbHandoff");
+        field.setAccessible(true);
+        var handoff = (xin.bbtt.flight.LocalClimbHandoff) field.get(flight);
+        try {
+            movementSync.position.set(new Vector3d(0, 80, 0));
+            movementSync.velocity.set(new Vector3d(0, .1, 1));
+            for (int tick = 0; tick < 9; tick++) {
+                movementSync.completePhysicsStep(new MovementSync.FlightTickTrace(
+                        movementSync.position.get(), movementSync.velocity.get(), false,
+                        false, false, true, false, 0, -20, xin.bbtt.physics.PlayerInput.NONE, 0));
+                flight.onTick();
+            }
+            assertEquals(9, handoff.stableTicks());
+            movementSync.invalidateFlightTickContinuity();
+            flight.onTick();
+            assertEquals(0, handoff.stableTicks());
+            // Simulate a clock-only/manual driver: no unpublished state may certify clearance.
+            for (int tick = 0; tick < 10; tick++) {
+                movementSync.completePhysicsStep();
+                flight.onTick();
+            }
+            assertEquals(0, handoff.stableTicks());
+            assertEquals(xin.bbtt.flight.LocalClimbHandoff.Phase.LOCAL_CLIMB, handoff.phase());
+            for (int tick = 0; tick < 10; tick++) {
+                movementSync.completePhysicsStep(new MovementSync.FlightTickTrace(
+                        movementSync.position.get(), movementSync.velocity.get(), false,
+                        false, false, true, false, 0, -20, xin.bbtt.physics.PlayerInput.NONE, 0));
+                flight.onTick();
+                if (tick < 9) assertEquals(xin.bbtt.flight.LocalClimbHandoff.Phase.LOCAL_CLIMB, handoff.phase());
+            }
+            assertEquals(xin.bbtt.flight.LocalClimbHandoff.Phase.CRUISE, handoff.phase());
+        } finally { flight.onStop(); }
+    }
+
+    @Test
+    void correctionReplaysNewContinuityFramesPublishedBeforeMovementTick() throws Exception {
+        var flight = startReplayLocalClimb();
+        var field = ElytraFlyMovement.class.getDeclaredField("climbHandoff");
+        field.setAccessible(true);
+        var handoff = (xin.bbtt.flight.LocalClimbHandoff) field.get(flight);
+        try {
+            for (int tick = 0; tick < 9; tick++) {
+                publishReplayClimbFrame(.1);
+                flight.onTick();
+            }
+            assertEquals(9, handoff.stableTicks());
+            assertEquals(xin.bbtt.flight.LocalClimbHandoff.Phase.LOCAL_CLIMB, handoff.phase());
+            movementSync.invalidateFlightTickContinuity();
+            for (int tick = 0; tick < 10; tick++) publishReplayClimbFrame(.1);
+            flight.onTick();
+            assertEquals(xin.bbtt.flight.LocalClimbHandoff.Phase.CRUISE, handoff.phase(),
+                    "new continuity frames must survive a delayed movement tick");
+        } finally { flight.onStop(); }
+    }
+
+    @Test
+    void unsafeFrameAfterQualifyingClearFramePreventsBacklogHandoff() throws Exception {
+        var flight = startReplayLocalClimb();
+        var field = ElytraFlyMovement.class.getDeclaredField("climbHandoff");
+        field.setAccessible(true);
+        var handoff = (xin.bbtt.flight.LocalClimbHandoff) field.get(flight);
+        try {
+            for (int tick = 0; tick < 9; tick++) {
+                publishReplayClimbFrame(.1);
+                flight.onTick();
+            }
+            assertEquals(9, handoff.stableTicks());
+            publishReplayClimbFrame(.1); // Qualifying tenth frame is only a backlog prefix.
+            publishReplayClimbFrame(-.2);
+            flight.onTick();
+            assertAll("the unsafe backlog tail must retain local ownership",
+                    () -> assertEquals(xin.bbtt.flight.LocalClimbHandoff.Phase.LOCAL_CLIMB, handoff.phase()),
+                    () -> assertEquals(0, handoff.stableTicks()));
+        } finally { flight.onStop(); }
+    }
+
+    @Test
+    void clearUnsafeClearBacklogRequiresTenClearFramesAfterUnsafeFrame() throws Exception {
+        var flight = startReplayLocalClimb();
+        var field = ElytraFlyMovement.class.getDeclaredField("climbHandoff");
+        field.setAccessible(true);
+        var handoff = (xin.bbtt.flight.LocalClimbHandoff) field.get(flight);
+        try {
+            for (int tick = 0; tick < 10; tick++) publishReplayClimbFrame(.1);
+            publishReplayClimbFrame(-.2);
+            publishReplayClimbFrame(.1);
+            flight.onTick();
+            assertAll("only the consecutive clear suffix may certify handoff",
+                    () -> assertEquals(xin.bbtt.flight.LocalClimbHandoff.Phase.LOCAL_CLIMB, handoff.phase()),
+                    () -> assertEquals(1, handoff.stableTicks()));
+            for (int tick = 0; tick < 9; tick++) {
+                publishReplayClimbFrame(.1);
+                flight.onTick();
+                if (tick < 8)
+                    assertEquals(xin.bbtt.flight.LocalClimbHandoff.Phase.LOCAL_CLIMB, handoff.phase());
+            }
+            assertEquals(xin.bbtt.flight.LocalClimbHandoff.Phase.CRUISE, handoff.phase());
+        } finally { flight.onStop(); }
+    }
+
+    private ElytraFlyMovement startReplayLocalClimb() throws Exception {
+        var world = new xin.bbtt.world.World() {
+            @Override public boolean chunkLoaded(int x, int z) { return true; }
+        };
+        var worldField = MovementSync.class.getDeclaredField("world");
+        worldField.setAccessible(true);
+        worldField.set(movementSync, world);
+        movementSync.getMovementController().pause();
+        movementSync.position.set(new Vector3d(0, 70, 0));
+        movementSync.velocity.set(new Vector3d(0, .1, 1));
+        movementSync.onGround.set(true);
+        var flight = new ElytraFlyMovement(new Vector3d(0, 70, 3000));
+        flight.init();
+        movementSync.onGround.set(false);
+        movementSync.setGliding(true);
+        flight.onTick();
+        return flight;
+    }
+
+    private void publishReplayClimbFrame(double verticalVelocity) {
+        movementSync.position.set(new Vector3d(0, 80, 0));
+        movementSync.velocity.set(new Vector3d(0, verticalVelocity, 1));
+        movementSync.completePhysicsStep(new MovementSync.FlightTickTrace(
+                movementSync.position.get(), movementSync.velocity.get(), false,
+                false, false, true, false, 0, -20, xin.bbtt.physics.PlayerInput.NONE, 0));
+    }
+
+    @Test
+    void initializationDoesNotWaitForPhysicsMonitorWhileQueueLockIsHeld() throws Exception {
+        movementSync.getMovementController().pause();
+        movementSync.onGround.set(true);
+        var flight = new ElytraFlyMovement(new Vector3d(0, 70, 3000));
+        var worker = java.util.concurrent.Executors.newSingleThreadExecutor();
+        try {
+            synchronized (movementSync) {
+                // The physics thread can need the queue lock while holding this monitor.
+                // init must not acquire it back through clock/continuity getters.
+                worker.submit(flight::init).get(2, java.util.concurrent.TimeUnit.SECONDS);
+            }
+        } finally {
+            worker.shutdownNow();
+            flight.onStop();
+        }
+    }
+
+    @Test
     void cancellationOwnsIndependentLandingAndRepeatedStopsPreserveIt() {
         movementSync.getMovementController().pause();
         movementSync.setGliding(true);
@@ -309,6 +508,23 @@ final class ElytraFlyMovementTest extends ElytraCommandTestSupport {
         assertTrue(flight.isFinished());
         assertTrue(messages.list.stream().anyMatch(message -> message.getFormattedMessage().equals(
                 LangManager.get("movementsync.command.elytra.fly.failed"))));
+    }
+
+    @Test
+    void nearbySupportedLandingAtDifferentElevationFailsStrictArrival() {
+        movementSync.onGround.set(false);
+        movementSync.position.set(new Vector3d(0, 2, 0));
+        ElytraFlyMovement flight = new ElytraFlyMovement(new Vector3d(8, 0, 0));
+        flight.onTick();
+        assertTrue(movementSync.isGliding());
+
+        movementSync.setGliding(false);
+        movementSync.onGround.set(true);
+        flight.onTick();
+
+        assertTrue(flight.isFinished());
+        assertEquals(ElytraFlyMovement.Completion.FAILED, flight.completion(),
+                "horizontal proximity must not mask a wrong-elevation flight failure");
     }
 
     private void assertLandingMessage(double distance) {

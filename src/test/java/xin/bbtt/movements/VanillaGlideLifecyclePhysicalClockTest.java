@@ -15,33 +15,36 @@ class VanillaGlideLifecyclePhysicalClockTest extends PhysicalClockTestSupport {
         lifecycle.execute(movementSync, new ElytraFlightController.Decision(0, 0, true,
                 ElytraFlightController.Phase.CRUISE), InventoryManager.ElytraAction.READY);
         assertEquals(40, lifecycle.rocketCooldown());
+        assertEquals(1, dispatchQueuedFireworks());
         return lifecycle;
     }
 
     @Test
-    void repeatedPlanningCannotConsumePhysicalCooldownOrBoostLifetime() {
+    void repeatedPlanningConsumesDecisionCooldownButCannotBypassPhysicalLatchOrBoostLifetime() {
         physicalTick();
         var lifecycle = queueRocket();
         for (int i = 0; i < 50; i++) {
             lifecycle.tickCooldown(movementSync);
             movementSync.publishPlacementFrame(0, 0, 0, 0, 0, 1.62);
         }
-        assertEquals(40, lifecycle.rocketCooldown());
+        assertEquals(0, lifecycle.rocketCooldown());
         assertEquals(21, lifecycle.confirmedBoostTicks(movementSync, true));
+        org.junit.jupiter.api.Assertions.assertFalse(movementSync.fireworkRequestReady());
     }
 
     @Test
-    void skippedPlanningChargesAllPhysicalTicksFromRequestNotClockOrigin() {
+    void skippedPlanningChargesBoostLifetimeButNotDecisionCooldown() {
         for (int i = 0; i < 100; i++) physicalTick();
         var lifecycle = queueRocket();
         for (int i = 0; i < 7; i++) physicalTick();
         assertEquals(14, lifecycle.confirmedBoostTicks(movementSync, true));
         lifecycle.tickCooldown(movementSync);
-        assertEquals(33, lifecycle.rocketCooldown());
+        assertEquals(39, lifecycle.rocketCooldown());
         for (int i = 0; i < 40; i++) physicalTick();
         lifecycle.tickCooldown(movementSync);
-        assertEquals(0, lifecycle.rocketCooldown());
+        assertEquals(38, lifecycle.rocketCooldown());
         assertEquals(1, lifecycle.confirmedBoostTicks(movementSync, true));
+        org.junit.jupiter.api.Assertions.assertTrue(movementSync.fireworkRequestReady());
     }
 
     @Test
@@ -49,7 +52,7 @@ class VanillaGlideLifecyclePhysicalClockTest extends PhysicalClockTestSupport {
         var lifecycle = queueRocket();
         for (int i = 0; i < 7; i++) physicalTick();
         lifecycle.tickCooldown(movementSync);
-        assertEquals(33, lifecycle.rocketCooldown());
+        assertEquals(39, lifecycle.rocketCooldown());
         assertEquals(14, lifecycle.confirmedBoostTicks(movementSync, true));
         assertEquals(14, lifecycle.confirmedBoostTicks(movementSync, true));
         assertEquals(0, lifecycle.confirmedBoostTicks(movementSync, false));

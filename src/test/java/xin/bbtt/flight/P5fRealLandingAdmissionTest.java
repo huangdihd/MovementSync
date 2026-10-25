@@ -15,6 +15,16 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /** Synthetic loaded support; not a reconstruction of the field's unrecorded terrain. */
 class P5fRealLandingAdmissionTest extends ElytraCommandTestSupport {
+    private World landingWorld() {
+        return new World() {
+            @Override public boolean chunkLoaded(int x, int z) { return true; }
+            @Override public BlockState getBlockStateAt(Vector3d p) {
+                return p.y < 60 ? new BlockState("stone", 1, Map.of(), "block", 1.5, true, "STONE")
+                        : super.getBlockStateAt(p);
+            }
+        };
+    }
+
     @Test void highOverGoalWith64RocketsMustDescendAndActuallyLandWithoutMoreThrust() throws Exception {
         land(110, false);
     }
@@ -27,14 +37,36 @@ class P5fRealLandingAdmissionTest extends ElytraCommandTestSupport {
         land(110, true);
     }
 
+    @Test void liveDeviationCannotRebaseAnAlreadyPublishedTerminalExecutionCorridor() throws Exception {
+        World world = landingWorld();
+        var field = MovementSync.class.getDeclaredField("world");
+        field.setAccessible(true);
+        field.set(movementSync, world);
+        var goal = new Vector3d(175, 60, -32);
+        var initial = new Vector3d(175, 64, -36);
+        movementSync.position.set(initial);
+        movementSync.velocity.set(new Vector3d(0, -.1, .4));
+        movementSync.onGround.set(false);
+        movementSync.setGliding(true);
+        Object owner = new Object();
+        movementSync.claimFlightControlOwner(owner, FlightControlAdmission.Mode.LOCAL_SOLVER);
+        var source = FlightControlAdmission.snapshot(movementSync);
+        var route = new WaypointFlightTarget(List.of(initial, goal), goal, false);
+        try (var controller = new LocalGotoController()) {
+            assertTrue(controller.request(movementSync, owner, source, route, goal));
+            controller.awaitIdle(5, TimeUnit.SECONDS);
+            assertEquals(LocalGotoController.Status.SAFE_PREFIX, controller.latest().status());
+            movementSync.position.set(new Vector3d(initial).add(.25, 0, 0));
+
+            movementSync.snapshotInput();
+
+            assertNotNull(movementSync.getFlightControlFailure(),
+                    "a live displacement must not be absorbed into the published terminal replay");
+        }
+    }
+
     private void land(double height, boolean initiallyAttached) throws Exception {
-        World world = new World() {
-            @Override public boolean chunkLoaded(int x, int z) { return true; }
-            @Override public BlockState getBlockStateAt(Vector3d p) {
-                return p.y < 60 ? new BlockState("stone", 1, Map.of(), "block", 1.5, true, "STONE")
-                        : super.getBlockStateAt(p);
-            }
-        };
+        World world = landingWorld();
         var field = MovementSync.class.getDeclaredField("world");
         field.setAccessible(true);
         field.set(movementSync, world);
@@ -80,7 +112,9 @@ class P5fRealLandingAdmissionTest extends ElytraCommandTestSupport {
                 // supplied the attitude used for this physics step.
                 movementSync.pitch.set(89f);
                 var input = movementSync.snapshotInput();
-                assertNotEquals(89f, movementSync.pitch.get(), "admission must apply landing control");
+                assertNotEquals(89f, movementSync.pitch.get(), "admission must apply landing control at tick " + tick
+                        + ": state=" + source.state() + " result=" + controller.latest()
+                        + " failure=" + movementSync.getFlightControlFailure());
                 assertNull(movementSync.getFlightControlFailure(), "landing admission must remain valid");
                 var next = new GlidingPhysics(movementSync.yaw.get(), movementSync.pitch.get(), attached, input,
                         MovementParameters.DEFAULT).step(world, source.state(), PlayerPose.HALF_WIDTH, PlayerPose.GLIDING.height());

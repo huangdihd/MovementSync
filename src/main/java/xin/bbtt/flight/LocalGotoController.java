@@ -16,7 +16,6 @@ import xin.bbtt.world.World;
 public final class LocalGotoController implements AutoCloseable {
     private static final int HORIZON = 12;
     private static final int RESERVE_TICKS = 6;
-    private static final double LANDING_RADIUS = 2;
     private final ExecutorService worker = Executors.newSingleThreadExecutor(r -> {
         Thread thread = new Thread(r, "flight-local-goto");
         thread.setDaemon(true);
@@ -90,24 +89,25 @@ public final class LocalGotoController implements AutoCloseable {
         Objects.requireNonNull(route);
         Vector3d endpoint = new Vector3d(goal);
         if (!endpoint.isFinite()) throw new IllegalArgumentException("Non-finite goal");
-        World world;
-        MovementParameters movement;
-        float yaw, pitch;
-        boolean attached;
-        synchronized (sync) {
-            if (!current(sync, source)) return false;
-            world = sync.getWorld();
-            movement = sync.getMovementParameters();
-            yaw = sync.yaw.get();
-            pitch = sync.pitch.get();
-            attached = sync.hasAttachedFirework();
-        }
-        var snapshot = new WaypointFlightTarget(route.waypoints(), route.goal(), route.landed(),
-                route.partial(), route.corridorRadius());
+        var snapshot = route.corridorSnapshot();
         synchronized (this) {
             if (closed || busy || source.tick() == lastTick && source.epoch() == lastEpoch
                     && source.generation() == lastGeneration
                     && (source.tick() != 0 || source.state().equals(lastState))) return false;
+            World world;
+            MovementParameters movement;
+            float yaw, pitch;
+            boolean attached;
+            synchronized (sync) {
+                if (!current(sync, source)) return false;
+                world = sync.getWorld();
+                movement = sync.getMovementParameters();
+                yaw = sync.yaw.get();
+                pitch = sync.pitch.get();
+                attached = sync.hasAttachedFirework();
+                float forward = heading(source.state().position(), snapshot.position(), yaw);
+                if (!sync.registerForwardFlightEmergency(owner, source, forward, snapshot)) return false;
+            }
             busy = true;
             lastTick = source.tick();
             lastState = source.state();
@@ -142,6 +142,8 @@ public final class LocalGotoController implements AutoCloseable {
             workerPoints = points;
             workerEpoch = source.epoch();
             workerGeneration = source.generation();
+        } else {
+            workerRoute.advanceToLiveSegment(route);
         }
         var lookahead = workerRoute.lookahead(world, source.state());
         Vector3d forwardPoint = lookahead.isEmpty() ? points.get(points.size() - 1) : lookahead.get(0);
@@ -150,6 +152,8 @@ public final class LocalGotoController implements AutoCloseable {
         List<FlightControlAdmission.Step> reserve = List.of();
         LocalLookaheadSolver.PrefixResult unpowered = null, powered = null;
         boolean rocket = false;
+        boolean terminalArrival = false;
+        boolean requireAirborne = tracking != null || route.partial() || !route.landingIntent();
         Status status = Status.UNPROVEN;
         if (tracking == null && normalLanding(world, source.state(), goal)) {
             status = Status.LANDED;
@@ -193,6 +197,7 @@ public final class LocalGotoController implements AutoCloseable {
                     && Math.hypot(source.state().position().x - goal.x,
                             source.state().position().z - goal.z) < 32);
             boolean needsClimb = source.state().position().y < goal.y - 1;
+            terminalArrival = supportedGoal && arriving && !needsClimb;
             if (allowedRocket && !attached && accepted != null && (!arriving || needsClimb)) {
                 powered = solver.solvePrefix(anchors, source.state(), world, movement, yaw, pitch, true, budget, scoringTarget);
                 if (!powered.prefix().isEmpty()) {
@@ -220,6 +225,7 @@ public final class LocalGotoController implements AutoCloseable {
             // Preserve maneuvering margin over lava rather than matching a dangerously
             // low route at minimum speed. Follow/End never opt in to this policy.
             boolean lavaMargin = knownReturn && tracking == null && needsLavaMargin(world, source.state());
+            if (lavaMargin) terminalArrival = false;
             if (lavaMargin && (attached || allowedRocket && accepted != null)) {
                 // Existing thrust still needs escape steering: the ordinary solver may
                 // track a descending route straight back toward lava. Do not stack a
@@ -239,6 +245,12 @@ public final class LocalGotoController implements AutoCloseable {
                     rocket = false;
                 }
             }
+            // Keep a terminal prefix within the admission revalidation horizon. Every later
+            // cursor then reaches the same checkpoint before its exact landing/recovery proof.
+            if (terminalArrival && !rocket && !prefix.isEmpty()
+                    && prefix.get(0).control().phase() == ElytraFlightController.Phase.LANDING
+                    && prefix.size() > RESERVE_TICKS)
+                prefix = List.copyOf(prefix.subList(0, RESERVE_TICKS));
             // A finite non-rocket braking preview, not a terminal recovery certificate.
             if (!prefix.isEmpty()) {
                 var selected = prefix.get(0).control();
@@ -292,16 +304,25 @@ public final class LocalGotoController implements AutoCloseable {
             }
         }
         synchronized (sync) {
-            if (closed || sync.getWorld() != world || !current(sync, source)) return;
-            sync.registerForwardFlightEmergency(owner, source, forward);
+            if (closed || sync.getWorld() != world || !current(sync, source)
+                    || !sync.refineForwardFlightEmergency(owner, source, forward, route)) return;
             if (!prefix.isEmpty()) {
                 var selected = prefix.get(0).control();
                 // Use the admitted heading for the use-item packet, including return turns.
-                sync.publishFlightPrefix(owner, source, prefix, reserve, null, rocket ? () -> {
+                // A dynamic endpoint is not permission to remove geometric admission. Its
+                // already terrain-checked fixed prefix gets an exact immutable witness instead
+                // of inheriting an obsolete endpoint corridor. Static routes retain their
+                // planner corridor; goal-arrival maneuvers use their exact execution witness.
+                WaypointFlightTarget admissionRoute = route;
+                if (tracking != null || terminalArrival && !rocket)
+                    admissionRoute = executionCorridor(world, movement, prefix, reserve,
+                            attached || rocket, goal, terminalArrival && !rocket);
+                sync.publishFlightPrefix(owner, source, prefix, reserve,
+                        admissionRoute, rocket ? () -> {
                     sync.setYawToward(selected.yaw());
                     sync.pitch.set(selected.pitch());
                     accepted.run();
-                } : () -> {});
+                } : () -> {}, requireAirborne);
             }
             if (sync.getFlightScopeRouter().isShadowEnabled()
                     && (latest == null || source.tick() - latest.tick() >= 10 || status != latest.status()))
@@ -315,12 +336,54 @@ public final class LocalGotoController implements AutoCloseable {
         }
     }
 
+    /** A terminal maneuver is revalidated against the exact selected physical curve,
+     * not the navigation centreline that the safe braking curve intentionally leaves. */
+    private static WaypointFlightTarget executionCorridor(World world, MovementParameters movement,
+            List<FlightControlAdmission.Step> prefix, List<FlightControlAdmission.Step> reserve,
+            boolean powered, Vector3d goal, boolean landing) {
+        var paths = new ArrayList<List<Vector3d>>();
+        paths.add(executionPath(world, movement, prefix, powered));
+        if (!reserve.isEmpty()) paths.add(executionPath(world, movement, reserve, powered));
+        if (landing && !powered) {
+            var control = prefix.get(0).control();
+            var state = replay(world, movement, prefix.get(0).expected(), control, false,
+                    prefix.size(), goal, true).end();
+            var continuation = replay(world, movement, state, control, false, 80, goal, true);
+            if (normalLanding(world, continuation.end(), goal))
+                paths.add(executionPath(world, movement, continuation.steps(), false));
+            var recovery = new ElytraFlightController.Decision(control.yaw(), -55, false,
+                    ElytraFlightController.Phase.CRUISE);
+            var recovered = replay(world, movement, state, recovery, false,
+                    RESERVE_TICKS, goal, false);
+            if (!recovered.steps().isEmpty())
+                paths.add(executionPath(world, movement, recovered.steps(), false));
+        }
+        return WaypointFlightTarget.executionWitness(paths, goal, landing);
+    }
+
+    private static List<Vector3d> executionPath(World world, MovementParameters movement,
+            List<FlightControlAdmission.Step> steps, boolean powered) {
+        var points = new ArrayList<Vector3d>(steps.size() + 1);
+        points.add(steps.get(0).expected().position());
+        for (var step : steps) {
+            var result = new GlidingPhysics(step.control().yaw(), step.control().pitch(), powered,
+                    PlayerInput.NONE, movement).step(world, step.expected(),
+                            PlayerPose.HALF_WIDTH, PlayerPose.GLIDING.height());
+            points.add(result.position());
+        }
+        return List.copyOf(points);
+    }
+
     /** Fixed, bounded arrival candidates; only exact replay may admit ground contact. */
-    private static List<FlightControlAdmission.Step> arrival(World world, MovementParameters movement,
-            PhysicsState state, Vector3d goal, boolean attached, float forward) {
+    static List<FlightControlAdmission.Step> arrival(World world, MovementParameters movement,
+            PhysicsState state, Vector3d goal, boolean attached, float fallbackHeading) {
+        float forward = heading(state.position(), goal, fallbackHeading);
         List<FlightControlAdmission.Step> best = List.of();
         double bestScore = Double.NEGATIVE_INFINITY;
         for (float turn : new float[]{0, -30, 30, -90, 90, 180}) {
+            // Reversing attached thrust is not braking: it erases forward glide
+            // range before the server-reported attachment can expire.
+            if (attached && Math.cos(Math.toRadians(turn)) <= 0) continue;
             for (float pitch : new float[]{-60, -30, 0, 20, 40, 60, 85}) {
                 var control = new ElytraFlightController.Decision(forward + turn, pitch, false,
                         ElytraFlightController.Phase.LANDING);
@@ -430,7 +493,9 @@ public final class LocalGotoController implements AutoCloseable {
             // Cruise/Follow retain their airborne replay policy; fall distance alone
             // is not touchdown damage while gliding toward a moving target.
             if (landing && next.fallDistance() >= movement.safeFallDistance()
-                    || next.collidedX() || next.collidedZ() || state.velocity().y > .003 && travel.velocity().y == 0
+                    || next.collidedX() || next.collidedZ()
+                    || next.onGround() && attached
+                    || state.velocity().y > .003 && travel.velocity().y == 0
                     || !LocalAirRoute.visible(world, state.position(), next.position(), PlayerPose.GLIDING)
                     || !hazardFree(world, state.position(), next.position())
                     || next.onGround() && (!landing || !normalLanding(world, end, goal)
@@ -461,13 +526,7 @@ public final class LocalGotoController implements AutoCloseable {
 
     /** Being on ground alone is never goto success (wrong height, unsafe support and void fail). */
     public static boolean normalLanding(World world, PhysicsState state, Vector3d goal) {
-        Vector3d p = state.position();
-        double r = PlayerPose.HALF_WIDTH;
-        return state.onGround() && p.isFinite() && goal.isFinite()
-                && Math.abs(p.y - goal.y) <= 1 && Math.hypot(p.x - goal.x, p.z - goal.z) <= LANDING_RADIUS
-                && LocalAirRoute.visible(world, p, p, PlayerPose.STANDING)
-                && FlightHazards.safeLanding(world, p)
-                && world.isBoxColliding(p.x - r, p.y - .05, p.z - r, p.x + r, p.y, p.z + r);
+        return WaypointFlightTarget.normalLanding(world, state, goal);
     }
 
     private static float heading(Vector3d from, Vector3d to, float fallback) {

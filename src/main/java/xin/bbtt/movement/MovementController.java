@@ -113,15 +113,24 @@ public class MovementController {
     }
 
     public void cancelAll() {
+        cancelAll(true);
+    }
+
+    /** The caller has already installed the replacement flight owner atomically. */
+    public void cancelAllPreservingFlightControls() {
+        cancelAll(false);
+    }
+
+    private void cancelAll(boolean invalidateFlightControls) {
         synchronized (stateLock) {
             movements.clear();
-            stopCurrent();
+            stopCurrent(invalidateFlightControls);
         }
     }
 
     public void finishCurrentMovement() {
         synchronized (stateLock) {
-            stopCurrent();
+            stopCurrent(true);
         }
         tryExecuteNext();
     }
@@ -135,19 +144,19 @@ public class MovementController {
         synchronized (stateLock) {
             if (currentMovement != expectedMovement
                     || currentActivationId != expectedActivationId) return false;
-            stopCurrent();
+            stopCurrent(true);
         }
         tryExecuteNext();
         return true;
     }
 
-    private void stopCurrent() {
+    private void stopCurrent(boolean invalidateFlightControls) {
         if (currentTaskFuture != null) {
             currentTaskFuture.cancel(true);
             currentTaskFuture = null;
         }
         if (currentMovement != null) {
-            MovementSync.INSTANCE.invalidateFlightControls();
+            if (invalidateFlightControls) MovementSync.INSTANCE.invalidateFlightControls();
             try { currentMovement.onStop(); } catch (Exception e) { MovementSync.getLogger().warn(LangManager.get("movementsync.movement.error.stop"), e); }
             currentMovement = null;
         }

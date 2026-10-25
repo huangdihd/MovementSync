@@ -29,6 +29,7 @@ final class UpdateMotionInputTest {
     private updateMotionTask task;
     private Runnable duringCollision = () -> {};
     private Runnable duringInputSend = () -> {};
+    private boolean throwTickEnd;
 
     @BeforeEach
     void setUp() throws Exception {
@@ -61,6 +62,8 @@ final class UpdateMotionInputTest {
                     if (method.getName().equals("send")) {
                         packets.add(arguments[0]);
                         if (arguments[0] instanceof ServerboundPlayerInputPacket) duringInputSend.run();
+                        if (throwTickEnd && arguments[0] instanceof ServerboundClientTickEndPacket)
+                            throw new IllegalStateException("tick-end send failed");
                     }
                     if (method.getReturnType() == boolean.class) return true;
                     return null;
@@ -74,6 +77,20 @@ final class UpdateMotionInputTest {
         setBotField("session", null);
         Bot.INSTANCE.setServer(null);
         MovementSync.INSTANCE = null;
+    }
+
+    @Test
+    void tickEndSendFailureCannotEscapeAndCancelFuturePhysicsTicks() {
+        throwTickEnd = true;
+        assertDoesNotThrow(task::run,
+                "a transient tick-end send failure must not escape a fixed-rate task");
+        long completed = movementSync.physicsTickVersion();
+        assertEquals(1, completed);
+
+        throwTickEnd = false;
+        assertDoesNotThrow(task::run);
+        assertEquals(completed + 1, movementSync.physicsTickVersion(),
+                "the same task must remain usable after the failed send");
     }
 
     @Test
@@ -115,6 +132,84 @@ final class UpdateMotionInputTest {
         assertInstanceOf(ServerboundMovePlayerPosPacket.class, packets.get(2));
         assertInstanceOf(ServerboundClientTickEndPacket.class, packets.get(3));
         assertTrue(movementSync.isGliding());
+    }
+
+    @Test
+    void inventoryClickWaitsUntilAfterDeploymentJumpEdge() {
+        assertInventoryClickWaitsUntilAfterDeployment(false);
+    }
+
+    @Test
+    void inventoryClickWaitsThroughHeldJumpReleaseAndDeployment() {
+        assertInventoryClickWaitsUntilAfterDeployment(true);
+    }
+
+    private void assertInventoryClickWaitsUntilAfterDeployment(boolean heldJump) {
+        movementSync.position.set(new Vector3d(.5, 20, .5));
+        movementSync.onGround.set(false);
+        if (heldJump) {
+            movementSync.setInput(PlayerInput.NONE.withJump(true));
+            task.run();
+            packets.clear();
+        }
+        var click = new org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.inventory.ServerboundContainerClickPacket(
+                0, 0, 9,
+                org.geysermc.mcprotocollib.protocol.data.game.inventory.ContainerActionType.MOVE_TO_HOTBAR_SLOT,
+                org.geysermc.mcprotocollib.protocol.data.game.inventory.MoveToHotbarAction.values()[0],
+                null, java.util.Map.of());
+        movementSync.queueBeforeMovement(new ServerboundPlayerCommandPacket(7, PlayerState.START_ELYTRA_FLYING));
+        movementSync.queueBeforeMovement(click);
+        task.run();
+        if (heldJump) {
+            assertFalse(packets.contains(click));
+            assertFalse(movementSync.isGliding());
+            packets.clear();
+            task.run();
+        }
+        assertEquals(PlayerState.START_ELYTRA_FLYING,
+                assertInstanceOf(ServerboundPlayerCommandPacket.class, packets.get(0)).getState());
+        assertEquals(new ServerboundPlayerInputPacket(false, false, false, false, true, false, false), packets.get(1));
+        assertFalse(packets.contains(click), "inventory input cannot erase the deployment jump edge");
+        assertTrue(movementSync.getLastFlightTick().input().jump());
+        packets.clear();
+        task.run();
+        assertEquals(new ServerboundPlayerInputPacket(false, false, false, false, false, false, false), packets.get(0));
+        assertSame(click, packets.get(1));
+        assertEquals(PlayerInput.NONE, movementSync.getLastFlightTick().input());
+    }
+
+    @Test
+    void groundInventoryClickReleasesPlanningInputAndResumesItNextTick() {
+        movementSync.setInput(new PlayerInput(true, false, false, false, false, false, true));
+        task.run(); // Establish sprint on the server before the inventory operation.
+        packets.clear();
+        resetToGround();
+        var held = new PlayerInput(true, false, false, false, false, true, true);
+        movementSync.setInput(held);
+        var click = new org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.inventory.ServerboundContainerClickPacket(
+                0, 0, 9,
+                org.geysermc.mcprotocollib.protocol.data.game.inventory.ContainerActionType.MOVE_TO_HOTBAR_SLOT,
+                org.geysermc.mcprotocollib.protocol.data.game.inventory.MoveToHotbarAction.values()[0],
+                null, java.util.Map.of());
+        movementSync.queueBeforeMovement(click);
+        var before = new Vector3d(movementSync.position.get());
+
+        task.run();
+
+        assertEquals(new ServerboundPlayerInputPacket(false, false, false, false, false, false, false), packets.get(0),
+                "inventory clicks must not be published while planning sneak or movement is held");
+        assertEquals(PlayerState.STOP_SPRINTING,
+                assertInstanceOf(ServerboundPlayerCommandPacket.class, packets.get(1)).getState());
+        assertSame(click, packets.get(2));
+        assertEquals(PlayerInput.NONE, movementSync.getLastFlightTick().input());
+        assertEquals(before.x, movementSync.position.get().x, 1e-9);
+        assertEquals(before.z, movementSync.position.get().z, 1e-9);
+        assertEquals(held, movementSync.snapshotInput(), "neutralization must not erase the owner's next-tick request");
+
+        packets.clear();
+        task.run();
+        assertEquals(new ServerboundPlayerInputPacket(true, false, false, false, false, true, false), packets.get(0));
+        assertNotEquals(before.z, movementSync.position.get().z);
     }
 
     @Test

@@ -37,6 +37,36 @@ final class LocalAirRouteTest {
         return LocalAirRoute.visible(world, a, b, PlayerPose.GLIDING);
     }
 
+    @Test void snapshotStartsAtTargetsCurrentSegment() {
+        Vector3d a = new Vector3d(0, 5, 0), b = new Vector3d(10, 5, 0);
+        Vector3d c = new Vector3d(20, 5, 0), d = new Vector3d(30, 5, 0);
+        var target = new WaypointFlightTarget(List.of(a, b, c, d), d, false);
+        assertTrue(target.reconcile(terrain(), state(new Vector3d(25, 5, 0), 1)));
+        assertEquals(3, target.index());
+
+        var route = new LocalAirRoute(target);
+
+        assertEquals(a.distance(b) + b.distance(c), route.cursor(), 1.0e-6,
+                "a worker snapshot must not steer back onto consumed segments");
+    }
+
+    @Test void liveSegmentRenewalAdvancesButNeverRewindsWorkerArcProgress() {
+        Vector3d a = new Vector3d(0, 5, 0), b = new Vector3d(10, 5, 0);
+        Vector3d c = new Vector3d(20, 5, 0), d = new Vector3d(30, 5, 0);
+        var target = new WaypointFlightTarget(List.of(a, b, c, d), d, false);
+        var route = new LocalAirRoute(target);
+        route.lookahead(terrain(), state(new Vector3d(15, 5, 0), 1));
+        assertEquals(15, route.cursor(), 1.0e-6);
+
+        assertTrue(target.reconcile(terrain(), state(new Vector3d(25, 5, 0), 1)));
+        route.advanceToLiveSegment(target);
+        assertEquals(20, route.cursor(), 1.0e-6);
+
+        var behind = new WaypointFlightTarget(List.of(a, b, c, d), d, false);
+        route.advanceToLiveSegment(behind);
+        assertEquals(20, route.cursor(), 1.0e-6);
+    }
+
     @Test void snapshotAndReturnedVectorsCannotMutateGeometry() {
         Vector3d start = new Vector3d(0, 5, 0), end = new Vector3d(30, 5, 0);
         WaypointFlightTarget target = new WaypointFlightTarget(List.of(start, end), end, false);

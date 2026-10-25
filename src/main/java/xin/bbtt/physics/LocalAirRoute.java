@@ -25,9 +25,21 @@ public final class LocalAirRoute {
             arcs[i] = arcs[i - 1] + points.get(i - 1).distance(points.get(i));
             if (!Double.isFinite(arcs[i])) throw new IllegalArgumentException("Route length overflow");
         }
+        // The target index names the active segment's endpoint. Start at that segment,
+        // never reintroduce waypoints already consumed by the movement-thread cursor.
+        cursor = arcs[Math.max(0, target.index() - 1)];
     }
 
     public double cursor() { return cursor; }
+
+    /** Equal-geometry renewal may advance the movement-thread segment, but never rewind
+     * the worker's finer arc-length progress within or beyond that segment. */
+    public void advanceToLiveSegment(WaypointFlightTarget target) {
+        if (!points.equals(Objects.requireNonNull(target).waypoints()))
+            throw new IllegalArgumentException("Different route geometry");
+        cursor = Math.max(cursor, arcs[Math.max(0, target.index() - 1)]);
+    }
+
     public double length() { return arcs[arcs.length - 1]; }
     public List<Vector3d> waypoints() { return points.stream().map(Vector3d::new).toList(); }
 

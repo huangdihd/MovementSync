@@ -10,6 +10,7 @@ import xin.bbtt.physics.PhysicsState;
 
 /** Owns flight requests and lifecycle; steering predictions never mutate live physics. */
 public final class ElytraFlyMovement extends Movement implements NavigationBoundMovement {
+    public enum Completion { NORMAL, FAILED }
     public static final double DEFAULT_ARRIVAL_RADIUS = 16;
     private final double arrivalRadius;
     private final xin.bbtt.flight.FlightConfiguration flightConfiguration;
@@ -17,6 +18,7 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
     private boolean targetBelowRoof;
     private xin.bbtt.physics.FlightTarget roofGoal;
     private boolean completedAboveRoof;
+    private Completion completion = Completion.NORMAL;
     private xin.bbtt.physics.WaypointFlightTarget lowRoute;
     private java.util.concurrent.CompletableFuture<LowAltitudeFlightPlan.Result> lowPlan;
     private int lowPlanTicks;
@@ -35,6 +37,8 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
     private xin.bbtt.physics.FlightControlAdmission.Failure returnFailure;
     private final xin.bbtt.flight.ReserveMonitor reserveMonitor = new xin.bbtt.flight.ReserveMonitor();
     private final xin.bbtt.flight.LocalClimbHandoff climbHandoff = new xin.bbtt.flight.LocalClimbHandoff();
+    private long lastClimbObservationTick = Long.MIN_VALUE;
+    private long climbObservationContinuity = Long.MIN_VALUE;
 
     private boolean localClimbEnabled(MovementSync sync) {
         return !lowAltitude && !safeLandingLeg && !independentLanding && !emergencyLanding
@@ -46,6 +50,43 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
                 && (localFollowEnabled(sync) || sync.getFlightScopeRouter().route(xin.bbtt.flight.ScopeRouter.Scope.LOCAL_CLIMB,
                         "minecraft:the_end".equals(sync.getRecoveryDimension()), false)
                         == xin.bbtt.flight.ScopeRouter.Route.LOCAL);
+    }
+
+    /** Consume every committed physics frame so a slower planner cannot manufacture gaps
+     * in the ten-tick clearance proof or retain local ownership indefinitely.
+     */
+    private void observeLocalClimb(MovementSync sync) {
+        long continuity = sync.flightTickContinuity();
+        if (continuity != climbObservationContinuity) {
+            climbObservationContinuity = continuity;
+            // Invalidation already removed old evidence; retain every published frame
+            // from the new continuity, including frames preceding this planner tick.
+            lastClimbObservationTick = Long.MIN_VALUE;
+            climbHandoff.resetClearance();
+        }
+        var samples = sync.flightTicksAfter(lastClimbObservationTick, continuity);
+        if (samples.isEmpty()) {
+            // Deployment metadata can arrive between physical publications. Start local
+            // ownership now, but only committed physical frames may prove clearance.
+            if (climbHandoff.phase() == xin.bbtt.flight.LocalClimbHandoff.Phase.DEPLOYMENT) {
+                var state = xin.bbtt.physics.FlightControlAdmission.snapshot(sync).state();
+                climbHandoff.deployed(state.position().y);
+            }
+            return;
+        }
+        for (var sample : samples) {
+            var trace = sample.trace();
+            lastClimbObservationTick = sample.tick();
+            if (!trace.gliding()
+                    && climbHandoff.phase() == xin.bbtt.flight.LocalClimbHandoff.Phase.DEPLOYMENT) continue;
+            var state = new PhysicsState(trace.position(), trace.velocity(), trace.onGround(),
+                    trace.fallDistance(), PlayerPose.GLIDING);
+            climbHandoff.deployed(state.position().y);
+            var route = climbHandoff.route(state, target.position(), trace.yaw());
+            climbHandoff.observe(sample.tick(), trace.gliding()
+                    && climbHandoff.clear(sync.getWorld(), state, route),
+                    sample.tick() == sync.physicsTickVersion());
+        }
     }
 
     private boolean localGotoEnabled(MovementSync sync) {
@@ -92,6 +133,7 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
 
     /** Whether this leg landed at the roof substitute for an inaccessible static goal. */
     boolean completedAboveRoof() { return completedAboveRoof; }
+    public Completion completion() { return completion; }
     private long generation;
     private int flightTicks;
     private xin.bbtt.flight.FlightMode controllingMode;
@@ -110,6 +152,11 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
     public ElytraFlyMovement forIndependentLanding() {
         independentLanding = true;
         return forSafeLanding();
+    }
+
+    /** Physics admission may exempt only this navigation-independent landing owner. */
+    public boolean ownsIndependentLandingControl() {
+        return independentLanding;
     }
 
     private boolean runIfCurrent(Runnable action) {
@@ -195,6 +242,9 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
             if (isFinished()) return;
             lifecycle.init(movementSync);
             observedVanillaAirborne = movementSync.isGliding();
+            var cursor = movementSync.flightTickCursor();
+            lastClimbObservationTick = cursor.tick();
+            climbObservationContinuity = cursor.continuity();
             if (observedVanillaAirborne) climbHandoff.inheritAirborne();
         })) setFinished(true);
     }
@@ -313,13 +363,8 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
         // Snapshot and mode change share the physical monitor: retiring the local prefix
         // also invalidates any pending worker publication before legacy cruise can run.
         synchronized (movementSync) {
-            if (localClimbEnabled(movementSync) && movementSync.isGliding() && !movementSync.onGround.get()) {
-                var climbState = xin.bbtt.physics.FlightControlAdmission.snapshot(movementSync).state();
-                climbHandoff.deployed(climbState.position().y);
-                var climbRoute = climbHandoff.route(climbState, target.position(), movementSync.yaw.get());
-                climbHandoff.observe(movementSync.physicsTickVersion(),
-                        climbHandoff.clear(movementSync.getWorld(), climbState, climbRoute));
-            }
+            if (localClimbEnabled(movementSync) && movementSync.isGliding() && !movementSync.onGround.get())
+                observeLocalClimb(movementSync);
             // Keep an established plugin owner across ticks instead of briefly claiming DIRECT.
             movementSync.claimFlightControlOwner(this,
                     controllingMode != null && !(controllingMode instanceof xin.bbtt.flight.VanillaGlideMode)
@@ -434,8 +479,6 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
             Vector3d forward = new Vector3d(goal).sub(state.position());
             float heading = forward.x == 0 && forward.z == 0 ? movementSync.yaw.get()
                     : (float) Math.toDegrees(Math.atan2(-forward.x, forward.z));
-            if (reserveReturnSite == null)
-                movementSync.registerForwardFlightEmergency(this, controlSource, heading);
             long event = java.util.Objects.hash(lowRoute == null ? null : lowRoute.waypoints(),
                     movementSync.getMovementParameterState().health(),
                     lowRoute != null && lowRoute.contains(state.position(), state.position()));
@@ -483,8 +526,10 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
             }
             if (reserveReturnSite != null) {
                 Vector3d returnDelta = new Vector3d(reserveReturnSite).sub(state.position());
+                var escapeRoute = new xin.bbtt.physics.WaypointFlightTarget(
+                        java.util.List.of(state.position(), reserveReturnSite), reserveReturnSite, false);
                 movementSync.registerForwardFlightEmergency(this, controlSource,
-                        (float) Math.toDegrees(Math.atan2(-returnDelta.x, returnDelta.z)));
+                        (float) Math.toDegrees(Math.atan2(-returnDelta.x, returnDelta.z)), escapeRoute);
                 // A valid episode owns steering. Keep local control available for a
                 // rejected episode: an unpowered hold above lava is not an escape.
                 var failure = movementSync.getFlightControlFailure();
@@ -509,8 +554,6 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
                     }
                 }
                 if (!returnEpisodeSubmitted) {
-                    var escapeRoute = new xin.bbtt.physics.WaypointFlightTarget(
-                            java.util.List.of(state.position(), reserveReturnSite), reserveReturnSite, false);
                     localGoto.request(movementSync, this, controlSource, escapeRoute, reserveReturnSite,
                             !resources.attached() && resources.cooldownTicks() == 0
                                     && resources.rocketFlightDurations().length > 0,
@@ -531,6 +574,7 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
             // Non-null tracking also keeps touchdown disabled throughout this prefix.
             if (localClimb && tracking != null)
                 tracking = new xin.bbtt.physics.LocalLookaheadSolver.MovingTarget(route.goal(), target.velocity());
+            movementSync.registerForwardFlightEmergency(this, controlSource, heading, route);
             localGoto.request(movementSync, this, controlSource, route, localClimb ? route.goal() : goal,
                     !movementSync.hasAttachedFirework() && lifecycle.rocketCooldown() == 0
                             && movementSync.countHotbarFireworks() > 0,
@@ -1332,6 +1376,7 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
         arrived = arrived && !unsupportedGoalRejected;
         // A rejected steering candidate is not a physical stop for cancellation.
         if (independentLanding && !GroundedFlightStop.stopped(MovementSync.INSTANCE)) return;
+        completion = arrived ? Completion.NORMAL : Completion.FAILED;
         if (MovementSync.INSTANCE.onGround.get() && hazardousGroundHandoff(MovementSync.INSTANCE))
             GroundedFlightStop.hold(MovementSync.INSTANCE);
         completedPlannedReturn = reserveReturnSite != null && MovementSync.INSTANCE.onGround.get()

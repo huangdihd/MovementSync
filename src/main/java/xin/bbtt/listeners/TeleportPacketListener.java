@@ -72,6 +72,7 @@ public class TeleportPacketListener extends SessionAdapter {
         // Ordinary reconciliation (including plausible fast flight) retains its epoch.
         if (current.distance(position) > Math.max(8.0, MovementSync.INSTANCE.velocity.get().length() + 2.0))
             MovementSync.INSTANCE.invalidateFlightControls();
+        MovementSync.INSTANCE.invalidateFlightTickContinuity();
         MovementSync.INSTANCE.getLandingMemory().authoritativeCorrection(
                 current, position, MovementSync.INSTANCE.velocity.get());
         MovementSync.INSTANCE.position.set(position);
