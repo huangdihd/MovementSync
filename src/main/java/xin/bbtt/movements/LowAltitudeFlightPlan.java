@@ -19,7 +19,12 @@ final class LowAltitudeFlightPlan {
         return thread;
     });
 
-    record Result(WaypointFlightTarget route, Vector3d origin, Vector3d destination, float yaw, float pitch) {}
+    record Result(WaypointFlightTarget route, Vector3d origin, Vector3d destination, float yaw, float pitch,
+                  xin.bbtt.flight.LocalGotoController.PreparedLaunch preparedLaunch) {
+        Result(WaypointFlightTarget route, Vector3d origin, Vector3d destination, float yaw, float pitch) {
+            this(route, origin, destination, yaw, pitch, null);
+        }
+    }
 
     /** Worker outcome, not a claim about the reason a particular terrain cell was blocked. */
     enum Status { PENDING, COMPLETE, PARTIAL, INVALID_COORDINATES, DEPLOYMENT_REJECTED,
@@ -46,6 +51,12 @@ final class LowAltitudeFlightPlan {
         return submit(world, state, destination, parameters, gliding, false, false, context);
     }
 
+    /** Follow owns local launch controls even when loss turns pursuit into a fixed landing trip. */
+    static PlanFuture fixedFollow(World world, PhysicsState state, Vector3d destination,
+            MovementParameters parameters, boolean gliding, HazardRecovery.Context context) {
+        return submit(world, state, destination, parameters, gliding, false, false, context, null, true);
+    }
+
     static CompletableFuture<Result> pursuit(World world, PhysicsState state, Vector3d destination,
                                               MovementParameters parameters, boolean gliding) {
         return pursuit(world, state, destination, parameters, gliding, HazardRecovery.Context.EMPTY);
@@ -67,18 +78,18 @@ final class LowAltitudeFlightPlan {
 
     private static PlanFuture submit(World world, PhysicsState state, Vector3d destination,
                                                     MovementParameters parameters, boolean gliding, boolean emergency, boolean pursuit, HazardRecovery.Context context) {
-        return submit(world, state, destination, parameters, gliding, emergency, pursuit, context, null);
+        return submit(world, state, destination, parameters, gliding, emergency, pursuit, context, null, pursuit);
     }
 
     /** Same full launch/route proof, with an explicitly selected relocation launch heading. */
     static PlanFuture submitHeading(World world, PhysicsState state, Vector3d destination,
             MovementParameters parameters, HazardRecovery.Context context, float yaw) {
-        return submit(world, state, destination, parameters, false, false, false, context, yaw);
+        return submit(world, state, destination, parameters, false, false, false, context, yaw, false);
     }
 
     private static PlanFuture submit(World world, PhysicsState state, Vector3d destination,
             MovementParameters parameters, boolean gliding, boolean emergency, boolean pursuit,
-            HazardRecovery.Context context, Float launchYaw) {
+            HazardRecovery.Context context, Float launchYaw, boolean requireLaunchControl) {
         Vector3d goal = new Vector3d(destination);
         PlanFuture result = new PlanFuture();
         if (!admissible(state.position(), goal)) {
@@ -105,10 +116,24 @@ final class LowAltitudeFlightPlan {
                     result.detail = reserve.admissible() ? "no validated corridor within search budget"
                             : reserve.reason();
                 }
-                Result planned = route == null ? null
-                        : new Result(route, state.position(), emergency ? route.goal() : goal, yaw, pitch);
+                xin.bbtt.flight.LocalGotoController.PreparedLaunch preparedLaunch = null;
+                boolean needsLaunchControl = !gliding && requireLaunchControl
+                        && context.rocketFlightDurations().length > 0;
+                if (route != null && needsLaunchControl) {
+                    // Deployment's first travel step is unpowered; the next planner observation
+                    // must already own complete controls rather than start a cold search in mid-air.
+                    var firstGlide = new GlidingPhysics(yaw, pitch, false, PlayerInput.NONE, parameters)
+                            .step(world, launch, PlayerPose.HALF_WIDTH, PlayerPose.STANDING.height());
+                    if (!firstGlide.onGround() && FlightHazards.safeTravel(world, launch, firstGlide))
+                        preparedLaunch = xin.bbtt.flight.LocalGotoController.prepareLaunch(world, parameters,
+                                state(firstGlide), route, goal, yaw, pitch, context);
+                    if (preparedLaunch == null) result.detail = "no complete launch control episode";
+                }
+                Result planned = route == null || needsLaunchControl && preparedLaunch == null ? null
+                        : new Result(route, state.position(), emergency ? route.goal() : goal, yaw, pitch,
+                                preparedLaunch);
                 result.finish(planned, Thread.currentThread().isInterrupted() ? Status.CANCELLED
-                        : launch == null ? Status.DEPLOYMENT_REJECTED
+                        : launch == null || needsLaunchControl && preparedLaunch == null ? Status.DEPLOYMENT_REJECTED
                         : route == null ? Status.NO_CORRIDOR
                         : route.partial() ? Status.PARTIAL : Status.COMPLETE);
             } catch (RuntimeException failure) {

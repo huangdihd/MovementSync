@@ -97,6 +97,11 @@ public class MovementSync implements Plugin {
         flightControls.submit(envelope);
     }
 
+    /** A synchronous bridge must not replace a prepared worker publication awaiting admission. */
+    public synchronized void submitFallbackFlightControls(xin.bbtt.physics.FlightControlAdmission.Envelope envelope) {
+        flightControls.submitFallback(envelope);
+    }
+
     public synchronized boolean registerForwardFlightEmergency(Object owner,
             xin.bbtt.physics.FlightControlAdmission.Source source, float yaw) {
         return registerForwardFlightEmergency(owner, source, yaw, null);
@@ -114,6 +119,17 @@ public class MovementSync implements Plugin {
         return flightControls.refineForwardEmergency(this, owner, source, yaw, route);
     }
 
+    public synchronized boolean rebaseForwardFlightEmergency(Object owner,
+            xin.bbtt.physics.FlightControlAdmission.Source original,
+            xin.bbtt.physics.FlightControlAdmission.Source live,
+            xin.bbtt.physics.WaypointFlightTarget route) {
+        return flightControls.rebaseForwardEmergency(this, owner, original, live, route);
+    }
+
+    public synchronized void invalidateForwardFlightEmergency(Object owner) {
+        flightControls.invalidateForwardEmergency(owner);
+    }
+
     public synchronized boolean publishFlightPrefix(Object owner,
             xin.bbtt.physics.FlightControlAdmission.Source source,
             java.util.List<xin.bbtt.physics.FlightControlAdmission.Step> steps,
@@ -128,8 +144,75 @@ public class MovementSync implements Plugin {
             java.util.List<xin.bbtt.physics.FlightControlAdmission.Step> recovery,
             xin.bbtt.physics.WaypointFlightTarget route, Runnable accepted,
             boolean requireAirborne) {
-        return flightControls.publishPrefix(this, owner, source, steps, recovery, route, accepted,
-                requireAirborne);
+        return publishFlightPrefix(owner, source, steps, recovery, java.util.List.of(), route,
+                accepted, requireAirborne);
+    }
+
+    public synchronized boolean publishFlightPrefix(Object owner,
+            xin.bbtt.physics.FlightControlAdmission.Source source,
+            java.util.List<xin.bbtt.physics.FlightControlAdmission.Step> steps,
+            java.util.List<xin.bbtt.physics.FlightControlAdmission.Step> recovery,
+            java.util.List<xin.bbtt.physics.FlightControlAdmission.Step> handoff,
+            xin.bbtt.physics.WaypointFlightTarget route, Runnable accepted,
+            boolean requireAirborne) {
+        return publishFlightPrefix(owner, source, steps, recovery, handoff, route, accepted,
+                requireAirborne, null);
+    }
+
+    public synchronized boolean publishFlightPrefix(Object owner,
+            xin.bbtt.physics.FlightControlAdmission.Source source,
+            java.util.List<xin.bbtt.physics.FlightControlAdmission.Step> steps,
+            java.util.List<xin.bbtt.physics.FlightControlAdmission.Step> recovery,
+            java.util.List<xin.bbtt.physics.FlightControlAdmission.Step> handoff,
+            xin.bbtt.physics.WaypointFlightTarget route, Runnable accepted,
+            boolean requireAirborne,
+            xin.bbtt.physics.FireworkSchedule.LifetimeBounds rocketLifetime) {
+        return publishFlightPrefix(owner, source, steps, recovery, handoff, route, accepted,
+                requireAirborne, rocketLifetime, false);
+    }
+
+    public synchronized boolean publishFlightPrefix(Object owner,
+            xin.bbtt.physics.FlightControlAdmission.Source source,
+            java.util.List<xin.bbtt.physics.FlightControlAdmission.Step> steps,
+            java.util.List<xin.bbtt.physics.FlightControlAdmission.Step> recovery,
+            java.util.List<xin.bbtt.physics.FlightControlAdmission.Step> handoff,
+            xin.bbtt.physics.WaypointFlightTarget route, Runnable accepted,
+            boolean requireAirborne,
+            xin.bbtt.physics.FireworkSchedule.LifetimeBounds rocketLifetime,
+            boolean preserveFallMargin) {
+        return flightControls.publishPrefix(this, owner, source, steps, recovery, handoff, route,
+                accepted, requireAirborne, rocketLifetime, preserveFallMargin);
+    }
+
+    public synchronized boolean publishFlightPrefix(Object owner,
+            xin.bbtt.physics.FlightControlAdmission.Source source,
+            java.util.List<xin.bbtt.physics.FlightControlAdmission.Step> steps,
+            java.util.List<xin.bbtt.physics.FlightControlAdmission.Step> recovery,
+            java.util.List<xin.bbtt.physics.FlightControlAdmission.Step> handoff,
+            xin.bbtt.physics.WaypointFlightTarget executionRoute,
+            xin.bbtt.physics.WaypointFlightTarget authorityRoute, Runnable accepted,
+            boolean requireAirborne,
+            xin.bbtt.physics.FireworkSchedule.LifetimeBounds rocketLifetime,
+            boolean preserveFallMargin) {
+        return publishFlightPrefix(owner, source, steps, recovery, handoff, executionRoute,
+                authorityRoute, accepted, requireAirborne, rocketLifetime, preserveFallMargin,
+                java.util.List.of());
+    }
+
+    public synchronized boolean publishFlightPrefix(Object owner,
+            xin.bbtt.physics.FlightControlAdmission.Source source,
+            java.util.List<xin.bbtt.physics.FlightControlAdmission.Step> steps,
+            java.util.List<xin.bbtt.physics.FlightControlAdmission.Step> recovery,
+            java.util.List<xin.bbtt.physics.FlightControlAdmission.Step> handoff,
+            xin.bbtt.physics.WaypointFlightTarget executionRoute,
+            xin.bbtt.physics.WaypointFlightTarget authorityRoute, Runnable accepted,
+            boolean requireAirborne,
+            xin.bbtt.physics.FireworkSchedule.LifetimeBounds rocketLifetime,
+            boolean preserveFallMargin,
+            java.util.List<xin.bbtt.physics.FlightControlAdmission.Step> rejectionHandOver) {
+        return flightControls.publishPrefix(this, owner, source, steps, recovery, handoff,
+                executionRoute, authorityRoute, accepted, requireAirborne, rocketLifetime,
+                preserveFallMargin, rejectionHandOver);
     }
 
     public synchronized void revokeFlightControls(Object owner) { flightControls.revoke(owner); }
@@ -145,6 +228,11 @@ public class MovementSync implements Plugin {
 
     public synchronized xin.bbtt.physics.FlightControlAdmission.Failure getFlightControlFailure() {
         return flightControls.failure();
+    }
+
+    /** Read-only physical lease state for movement-thread renewal decisions. */
+    public synchronized xin.bbtt.physics.FlightControlAdmission.OwnershipTrace flightControlOwnership() {
+        return flightControls.ownershipTrace(physicsTickVersion);
     }
 
     /** Shared physical-input boundary, including embedded/manual physics drivers. */
@@ -289,7 +377,8 @@ public class MovementSync implements Plugin {
         lastFlightTick = trace;
         if (physicsTraceEnabled) {
             lastPhysicsTickTrace = xin.bbtt.flight.PhysicsTickTrace.copy(++physicsTraceSequence,
-                    physicsTickVersion, getNavigationGeneration(), flightControls.ownershipTrace(), trace);
+                    physicsTickVersion, getNavigationGeneration(),
+                flightControls.ownershipTrace(physicsTickVersion), trace);
         }
     }
 
@@ -688,10 +777,14 @@ public class MovementSync implements Plugin {
     }
 
     public static float nearestEquivalentYaw(float current, float direction) {
-        float difference = (direction - current) % 360.0f;
-        if (difference >= 180.0f) difference -= 360.0f;
-        if (difference < -180.0f) difference += 360.0f;
-        return current + difference;
+        double difference = ((double) direction - current) % 360.0;
+        if (difference >= 180.0) difference -= 360.0;
+        if (difference < -180.0) difference += 360.0;
+        float result = (float) (current + difference);
+        // Rounding a large accumulated yaw can move an exact half-turn just beyond 180°.
+        if ((double) result - current > 180.0) return Math.nextDown(result);
+        if ((double) result - current < -180.0) return Math.nextUp(result);
+        return result;
     }
 
     public void directLookAt(Vector3d target) {

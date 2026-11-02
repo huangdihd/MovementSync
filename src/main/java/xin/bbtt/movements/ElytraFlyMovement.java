@@ -1,5 +1,6 @@
 package xin.bbtt.movements;
 
+import java.util.List;
 import xin.bbtt.physics.PlayerPose;
 import org.joml.Vector3d;
 import xin.bbtt.MovementSync;
@@ -20,10 +21,21 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
     private boolean completedAboveRoof;
     private Completion completion = Completion.NORMAL;
     private xin.bbtt.physics.WaypointFlightTarget lowRoute;
+    private xin.bbtt.flight.LocalGotoController.PreparedLaunch preparedLaunch;
+    private Vector3d lowRouteDestination;
+    private boolean lowPursuitRouteStale;
+    private boolean capturingAirborneTarget;
+    private xin.bbtt.physics.WaypointFlightTarget airborneCaptureRoute;
     private java.util.concurrent.CompletableFuture<LowAltitudeFlightPlan.Result> lowPlan;
     private int lowPlanTicks;
+    private int lowPlanPredictionTicks = PURSUIT_PREDICTION_TICKS;
+    private int lowRoutePredictionTicks = PURSUIT_PREDICTION_TICKS;
     private boolean lowAltitude;
     private boolean followOwned;
+    private static final double PURSUIT_REPLAN_DISTANCE_SQUARED = 256;
+    private static final double PURSUIT_RESULT_FRESHNESS_DISTANCE_SQUARED = 256;
+    private static final double FIXED_ROUTE_DESTINATION_DISTANCE_SQUARED = 16;
+    private static final int PURSUIT_PREDICTION_TICKS = 12;
     ElytraFlyMovement forFollow() { followOwned = true; return this; }
     private final xin.bbtt.flight.LocalGotoController localGoto = new xin.bbtt.flight.LocalGotoController();
     // A reserve return is not arrival at the original navigation destination.
@@ -115,7 +127,12 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
 
     ElytraFlyMovement withLowAltitudePlan(LowAltitudeFlightPlan.Result result) {
         lowRoute = result.route();
+        preparedLaunch = result.preparedLaunch();
+        lowRouteDestination = new Vector3d(result.destination());
+        // Follow's deployment plan uses its closing-time aim, not a fixed-tick forecast.
+        lowRoutePredictionTicks = -1;
         if (lowRoute.pursuit()) lowRoute.follow(target, result.destination());
+        lowPlanTicks = 1;
         lowAltitude = true;
         lifecycle.allowLowAltitudeTakeoff(result.yaw(), result.pitch());
         return this;
@@ -240,6 +257,13 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
         }
         if (!runIfCurrent(() -> {
             if (isFinished()) return;
+            if (!movementSync.isGliding() && preparedLaunch != null
+                    && (!preparedLaunch.matches(recoveryContext(movementSync))
+                            || !movementSync.fireworkRequestReady())) {
+                preparedLaunch = null;
+                finish(false);
+                return;
+            }
             lifecycle.init(movementSync);
             observedVanillaAirborne = movementSync.isGliding();
             var cursor = movementSync.flightTickCursor();
@@ -270,6 +294,7 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
                 || reserve.status() != xin.bbtt.physics.KnownLandingReserve.Status.VALID
                 || !reserve.shouldReturn()
                 || reserve.returnSite() == null) return false;
+        preparedLaunch = null;
         reserveReturnSite = reserve.returnSite();
         return true;
     }
@@ -475,7 +500,8 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
                     ? new xin.bbtt.physics.LocalLookaheadSolver.MovingTarget(
                             xin.bbtt.physics.WaypointFlightTarget.pursuitAim(target, state), target.velocity())
                     : null;
-            Vector3d goal = tracking == null ? target.position() : tracking.predict(12);
+            Vector3d goal = tracking == null ? target.position()
+                    : tracking.predict(PURSUIT_PREDICTION_TICKS);
             Vector3d forward = new Vector3d(goal).sub(state.position());
             float heading = forward.x == 0 && forward.z == 0 ? movementSync.yaw.get()
                     : (float) Math.toDegrees(Math.atan2(-forward.x, forward.z));
@@ -490,6 +516,13 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
                     && (reserveReturnSite != null
                             || xin.bbtt.physics.KnownLandingReserve.nearLava(movementSync.getWorld(), state));
             var resources = recoveryContext(movementSync);
+            if (Boolean.getBoolean("traceAdmission"))
+                System.err.println("LOCAL_LIVE tick=" + controlSource.tick() + " state=" + state
+                        + " goal=" + goal + " stale=" + lowPursuitRouteStale
+                        + " route=" + (lowRoute == null ? null : lowRoute.waypoints())
+                        + " attached=" + resources.attached() + " cooldown=" + resources.cooldownTicks()
+                        + " yaw=" + movementSync.yaw.get() + " pitch=" + movementSync.pitch.get()
+                        + " ownership=" + movementSync.flightControlOwnership());
             if (knownReturn) reserveMonitor.observeKnownReturn(movementSync, controlSource, event, resources);
             else reserveMonitor.observe(movementSync, controlSource, event, resources);
             var reserveReport = reserveMonitor.latest();
@@ -541,7 +574,8 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
                         || controlSource.tick() - lastReturnPreviewTick >= xin.bbtt.flight.ReserveMonitor.INTERVAL_TICKS)) {
                     lastReturnPreviewTick = controlSource.tick();
                     var preview = xin.bbtt.physics.KnownReturnPlan.preview(movementSync.getWorld(), state,
-                            movementSync.getMovementParameters(), resources, reserveReturnSite, 0);
+                            movementSync.getMovementParameters(), resources, reserveReturnSite, 0,
+                            movementSync.yaw.get());
                     returnEpisodeSubmitted = preview.proven();
                     MovementSync.getLogger().info("Return episode: tick={}, state={}, site={}, proven={}, searchSteps={}, trajectoryTicks={}, requiredRockets={}, reason={}",
                             controlSource.tick(), state, reserveReturnSite, preview.proven(), preview.simulatedSteps(),
@@ -564,9 +598,15 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
                 }
                 return;
             }
-            var route = localClimb ? climbHandoff.route(state, goal, movementSync.yaw.get())
-                    : lowRoute == null ? new xin.bbtt.physics.WaypointFlightTarget(
-                    java.util.List.of(state.position(), goal), goal, false) : lowRoute;
+            // Revoke stale navigation geometry, not local control. The fresh live-goal
+            // request must prove its own swept episode while the replacement planner runs;
+            // otherwise an unpowered bridge can exhaust all lift before a route arrives.
+            xin.bbtt.physics.WaypointFlightTarget route;
+            if (localClimb) route = climbHandoff.route(state, goal, movementSync.yaw.get());
+            else if (capturingAirborneTarget) route = airborneCaptureRoute;
+            else if (lowRoute == null || lowPursuitRouteStale)
+                route = new xin.bbtt.physics.WaypointFlightTarget(List.of(state.position(), goal), goal, false);
+            else route = lowRoute;
             if (reserveReturnSite != null)
                 route = new xin.bbtt.physics.WaypointFlightTarget(java.util.List.of(state.position(), goal), goal, false);
             // Keep the live entity and its heading, but score the shared clearance waypoint
@@ -574,6 +614,17 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
             // Non-null tracking also keeps touchdown disabled throughout this prefix.
             if (localClimb && tracking != null)
                 tracking = new xin.bbtt.physics.LocalLookaheadSolver.MovingTarget(route.goal(), target.velocity());
+            if (preparedLaunch != null) {
+                var launch = preparedLaunch;
+                preparedLaunch = null;
+                if (localFollow && !lowPursuitRouteStale && route == lowRoute
+                        && equipmentAction != xin.bbtt.inventory.InventoryManager.ElytraAction.WAITING
+                        && localGoto.publishLaunch(movementSync, this, controlSource, launch, route, goal,
+                                resources, () -> lifecycle.execute(movementSync,
+                                        new ElytraFlightController.Decision(movementSync.yaw.get(),
+                                                movementSync.pitch.get(), true,
+                                                ElytraFlightController.Phase.CRUISE), equipmentAction))) return;
+            }
             movementSync.registerForwardFlightEmergency(this, controlSource, heading, route);
             localGoto.request(movementSync, this, controlSource, route, localClimb ? route.goal() : goal,
                     !movementSync.hasAttachedFirework() && lifecycle.rocketCooldown() == 0
@@ -581,9 +632,14 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
                     () -> lifecycle.execute(movementSync, new ElytraFlightController.Decision(
                             movementSync.yaw.get(), movementSync.pitch.get(), true,
                             ElytraFlightController.Phase.CRUISE), equipmentAction), tracking, resources,
-                    !knownReturn || reserveReturnSite != null || freshReserve && knownReserve.canContinue()
+                    // Missing advisory reports do not authorize entry themselves. The
+                    // worker independently proves remaining resources at every branch's
+                    // entry checkpoint before publication; a known return veto still wins.
+                    !knownReturn || reserveReturnSite != null || knownReserve == null
+                            || knownReserve.canContinue()
                             || xin.bbtt.flight.DangerousEntryGate.exposed(movementSync.getWorld(), state),
                     knownReturn);
+            if (localFollow) publishPursuitBridge(movementSync, controlSource, state);
             // Planner-only bounded handoff. Physics keeps consuming its finite prefix while
             // a slow worker runs; never join from the physical monitor.
             if (!Thread.holdsLock(movementSync)) {
@@ -1175,15 +1231,44 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
                 ? selected : localPursuitDecision(context, liveAim, configuration);
     }
 
+    /** Publish only when the current physical lease cannot cover another planning turn. */
+    private void publishPursuitBridge(MovementSync sync,
+            xin.bbtt.physics.FlightControlAdmission.Source source, PhysicsState state) {
+        var ownership = sync.flightControlOwnership();
+        // Prepare the handoff while the fixed reserve still has maneuvering room.
+        // Waiting for its last tick can make every airborne continuation impossible.
+        if (ownership.active() && ownership.remainingExecutableTicks() > PURSUIT_BRIDGE_RESERVE_TICKS) return;
+        var context = extendedContext(sync, state, inventorySnapshot(sync), false);
+        var aim = xin.bbtt.physics.WaypointFlightTarget.pursuitAim(target, state);
+        var decision = localPursuitDecision(context, aim, flightConfiguration, false);
+        if (decision == null) return;
+        var proof = airbornePursuitProof(context, decision, flightConfiguration);
+        if (proof == null || proof.steps().size() != PURSUIT_BRIDGE_PROOF_TICKS) return;
+        var prefix = proof.steps().subList(0, PURSUIT_BRIDGE_PREFIX_TICKS);
+        var reserve = proof.steps().subList(PURSUIT_BRIDGE_PREFIX_TICKS,
+                PURSUIT_BRIDGE_PREFIX_TICKS + PURSUIT_BRIDGE_RESERVE_TICKS);
+        var handoff = proof.steps().subList(PURSUIT_BRIDGE_PREFIX_TICKS
+                + PURSUIT_BRIDGE_RESERVE_TICKS, PURSUIT_BRIDGE_PROOF_TICKS);
+        var envelope = xin.bbtt.physics.FlightControlAdmission.createPrefix(this, source,
+                prefix, reserve, handoff, proof.corridor(), () -> {}, true);
+        runIfCurrent(() -> sync.submitFallbackFlightControls(envelope));
+    }
+
     /** Bounded local pursuit when a rolling corridor is absent or exhausted. Never a landing request. */
     static ElytraFlightController.Decision localPursuitDecision(xin.bbtt.flight.FlightContext context,
             Vector3d liveAim, xin.bbtt.flight.FlightConfiguration configuration) {
+        return localPursuitDecision(context, liveAim, configuration, true);
+    }
+
+    private static ElytraFlightController.Decision localPursuitDecision(
+            xin.bbtt.flight.FlightContext context, Vector3d liveAim,
+            xin.bbtt.flight.FlightConfiguration configuration, boolean allowRocket) {
         float heading = (float) Math.toDegrees(Math.atan2(context.state().position().x - liveAim.x,
                 liveAim.z - context.state().position().z));
         ElytraFlightController.Decision best = null;
         double bestCost = Double.POSITIVE_INFINITY;
         for (boolean rocket : new boolean[] {false, true}) {
-            if (rocket && (context.attached() || context.fireworks() == 0)) continue;
+            if (rocket && (!allowRocket || context.attached() || context.fireworks() == 0)) continue;
             for (float yaw : new float[] {heading, context.yaw(), heading - 45, heading + 45,
                     heading - 90, heading + 90, heading + 180}) {
                 for (float pitch : new float[] {-55, -30, -10, 0, 20, 40}) {
@@ -1191,9 +1276,12 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
                             ElytraFlightController.Phase.AVOIDANCE);
                     var end = airbornePursuitPreview(context, candidate, configuration);
                     if (end == null) continue;
-                    // Horizontal pursuit must not reward descending onto a ground target.
-                    double cost = Math.hypot(end.position().x - liveAim.x, end.position().z - liveAim.z)
-                            + Math.max(0, context.state().position().y - end.position().y) * 2
+                    // Pursue from a small airborne offset instead of rewarding either
+                    // touchdown or an unbounded climb above a ground target.
+                    double desiredAltitude = liveAim.y + 4;
+                    double horizontalDistance = Math.hypot(end.position().x - liveAim.x,
+                            end.position().z - liveAim.z);
+                    double cost = Math.hypot(horizontalDistance, end.position().y - desiredAltitude)
                             + (rocket ? 2 : 0) + Math.abs(pitch - context.pitch()) * .002;
                     if (cost < bestCost) { bestCost = cost; best = candidate; }
                 }
@@ -1202,16 +1290,56 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
         return best;
     }
 
-    /** Exact six-tick body sweep plus six-tick airborne continuation, including loaded hazards. */
-    static PhysicsState airbornePursuitPreview(xin.bbtt.flight.FlightContext context,
-            ElytraFlightController.Decision decision, xin.bbtt.flight.FlightConfiguration configuration) {
-        var action = new xin.bbtt.flight.FlightAction.Glide(decision.yaw(), decision.pitch(), decision.firework());
-        var physics = new xin.bbtt.physics.GlidingPhysics(action.yaw(), action.pitch(),
-                context.attached() || action.firework(), xin.bbtt.physics.PlayerInput.NONE, context.movement());
+    private static final int PURSUIT_BRIDGE_PREFIX_TICKS = 5;
+    private static final int PURSUIT_BRIDGE_RESERVE_TICKS = 6;
+    private static final int PURSUIT_BRIDGE_PROOF_TICKS = PURSUIT_BRIDGE_PREFIX_TICKS
+            + PURSUIT_BRIDGE_RESERVE_TICKS + 1;
+
+    record AirbornePursuitProof(List<xin.bbtt.physics.FlightControlAdmission.Step> steps,
+                                xin.bbtt.physics.WaypointFlightTarget corridor,
+                                PhysicsState end) {
+        AirbornePursuitProof { steps = List.copyOf(steps); }
+    }
+
+    /** Exact fixed-control body sweep. Existing thrust may expire before any tick. */
+    static AirbornePursuitProof airbornePursuitProof(xin.bbtt.flight.FlightContext context,
+            ElytraFlightController.Decision decision,
+            xin.bbtt.flight.FlightConfiguration configuration) {
+        if (decision.firework() || context.state().onGround()) return null;
+        int maximumPoweredTicks = context.attached() ? PURSUIT_BRIDGE_PROOF_TICKS : 0;
+        var paths = new java.util.ArrayList<List<Vector3d>>(maximumPoweredTicks + 1);
+        List<xin.bbtt.physics.FlightControlAdmission.Step> nominalSteps = List.of();
+        PhysicsState nominalEnd = context.state();
+        for (int poweredTicks = 0; poweredTicks <= maximumPoweredTicks; poweredTicks++) {
+            var branch = airbornePursuitBranch(context, decision, configuration, poweredTicks,
+                    PURSUIT_BRIDGE_PROOF_TICKS);
+            if (branch == null) return null;
+            paths.add(branch.path());
+            if (poweredTicks == maximumPoweredTicks) {
+                nominalSteps = branch.steps();
+                nominalEnd = branch.end();
+            }
+        }
+        return new AirbornePursuitProof(nominalSteps,
+                xin.bbtt.physics.WaypointFlightTarget.executionWitness(paths, context.target(), false),
+                nominalEnd);
+    }
+
+    private record AirbornePursuitBranch(List<xin.bbtt.physics.FlightControlAdmission.Step> steps,
+                                         List<Vector3d> path, PhysicsState end) {}
+
+    private static AirbornePursuitBranch airbornePursuitBranch(
+            xin.bbtt.flight.FlightContext context, ElytraFlightController.Decision decision,
+            xin.bbtt.flight.FlightConfiguration configuration, int poweredTicks, int ticks) {
+        var action = new xin.bbtt.flight.FlightAction.Glide(decision.yaw(), decision.pitch(), false);
         var state = context.state();
-        if (state.onGround()) return null;
-        for (int tick = 0; tick < 12; tick++) {
-            var result = physics.step(context.world(), state, PlayerPose.HALF_WIDTH, PlayerPose.GLIDING.height());
+        var steps = new java.util.ArrayList<xin.bbtt.physics.FlightControlAdmission.Step>(ticks);
+        var path = new java.util.ArrayList<Vector3d>(ticks + 1);
+        path.add(state.position());
+        for (int tick = 0; tick < ticks; tick++) {
+            var result = new xin.bbtt.physics.GlidingPhysics(action.yaw(), action.pitch(),
+                    tick < poweredTicks, xin.bbtt.physics.PlayerInput.NONE, context.movement())
+                    .step(context.world(), state, PlayerPose.HALF_WIDTH, PlayerPose.GLIDING.height());
             if (result.onGround() || result.collidedX() || result.collidedZ()
                     || !xin.bbtt.physics.PublicFlightBridge.known(context, state, result)) return null;
             var from = state.position();
@@ -1221,7 +1349,6 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
                     Math.max(from.x, to.x) + PlayerPose.HALF_WIDTH,
                     Math.max(from.y, to.y) + PlayerPose.GLIDING.height(),
                     Math.max(from.z, to.z) + PlayerPose.HALF_WIDTH)) return null;
-            // Water ends vanilla glide even though it causes no damage.
             for (int x = (int) Math.floor(Math.min(from.x, to.x) - PlayerPose.HALF_WIDTH);
                     x <= (int) Math.floor(Math.max(from.x, to.x) + PlayerPose.HALF_WIDTH); x++) {
                 for (int y = (int) Math.floor(Math.min(from.y, to.y));
@@ -1230,31 +1357,60 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
                             z <= (int) Math.floor(Math.max(from.z, to.z) + PlayerPose.HALF_WIDTH); z++) {
                         String block = context.world().getBlockStateAt(new Vector3d(x, y, z)).blockName();
                         if (block.equals("water") || block.equals("minecraft:water")
-                                || block.equals("bubble_column") || block.equals("minecraft:bubble_column")) return null;
+                                || block.equals("bubble_column")
+                                || block.equals("minecraft:bubble_column")) return null;
                     }
                 }
             }
             if (xin.bbtt.physics.PublicFlightBridge.hazard(context, state, result, true).raw() > 0
-                    || xin.bbtt.physics.PublicFlightBridge.hazard(context, state, result, false).raw() > 0) return null;
+                    || xin.bbtt.physics.PublicFlightBridge.hazard(context, state, result, false).raw() > 0)
+                return null;
             for (var rule : configuration.damageRules()) {
                 var damage = rule.damage(context, action, state, result);
                 if (!Double.isFinite(damage.raw()) || !Double.isFinite(damage.reduced())
                         || damage.raw() > 0 || damage.reduced() > 0) return null;
             }
+            steps.add(new xin.bbtt.physics.FlightControlAdmission.Step(decision, state));
             state = new PhysicsState(to, result.velocity(), false, result.fallDistance(), result.pose());
+            path.add(state.position());
         }
-        return state;
+        return new AirbornePursuitBranch(List.copyOf(steps), List.copyOf(path), state);
+    }
+
+    /** Selection preview; a new rocket must be safe both rejected and continuously powered. */
+    static PhysicsState airbornePursuitPreview(xin.bbtt.flight.FlightContext context,
+            ElytraFlightController.Decision decision, xin.bbtt.flight.FlightConfiguration configuration) {
+        if (!decision.firework()) {
+            var proof = airbornePursuitProof(context, decision, configuration);
+            return proof == null ? null : proof.end();
+        }
+        if (context.attached() || context.state().onGround()) return null;
+        var rejected = airbornePursuitBranch(context, decision, configuration, 0,
+                PURSUIT_BRIDGE_PROOF_TICKS);
+        var powered = airbornePursuitBranch(context, decision, configuration,
+                PURSUIT_BRIDGE_PROOF_TICKS, PURSUIT_BRIDGE_PROOF_TICKS);
+        return rejected == null || powered == null ? null : powered.end();
     }
 
     private void updateLowRoute(MovementSync sync, PhysicsState state) {
         if (flightConfiguration.modes().stream().noneMatch(mode -> mode instanceof xin.bbtt.flight.VanillaGlideMode)) return;
-        boolean required = target instanceof xin.bbtt.physics.EntityFlightTarget entity ? !entity.gliding()
+        // Fresh open-air pursuit keeps the shared clearance owner until its physical
+        // handoff. Geometry pursuit starts afterwards, not by cancelling that climb.
+        if (localClimbEnabled(sync) && target instanceof xin.bbtt.physics.EntityFlightTarget entity
+                && entity.gliding()) return;
+        if (updateAirborneCapture(sync, state)) return;
+        boolean required = target instanceof xin.bbtt.physics.EntityFlightTarget entity
+                ? !entity.gliding() || localFollowEnabled(sync)
                 : xin.bbtt.listeners.RegistryDataListener.hasCeiling()
                 && !xin.bbtt.physics.CeilingCollision.isAboveRoof(sync.getWorld(), state.position());
         if (!required) {
             if (target instanceof xin.bbtt.physics.EntityFlightTarget entity && entity.gliding()) {
                 lowAltitude = false;
+                preparedLaunch = null;
+                localGoto.invalidateRoute(sync, this);
                 lowRoute = null;
+                lowRouteDestination = null;
+                lowPursuitRouteStale = false;
                 if (lowPlan != null) lowPlan.cancel(false);
                 lowPlan = null;
             }
@@ -1262,35 +1418,157 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
         }
         lowAltitude = true;
         if (emergencyLanding && !lowEmergencyRoute) {
+            preparedLaunch = null;
+            localGoto.invalidateRoute(sync, this);
             lowRoute = null;
+            lowRouteDestination = null;
+            lowPursuitRouteStale = false;
             if (lowPlan != null) lowPlan.cancel(false);
             lowPlan = null;
             lowEmergencyRoute = true;
             lowPlanTicks = 0;
         }
         boolean pursuit = !emergencyLanding && target instanceof xin.bbtt.physics.EntityFlightTarget;
-        Vector3d endpoint = pursuit ? xin.bbtt.physics.WaypointFlightTarget.pursuitAim(target, state) : target.aim(state);
+        var planningResources = recoveryContext(sync);
+        Vector3d pursuitObservation = pursuit
+                ? xin.bbtt.physics.WaypointFlightTarget.pursuitAim(target, state) : null;
+        int predictionTicks = pursuitPredictionTicks(planningResources);
+        Vector3d endpoint = pursuit
+                ? new Vector3d(pursuitObservation).fma(predictionTicks, target.velocity())
+                : target.aim(state);
         if (lowPlan != null && lowPlan.isDone()) {
             var result = lowPlan.getNow(null);
+            int resultPredictionTicks = lowPlanPredictionTicks;
+            Vector3d resultEndpoint = pursuit
+                    ? new Vector3d(pursuitObservation).fma(resultPredictionTicks, target.velocity()) : endpoint;
             lowPlan = null;
             runIfCurrent(() -> {
                 if (isFinished()) return;
                 // Legacy waypoint lists have no corridor certificate to reconcile;
                 // planner-backed routes must bind their cursor to the actual body.
-                if (result != null && (emergencyLanding || pursuit || result.destination().distanceSquared(endpoint) <= 16)
-                        && (!result.route().terrainValidated() || result.route().reconcile(sync.getWorld(), state))) {
+                // A worker may legitimately take several moving-target ticks. Publish a
+                // still-forward result only when its certified geometry reconciles to the live
+                // body and remains within the same endpoint freshness bound used for replanning.
+                double freshnessDistanceSquared = pursuit
+                        ? PURSUIT_RESULT_FRESHNESS_DISTANCE_SQUARED
+                        : FIXED_ROUTE_DESTINATION_DISTANCE_SQUARED;
+                if (result != null && (emergencyLanding
+                        || result.destination().distanceSquared(resultEndpoint)
+                                <= freshnessDistanceSquared)
+                        && (!result.route().terrainValidated() || result.route().reconcile(sync.getWorld(), state))
+                        && !result.route().passedEndpoint(state.position())
+                        && (!pursuit || !passedPursuitEndpoint(result.route(), state.position()))) {
+                    preparedLaunch = null;
+                    localGoto.observeRoute(sync, this, result.route());
                     lowRoute = result.route();
+                    lowRouteDestination = new Vector3d(result.destination());
+                    lowRoutePredictionTicks = resultPredictionTicks;
+                    lowPursuitRouteStale = false;
                     lowRouteAcceptedTick = flightTicks;
+                    // Match deployment's refresh phase; an accepted route starts a new cycle.
+                    lowPlanTicks = 1;
                     if (lowRoute.pursuit()) lowRoute.follow(target, result.destination());
                 }
             });
         }
-        if (lowPlan == null && !state.onGround() && sync.isGliding()
-                && (lowPlanTicks++ % 20 == 0 || !pursuit && !emergencyLanding && lowRoute != null && lowRoute.goal().distanceSquared(endpoint) > 16)) {
-            lowPlan = emergencyLanding ? LowAltitudeFlightPlan.emergency(sync.getWorld(), state, sync.getMovementParameters(), recoveryContext(sync))
-                    : pursuit ? LowAltitudeFlightPlan.pursuit(sync.getWorld(), state, endpoint, sync.getMovementParameters(), true, recoveryContext(sync))
-                    : LowAltitudeFlightPlan.submit(sync.getWorld(), state, endpoint, sync.getMovementParameters(), true, recoveryContext(sync));
+        // Resource changes alter the next planning horizon, not observed target drift.
+        // Compare each route against the horizon that produced its destination.
+        Vector3d routeEndpoint = endpoint;
+        if (pursuit) routeEndpoint = lowRoutePredictionTicks < 0 ? target.aim(state)
+                : new Vector3d(pursuitObservation).fma(lowRoutePredictionTicks, target.velocity());
+        boolean stalePursuitRoute = pursuit && lowRoute != null
+                && needsPursuitReplan(lowRoute, lowRouteDestination, state, routeEndpoint);
+        if (stalePursuitRoute && !lowPursuitRouteStale) {
+            // Replanning does not license steering back toward an obsolete terminal
+            // waypoint. Revoke only future publication/fallback rights; admission
+            // continues revalidating any finite prefix already accepted from it.
+            preparedLaunch = null;
+            localGoto.invalidateRoute(sync, this);
+            lowPursuitRouteStale = true;
         }
+        if (lowPlan == null && !state.onGround() && sync.isGliding()
+                && (lowPlanTicks++ % 20 == 0 || stalePursuitRoute
+                        || !pursuit && !emergencyLanding && lowRoute != null
+                        && lowRoute.goal().distanceSquared(endpoint)
+                                > FIXED_ROUTE_DESTINATION_DISTANCE_SQUARED)) {
+            lowPlanPredictionTicks = predictionTicks;
+            lowPlan = emergencyLanding ? LowAltitudeFlightPlan.emergency(sync.getWorld(), state,
+                    sync.getMovementParameters(), planningResources)
+                    : pursuit && target instanceof xin.bbtt.physics.EntityFlightTarget entity && !entity.gliding()
+                            ? LowAltitudeFlightPlan.pursuit(sync.getWorld(), state, endpoint,
+                                    sync.getMovementParameters(), true, planningResources)
+                    : LowAltitudeFlightPlan.submit(sync.getWorld(), state, endpoint,
+                            sync.getMovementParameters(), true, planningResources);
+        }
+    }
+
+    static int pursuitPredictionTicks(xin.bbtt.physics.HazardRecovery.Context resources) {
+        int[] flights = resources.rocketFlightDurations();
+        if (flights.length == 0) return PURSUIT_PREDICTION_TICKS;
+        // Geometry must already cover the next episode when cooldown ends. Resource
+        // readiness controls dispatch, not the route's source-relative prediction window.
+        return Math.max(PURSUIT_PREDICTION_TICKS,
+                xin.bbtt.physics.FireworkSchedule.lifetimeBounds(flights[0]).maximumPoweredTicks() + 2);
+    }
+
+    private boolean updateAirborneCapture(MovementSync sync, PhysicsState state) {
+        Vector3d goal = xin.bbtt.physics.WaypointFlightTarget.pursuitAim(target, state)
+                .fma(PURSUIT_PREDICTION_TICKS, target.velocity());
+        boolean capture = localFollowEnabled(sync)
+                && target instanceof xin.bbtt.physics.EntityFlightTarget entity && entity.gliding()
+                && entity.pursuitSpeed() * PURSUIT_PREDICTION_TICKS <= PlayerPose.HALF_WIDTH
+                && xin.bbtt.physics.LocalAirRoute.visible(sync.getWorld(), state.position(), goal,
+                        PlayerPose.GLIDING)
+                && (capturingAirborneTarget || canCaptureAirborneTarget(sync.getWorld(), state, lowRoute, goal));
+        if (!capture) {
+            if (capturingAirborneTarget) localGoto.invalidateRoute(sync, this);
+            capturingAirborneTarget = false;
+            airborneCaptureRoute = null;
+            return false;
+        }
+        // The body is the proof's live source, not navigation intent. Rebuilding this
+        // anchor every frame cancels slower rocket proofs before they can publish.
+        // Ignore only a sub-body-width endpoint tail; visibility and every physical
+        // branch are still checked against the current world and body.
+        if (airborneCaptureRoute == null || airborneCaptureRoute.goal().distanceSquared(goal)
+                > PlayerPose.HALF_WIDTH * PlayerPose.HALF_WIDTH)
+            airborneCaptureRoute = new xin.bbtt.physics.WaypointFlightTarget(
+                    List.of(state.position(), goal), goal, false);
+        capturingAirborneTarget = true;
+        if (lowPlan != null) lowPlan.cancel(false);
+        lowPlan = null;
+        return true;
+    }
+
+    /** An air endpoint ends the approach geometry, not the airborne pursuit. The local
+     * controller must replace it with an independently proved execution witness. */
+    static boolean canCaptureAirborneTarget(xin.bbtt.world.World world, PhysicsState state,
+            xin.bbtt.physics.WaypointFlightTarget route, Vector3d goal) {
+        if (route == null || route.partial() || route.index() != route.waypoints().size() - 1
+                || !route.contains(state.position(), state.position())) return false;
+        var lookahead = new xin.bbtt.physics.LocalAirRoute(route).lookahead(world, state);
+        return lookahead.stream().anyMatch(point -> point.distanceSquared(route.position()) < 1.0e-8)
+                && xin.bbtt.physics.LocalAirRoute.visible(world, state.position(), goal, PlayerPose.GLIDING);
+    }
+
+    static boolean needsPursuitReplan(xin.bbtt.physics.WaypointFlightTarget route,
+            Vector3d routeDestination, PhysicsState state, Vector3d endpoint) {
+        return route == null || routeDestination == null
+                || !route.contains(state.position(), state.position())
+                || route.passedEndpoint(state.position())
+                || passedPursuitEndpoint(route, state.position())
+                || routeDestination.distanceSquared(endpoint) > PURSUIT_REPLAN_DISTANCE_SQUARED;
+    }
+
+    private static boolean passedPursuitEndpoint(xin.bbtt.physics.WaypointFlightTarget route,
+            Vector3d position) {
+        var points = route.waypoints();
+        if (points.size() < 2 || route.index() != points.size() - 1) return false;
+        var endpoint = points.get(points.size() - 1);
+        var direction = new Vector3d(endpoint).sub(points.get(points.size() - 2));
+        // Pursuit progress is horizontal; clearance height must not keep an obsolete
+        // endpoint ahead of a bot that has already passed it above a descending route.
+        return (position.x - endpoint.x) * direction.x + (position.z - endpoint.z) * direction.z > 0;
     }
 
     void projectRoofTarget(MovementSync sync) {
@@ -1373,6 +1651,7 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
     }
 
     private void finish(boolean arrived) {
+        preparedLaunch = null;
         arrived = arrived && !unsupportedGoalRejected;
         // A rejected steering candidate is not a physical stop for cancellation.
         if (independentLanding && !GroundedFlightStop.stopped(MovementSync.INSTANCE)) return;
@@ -1406,6 +1685,7 @@ public final class ElytraFlyMovement extends Movement implements NavigationBound
 
     @Override
     public void onStop() {
+        preparedLaunch = null;
         localGoto.close();
         MovementSync.INSTANCE.revokeFlightControls(this);
         // Cancelling steering must not fabricate a landing or switch off airborne physics.

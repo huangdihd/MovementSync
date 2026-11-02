@@ -23,6 +23,17 @@ public final class WaypointFlightTarget implements FlightTarget {
     public boolean pursuit() { return pursuit; }
     public boolean pursuitEndpoint() { return pursuit && !partial && index == waypoints.size() - 1; }
 
+    /** Corridor membership has no direction. Passing the final tangent makes this
+     * route stale even while a wide terminal capsule still contains the body.
+     */
+    public boolean passedEndpoint(Vector3d observer) {
+        if (waypoints.size() < 2 || index != waypoints.size() - 1 || !observer.isFinite()) return false;
+        Vector3d endpoint = waypoints.get(waypoints.size() - 1);
+        Vector3d direction = new Vector3d(endpoint).sub(waypoints.get(waypoints.size() - 2));
+        return direction.lengthSquared() > 1.0e-12
+                && new Vector3d(observer).sub(endpoint).dot(direction) > 0;
+    }
+
     /** Bind on the movement thread; workers never sample mutable entity state. */
     public void follow(FlightTarget target, Vector3d endpoint) {
         followed = target;

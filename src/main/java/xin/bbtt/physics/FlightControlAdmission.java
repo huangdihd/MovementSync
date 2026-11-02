@@ -27,23 +27,92 @@ public final class FlightControlAdmission {
     public long epoch() { return epoch; }
     public Failure failure() { return failure; }
     public record Step(ElytraFlightController.Decision control, PhysicsState expected) {}
+    /** Planner acknowledgement is immediate or next-tick. An attachment still absent at
+     * this request-relative tick is a rejection; any later attachment is re-proved by the
+     * ordinary attached-rocket replay, never trusted from the rejected hand-over. */
+    public static final int REJECTED_ROCKET_OBSERVATION_TICKS = 3;
     public record ReturnWitness(KnownReturnPlan.Result plan, int[] inventory,
                                 java.util.function.Consumer<ElytraFlightController.Decision> action) {
         public ReturnWitness { inventory = inventory.clone(); }
         @Override public int[] inventory() { return inventory.clone(); }
     }
+    /** Request-scoped state: lifetime remains request-relative across prefix and reserve. */
+    private static final class RejectedRocketTermination {
+        private final FireworkSchedule.LifetimeBounds lifetime;
+        private long requestedAt = Long.MIN_VALUE;
+        private boolean attachmentObserved;
+        private boolean rejectionConfirmed;
+        private int[] publicationInventory;
+        // Unpowered reserve proved from the observed-rejection state; empty when the
+        // rocket controls themselves must stay safe without thrust.
+        private List<Step> handOver = List.of();
+
+        private RejectedRocketTermination(FireworkSchedule.LifetimeBounds lifetime) {
+            this.lifetime = lifetime;
+        }
+    }
     public record Envelope(Object owner, Source source, List<Step> steps,
                            WaypointFlightTarget corridor, Runnable accepted, List<Step> recovery,
-                           ReturnWitness witness, boolean requireAirborne) {
+                           List<Step> handoff, ReturnWitness witness, boolean requireAirborne,
+                           FireworkSchedule.LifetimeBounds rocketLifetime,
+                           RejectedRocketTermination rejectedRocketTermination,
+                           boolean preserveFallMargin) {
+        public Envelope(Object owner, Source source, List<Step> steps,
+                WaypointFlightTarget corridor, Runnable accepted, List<Step> recovery,
+                List<Step> handoff, ReturnWitness witness, boolean requireAirborne,
+                FireworkSchedule.LifetimeBounds rocketLifetime,
+                RejectedRocketTermination rejectedRocketTermination) {
+            this(owner, source, steps, corridor, accepted, recovery, handoff, witness,
+                    requireAirborne, rocketLifetime, rejectedRocketTermination, false);
+        }
+        public Envelope(Object owner, Source source, List<Step> steps,
+                WaypointFlightTarget corridor, Runnable accepted, List<Step> recovery,
+                List<Step> handoff, ReturnWitness witness, boolean requireAirborne,
+                FireworkSchedule.LifetimeBounds rocketLifetime) {
+            this(owner, source, steps, corridor, accepted, recovery, handoff, witness,
+                    requireAirborne, rocketLifetime, false);
+        }
+        public Envelope(Object owner, Source source, List<Step> steps,
+                WaypointFlightTarget corridor, Runnable accepted, List<Step> recovery,
+                List<Step> handoff, ReturnWitness witness, boolean requireAirborne,
+                FireworkSchedule.LifetimeBounds rocketLifetime, boolean preserveFallMargin) {
+            this(owner, source, steps, corridor, accepted, recovery, handoff, witness,
+                    requireAirborne, rocketLifetime,
+                    rocketLifetime == null ? null : new RejectedRocketTermination(rocketLifetime),
+                    preserveFallMargin);
+        }
+        public Envelope(Object owner, Source source, List<Step> steps, WaypointFlightTarget corridor,
+                Runnable accepted, List<Step> recovery, ReturnWitness witness,
+                boolean requireAirborne) {
+            this(owner, source, steps, corridor, accepted, recovery, List.of(), witness,
+                    requireAirborne, null, null);
+        }
+        public Envelope(Object owner, Source source, List<Step> steps, WaypointFlightTarget corridor,
+                Runnable accepted, List<Step> recovery, List<Step> handoff, ReturnWitness witness,
+                boolean requireAirborne) {
+            this(owner, source, steps, corridor, accepted, recovery, handoff, witness,
+                    requireAirborne, null, null);
+        }
         public Envelope(Object owner, Source source, List<Step> steps, WaypointFlightTarget corridor,
                 Runnable accepted, List<Step> recovery, ReturnWitness witness) {
-            this(owner, source, steps, corridor, accepted, recovery, witness, false);
+            this(owner, source, steps, corridor, accepted, recovery, List.of(), witness,
+                    false, null, null);
         }
         public Envelope(Object owner, Source source, List<Step> steps, WaypointFlightTarget corridor,
                 Runnable accepted, List<Step> recovery) {
-            this(owner, source, steps, corridor, accepted, recovery, null, false);
+            this(owner, source, steps, corridor, accepted, recovery, List.of(), null,
+                    false, null, null);
         }
-        public Envelope { steps = List.copyOf(steps); recovery = List.copyOf(recovery); }
+        public Envelope {
+            steps = List.copyOf(steps);
+            recovery = List.copyOf(recovery);
+            handoff = List.copyOf(handoff);
+            if (handoff.stream().anyMatch(step -> step.control().firework()))
+                throw new IllegalArgumentException("Proof-only handoff cannot request rockets");
+            boolean requestsRocket = !steps.isEmpty() && steps.get(0).control().firework();
+            if (rocketLifetime != null && !requestsRocket)
+                throw new IllegalArgumentException("Lifetime bounds require a rocket request");
+        }
     }
 
     /** Entire event-time episode; resource actions are dispatched at their own checked tick. */
@@ -51,7 +120,7 @@ public final class FlightControlAdmission {
             int[] inventory, java.util.function.Consumer<ElytraFlightController.Decision> action) {
         return new Envelope(owner, source, plan.steps().stream()
                 .map(step -> new Step(step.control(), step.before())).toList(), null, () -> {}, List.of(),
-                new ReturnWitness(plan, inventory, action));
+                List.of(), new ReturnWitness(plan, inventory, action), false, null, null, true);
     }
     private Envelope pending;
     private Envelope active;
@@ -63,39 +132,127 @@ public final class FlightControlAdmission {
     private Source emergencySource;
     private float emergencyYaw;
     private WaypointFlightTarget emergencyCorridor;
+    private boolean emergencyCheckpointRevoked;
+    /** Source identity and corridor form the in-process capability issued to one worker. */
+    private record RevokedEmergencyCheckpoint(Source source, WaypointFlightTarget corridor) {}
+    private final List<RevokedEmergencyCheckpoint> revokedEmergencyCheckpoints = new ArrayList<>();
 
     /** Copy the solver's exact executable prefix and fixed reserve; never search for a terminal. */
     public static Envelope createPrefix(Object owner, Source source, List<Step> prefix,
             List<Step> recovery, WaypointFlightTarget route, Runnable accepted) {
-        return createPrefix(owner, source, prefix, recovery, route, accepted, false);
+        return createPrefix(owner, source, prefix, recovery, List.of(), route, accepted, false);
     }
 
     /** Moving pursuit prefixes must remain airborne when replayed from a newer live state. */
     public static Envelope createPrefix(Object owner, Source source, List<Step> prefix,
             List<Step> recovery, WaypointFlightTarget route, Runnable accepted,
             boolean requireAirborne) {
+        return createPrefix(owner, source, prefix, recovery, List.of(), route, accepted,
+                requireAirborne);
+    }
+
+    /** Handoff extends only the live proof window; it is never part of an executable batch. */
+    public static Envelope createPrefix(Object owner, Source source, List<Step> prefix,
+            List<Step> recovery, List<Step> handoff, WaypointFlightTarget route, Runnable accepted,
+            boolean requireAirborne) {
+        return createPrefix(owner, source, prefix, recovery, handoff, route, accepted,
+                requireAirborne, null);
+    }
+
+    public static Envelope createPrefix(Object owner, Source source, List<Step> prefix,
+            List<Step> recovery, List<Step> handoff, WaypointFlightTarget route, Runnable accepted,
+            boolean requireAirborne, FireworkSchedule.LifetimeBounds rocketLifetime) {
+        return createPrefix(owner, source, prefix, recovery, handoff, route, accepted,
+                requireAirborne, rocketLifetime, false);
+    }
+
+    /** Known-return episodes keep a strict airborne fall margin, independent of contact damage. */
+    public static Envelope createPrefix(Object owner, Source source, List<Step> prefix,
+            List<Step> recovery, List<Step> handoff, WaypointFlightTarget route, Runnable accepted,
+            boolean requireAirborne, FireworkSchedule.LifetimeBounds rocketLifetime,
+            boolean preserveFallMargin) {
         var corridor = route == null ? null : route.corridorSnapshot();
         if (recovery.stream().anyMatch(step -> step.control().firework()))
             throw new IllegalArgumentException("Fixed recovery cannot request rockets");
-        if (!prefix.isEmpty() && recovery.stream().anyMatch(step -> step.control().pitch() > 0
-                || Math.cos(Math.toRadians(step.control().yaw() - prefix.get(0).control().yaw())) <= 0))
+        if (handoff.stream().anyMatch(step -> step.control().firework()))
+            throw new IllegalArgumentException("Proof-only handoff cannot request rockets");
+        if (route == null && !prefix.isEmpty()
+                && recovery.stream().anyMatch(step -> step.control().pitch() > 0
+                        || Math.cos(Math.toRadians(step.control().yaw() - prefix.get(0).control().yaw())) <= 0))
             recovery = List.of(); // A targetless reserve is not permission for reverse descent.
-        return new Envelope(owner, source, prefix, corridor, accepted, recovery, null, requireAirborne);
+        if (recovery.isEmpty()) handoff = List.of();
+        return new Envelope(owner, source, prefix, corridor, accepted, recovery, handoff, null,
+                requireAirborne, rocketLifetime, preserveFallMargin);
     }
 
     /** Caller holds sync. Invalid/stale publication never displaces the active prefix. */
     public boolean publishPrefix(MovementSync sync, Object publisher, Source source, List<Step> prefix,
             List<Step> recovery, WaypointFlightTarget route, Runnable accepted) {
-        return publishPrefix(sync, publisher, source, prefix, recovery, route, accepted, false);
+        return publishPrefix(sync, publisher, source, prefix, recovery, List.of(), route, accepted,
+                false);
     }
 
     /** Caller holds sync. Invalid/stale publication never displaces the active prefix. */
     public boolean publishPrefix(MovementSync sync, Object publisher, Source source, List<Step> prefix,
             List<Step> recovery, WaypointFlightTarget route, Runnable accepted,
             boolean requireAirborne) {
+        return publishPrefix(sync, publisher, source, prefix, recovery, List.of(), route, accepted,
+                requireAirborne);
+    }
+
+    /** Caller holds sync. Invalid/stale publication never displaces the active prefix. */
+    public boolean publishPrefix(MovementSync sync, Object publisher, Source source, List<Step> prefix,
+            List<Step> recovery, List<Step> handoff, WaypointFlightTarget route, Runnable accepted,
+            boolean requireAirborne) {
+        return publishPrefix(sync, publisher, source, prefix, recovery, handoff, route, accepted,
+                requireAirborne, null);
+    }
+
+    public boolean publishPrefix(MovementSync sync, Object publisher, Source source, List<Step> prefix,
+            List<Step> recovery, List<Step> handoff, WaypointFlightTarget route, Runnable accepted,
+            boolean requireAirborne, FireworkSchedule.LifetimeBounds rocketLifetime) {
+        return publishPrefix(sync, publisher, source, prefix, recovery, handoff, route, accepted,
+                requireAirborne, rocketLifetime, false);
+    }
+
+    public boolean publishPrefix(MovementSync sync, Object publisher, Source source, List<Step> prefix,
+            List<Step> recovery, List<Step> handoff, WaypointFlightTarget route, Runnable accepted,
+            boolean requireAirborne, FireworkSchedule.LifetimeBounds rocketLifetime,
+            boolean preserveFallMargin) {
+        return publishPrefix(sync, publisher, source, prefix, recovery, handoff, route, route, accepted,
+                requireAirborne, rocketLifetime, preserveFallMargin);
+    }
+
+    /** Publish an execution witness under the navigation route that owns the request.
+     * The witness may be an exact replay corridor and therefore need not compare equal
+     * to the live navigation corridor used for cancellation and ownership. */
+    public boolean publishPrefix(MovementSync sync, Object publisher, Source source, List<Step> prefix,
+            List<Step> recovery, List<Step> handoff, WaypointFlightTarget route,
+            WaypointFlightTarget authorityRoute, Runnable accepted, boolean requireAirborne,
+            FireworkSchedule.LifetimeBounds rocketLifetime, boolean preserveFallMargin) {
+        return publishPrefix(sync, publisher, source, prefix, recovery, handoff, route, authorityRoute,
+                accepted, requireAirborne, rocketLifetime, preserveFallMargin, List.of());
+    }
+
+    /** A rocket request may carry the unpowered reserve that takes over once rejection
+     * is observed; it is replayed from the live state like any fixed reserve. */
+    public boolean publishPrefix(MovementSync sync, Object publisher, Source source, List<Step> prefix,
+            List<Step> recovery, List<Step> handoff, WaypointFlightTarget route,
+            WaypointFlightTarget authorityRoute, Runnable accepted, boolean requireAirborne,
+            FireworkSchedule.LifetimeBounds rocketLifetime, boolean preserveFallMargin,
+            List<Step> rejectionHandOver) {
         if (mode != Mode.LOCAL_SOLVER || owner != publisher || !currentSource(sync, source)
-                || emergencySource != null && emergencySource != source) return false;
-        submit(createPrefix(publisher, source, prefix, recovery, route, accepted, requireAirborne));
+                || !matchesEmergencyCheckpoint(source, authorityRoute)) return false;
+        if (rejectionHandOver.stream().anyMatch(step -> step.control().firework()))
+            throw new IllegalArgumentException("Rejected-rocket hand-over cannot request rockets");
+        var envelope = createPrefix(publisher, source, prefix, recovery, handoff, route, accepted,
+                requireAirborne, rocketLifetime, preserveFallMargin);
+        if (envelope.rejectedRocketTermination() != null) {
+            envelope.rejectedRocketTermination().publicationInventory =
+                    sync.inventoryManager.getHotbarFireworkFlightDurations();
+            envelope.rejectedRocketTermination().handOver = List.copyOf(rejectionHandOver);
+        }
+        submit(envelope);
         return true;
     }
 
@@ -107,23 +264,85 @@ public final class FlightControlAdmission {
     /** Caller holds sync. Heading and corridor are one immutable physical checkpoint. */
     public boolean registerForwardEmergency(MovementSync sync, Object publisher, Source source,
             float yaw, WaypointFlightTarget route) {
+        pruneRevokedEmergencyCheckpoints(sync);
         if (mode != Mode.LOCAL_SOLVER || owner != publisher || !currentSource(sync, source)
-                || !Float.isFinite(yaw)
+                || !Float.isFinite(yaw) || revokedEmergencyCheckpoint(source, route)
                 || emergencySource != null && source.tick() < emergencySource.tick()) return false;
+        if (emergencySource != null && !sameEmergencyCorridor(emergencyCorridor, route))
+            revokeEmergencyCheckpoint(emergencySource, emergencyCorridor);
         emergencySource = source;
         emergencyYaw = yaw;
         emergencyCorridor = route == null ? null : route.corridorSnapshot();
+        emergencyCheckpointRevoked = false;
         return true;
     }
 
-    /** A worker may refine only the exact checkpoint that launched it. */
+    /** A worker may refine its exact checkpoint. A newer observation of the same
+     * corridor may authorize publication, but the older worker cannot overwrite its heading.
+     */
     public boolean refineForwardEmergency(MovementSync sync, Object publisher, Source source,
             float yaw, WaypointFlightTarget route) {
         if (mode != Mode.LOCAL_SOLVER || owner != publisher || !currentSource(sync, source)
-                || !Float.isFinite(yaw) || emergencySource != source || emergencyCorridor == null
-                || route == null || !emergencyCorridor.sameCorridor(route)) return false;
-        emergencyYaw = yaw;
+                || !Float.isFinite(yaw) || !matchesEmergencyCheckpoint(source, route)) return false;
+        if (emergencySource == source) emergencyYaw = yaw;
         return true;
+    }
+
+    /** Move an authorized worker checkpoint to its freshly proved body without
+     * replacing a newer observation's emergency heading or reviving a revoked source. */
+    public boolean rebaseForwardEmergency(MovementSync sync, Object publisher, Source original,
+            Source live, WaypointFlightTarget route) {
+        if (mode != Mode.LOCAL_SOLVER || owner != publisher || emergencySource == null
+                || !currentSource(sync, original) || !matchesEmergencyCheckpoint(original, route)
+                || !live.equals(snapshot(sync)) || !sameEmergencyCorridor(emergencyCorridor, route)) return false;
+        emergencySource = live;
+        return true;
+    }
+
+    /** Revoke an obsolete unpublished plan and fallback checkpoint. An already admitted
+     * finite prefix remains subject to its own per-tick physical and corridor revalidation.
+     */
+    public void invalidateForwardEmergency(Object publisher) {
+        if (mode != Mode.LOCAL_SOLVER || owner != publisher) return;
+        if (pending != null && pending.owner() == publisher) pending = null;
+        if (emergencySource != null) revokeEmergencyCheckpoint(emergencySource, emergencyCorridor);
+        emergencySource = null;
+        emergencyCorridor = null;
+        emergencyCheckpointRevoked = true;
+    }
+
+    private boolean matchesEmergencyCheckpoint(Source source, WaypointFlightTarget route) {
+        if (emergencyCheckpointRevoked || revokedEmergencyCheckpoint(source, route)) return false;
+        if (emergencySource == null) return true;
+        if (emergencySource == source)
+            return sameEmergencyCorridor(emergencyCorridor, route);
+        return emergencySource.tick() >= source.tick() && emergencyCorridor != null && route != null
+                && emergencyCorridor.sameCorridor(route);
+    }
+
+    private void revokeEmergencyCheckpoint(Source source, WaypointFlightTarget corridor) {
+        if (revokedEmergencyCheckpoint(source, corridor)) return;
+        revokedEmergencyCheckpoints.add(new RevokedEmergencyCheckpoint(source,
+                corridor == null ? null : corridor.corridorSnapshot()));
+    }
+
+    private boolean revokedEmergencyCheckpoint(Source source, WaypointFlightTarget corridor) {
+        return revokedEmergencyCheckpoints.stream().anyMatch(checkpoint -> checkpoint.source() == source
+                && sameEmergencyCorridor(checkpoint.corridor(), corridor));
+    }
+
+    private static boolean sameEmergencyCorridor(WaypointFlightTarget first,
+            WaypointFlightTarget second) {
+        return first == null ? second == null : first.sameCorridor(second);
+    }
+
+    private void pruneRevokedEmergencyCheckpoints(MovementSync sync) {
+        revokedEmergencyCheckpoints.removeIf(checkpoint -> {
+            long age = sync.physicsTickVersion() - checkpoint.source().tick();
+            return checkpoint.source().epoch() != epoch
+                    || checkpoint.source().generation() != sync.getNavigationGeneration()
+                    || age < 0 || age > 8;
+        });
     }
 
     private boolean currentSource(MovementSync sync, Source source) {
@@ -134,15 +353,24 @@ public final class FlightControlAdmission {
 
     /** Diagnostic activation token, not an admission capability or controller ownership lock. */
     public record OwnershipTrace(long activation, long sourceTick, long sourceGeneration,
-                                 long admittedAt, int cursor, boolean recovering, boolean active) {}
+                                 long admittedAt, int cursor, int remainingExecutableTicks,
+                                 boolean recovering, boolean active) {}
     private long traceActivation;
 
     /** Caller holds the same MovementSync monitor as consume; takes no other locks. */
+    public OwnershipTrace ownershipTrace(long physicsTick) {
+        if (active == null)
+            return new OwnershipTrace(traceActivation, -1, -1, -1, -1, 0, false, false);
+        int liveCursor = (int) Math.max(0, physicsTick - admittedAt);
+        int remaining = Math.max(0, active.steps().size() - liveCursor);
+        if (!recovering) remaining += active.recovery().size();
+        return new OwnershipTrace(traceActivation, active.source().tick(), active.source().generation(),
+                admittedAt, liveCursor, remaining, recovering, true);
+    }
+
+    /** Diagnostic snapshot at the last consumed cursor. */
     public OwnershipTrace ownershipTrace() {
-        return active == null
-                ? new OwnershipTrace(traceActivation, -1, -1, -1, -1, false, false)
-                : new OwnershipTrace(traceActivation, active.source().tick(), active.source().generation(),
-                        admittedAt, cursor, recovering, true);
+        return ownershipTrace(active == null ? 0 : admittedAt + Math.max(0, cursor));
     }
 
     public static Source snapshot(MovementSync sync) {
@@ -230,6 +458,12 @@ public final class FlightControlAdmission {
                 || owner != null && owner != envelope.owner()) return;
         pending = envelope;
     }
+
+    /** Called under MovementSync, atomically with normal publication and consumption. */
+    public void submitFallback(Envelope envelope) {
+        if (pending != null) return;
+        submit(envelope);
+    }
     public void revoke(Object revoked) {
         if (owner == revoked || pending != null && pending.owner() == revoked
                 || active != null && active.owner() == revoked) {
@@ -238,7 +472,7 @@ public final class FlightControlAdmission {
             mode = null;
         }
     }
-    public void clear() { pending = null; active = null; batch = null; owner = null; mode = null; emergencySource = null; emergencyCorridor = null; epoch++; }
+    public void clear() { pending = null; active = null; batch = null; owner = null; mode = null; emergencySource = null; emergencyCorridor = null; emergencyCheckpointRevoked = false; revokedEmergencyCheckpoints.clear(); epoch++; }
 
     /** Terminal failure or an explicit landing handoff ends this physical fallback episode. */
     public void retireFallback(MovementSync sync) {
@@ -322,24 +556,34 @@ public final class FlightControlAdmission {
             pending = null;
             boolean fresh = candidate.source().epoch() == epoch && consumed.add(candidate);
             long age = sync.physicsTickVersion() - candidate.source().tick();
-            if (fresh && candidate.source().generation() == sync.getNavigationGeneration() && age >= 0 && age <= 8
-                    && !candidate.steps().isEmpty() && revalidate(sync, candidate, 0)) {
+            boolean rocketSafe = !candidate.steps().isEmpty()
+                    && (!candidate.steps().get(0).control().firework() || poweredSafe(sync, candidate));
+            boolean controlSafe = fresh && candidate.source().generation() == sync.getNavigationGeneration()
+                    && age >= 0 && age <= 8 && !candidate.steps().isEmpty() && revalidate(sync, candidate, 0);
+            boolean horizonSafe = controlSafe && rocketSafe && preservesExecutableHorizon(sync, candidate);
+            if (Boolean.getBoolean("traceAdmission"))
+                System.err.println("PREFIX_GATE tick=" + sync.physicsTickVersion()
+                        + " source=" + candidate.source().tick() + " rocket="
+                        + (!candidate.steps().isEmpty() && candidate.steps().get(0).control().firework())
+                        + " control=" + controlSafe + " rocketSafe=" + rocketSafe + " horizon=" + horizonSafe
+                        + " count=" + candidate.steps().size() + "/" + candidate.recovery().size());
+            if (horizonSafe) {
                 active = candidate;
                 failure = null;
                 traceActivation++;
                 cursor = 0;
                 recovering = false;
                 admittedAt = sync.physicsTickVersion();
+                if (active.rejectedRocketTermination() != null)
+                    active.rejectedRocketTermination().requestedAt = admittedAt;
                 batch = TickControlBatch.admitted(active, admittedAt);
-                // Actions are queued only at acceptance, immediately before the packet/input batch.
-                // Recheck the powered branch as well: rejecting thrust must reject its action,
-                // not silently rely on the unpowered continuation proof.
-                if (!candidate.steps().get(0).control().firework() || poweredSafe(sync, candidate))
-                    sync.acceptFlightAction(candidate.accepted());
+                // Actions are queued only after every admission gate has accepted the episode.
+                sync.acceptFlightAction(candidate.accepted());
             } else if (fresh && active == null && candidate.source().generation() == sync.getNavigationGeneration()
                     && age >= 0 && age <= 8 && !candidate.recovery().isEmpty()) {
                 var reserve = new Envelope(candidate.owner(), candidate.source(), candidate.recovery(),
-                        candidate.corridor(), () -> {}, List.of(), null, candidate.requireAirborne());
+                        candidate.corridor(), () -> {}, List.of(), candidate.handoff(), null,
+                        candidate.requireAirborne(), null, null, candidate.preserveFallMargin());
                 if (revalidate(sync, reserve, 0)) {
                     active = reserve;
                     traceActivation++;
@@ -366,9 +610,26 @@ public final class FlightControlAdmission {
         if (batch == null || !batch.authorizes(cursor, sync.physicsTickVersion()) || !revalidate(sync, active, cursor)) {
             // Never silently keep an expired navigation command. Normal airborne recovery
             // owns the next planning tick; do not fabricate touchdown or disable gliding.
-            if (!recovering && !active.recovery().isEmpty()) {
+            var rejected = active.rejectedRocketTermination();
+            if (rejectionObserved(sync, rejected)) {
+                var handOver = new Envelope(active.owner(), active.source(), rejected.handOver,
+                        active.corridor(), () -> {}, List.of(), List.of(), null, true, null, null,
+                        active.preserveFallMargin());
+                if (!revalidate(sync, handOver, 0)) {
+                    abandon(sync);
+                    return;
+                }
+                active = handOver;
+                traceActivation++;
+                admittedAt = sync.physicsTickVersion();
+                batch = TickControlBatch.admitted(active, admittedAt);
+                cursor = 0;
+                recovering = true;
+            } else if (!recovering && !active.recovery().isEmpty()) {
                 var reserve = new Envelope(active.owner(), active.source(), active.recovery(),
-                        active.corridor(), () -> {}, List.of(), null, active.requireAirborne());
+                        active.corridor(), () -> {}, List.of(), active.handoff(), null,
+                        active.requireAirborne(), null, active.rejectedRocketTermination(),
+                        active.preserveFallMargin());
                 if (revalidate(sync, reserve, 0)) {
                     active = reserve;
                     traceActivation++;
@@ -647,7 +908,7 @@ public final class FlightControlAdmission {
         final KnownReturnPlan.Result[] replay = {null};
         sync.getWorld().readTerrain(() -> {
             replay[0] = KnownReturnPlan.replay(sync.getWorld(), current.state(),
-                    sync.getMovementParameters(), plan);
+                    sync.getMovementParameters(), plan, sync.yaw.get());
             return replay[0].proven();
         });
         if (!replay[0].proven() || !consumed.add(candidate)) return candidate;
@@ -673,10 +934,12 @@ public final class FlightControlAdmission {
         if (!expected.resource().useRequested()
                 && sync.hasAttachedFirework() != expected.resource().powered()) return false;
         if (expected.resource().useRequested() && sync.hasAttachedFirework()) return false;
-        var result = new GlidingPhysics(expected.control().yaw(), expected.control().pitch(),
+        float executionYaw = MovementSync.nearestEquivalentYaw(sync.yaw.get(), expected.control().yaw());
+        var result = new GlidingPhysics(executionYaw, expected.control().pitch(),
                 expected.resource().powered(), PlayerInput.NONE, sync.getMovementParameters())
                 .step(sync.getWorld(), before, PlayerPose.HALF_WIDTH, PlayerPose.GLIDING.height());
-        return FlightSafety.knownStep(sync.getWorld(), before, result)
+        return result.fallDistance() < sync.getMovementParameters().safeFallDistance()
+                && FlightSafety.knownStep(sync.getWorld(), before, result)
                 && safe(sync, before, result, null)
                 && result.position().distance(expected.after().position()) <= 1.0e-5
                 && result.velocity().distance(expected.after().velocity()) <= 1.0e-5;
@@ -712,31 +975,285 @@ public final class FlightControlAdmission {
     }
 
     private static boolean poweredSafe(MovementSync sync, Envelope envelope) {
-        var state = new PhysicsState(sync.position.get(), sync.velocity.get(), sync.onGround.get(), sync.fallDistance.get(), PlayerPose.GLIDING);
-        for (int i = 0; i < Math.min(6, envelope.steps().size()); i++) {
-            var control = envelope.steps().get(i).control();
-            var result = new GlidingPhysics(control.yaw(), control.pitch(), true, PlayerInput.NONE,
-                    sync.getMovementParameters()).step(sync.getWorld(), state, PlayerPose.HALF_WIDTH, PlayerPose.GLIDING.height());
-            if (result.onGround() || !safeTravel(sync, state, result, control, envelope.corridor(),
-                    envelope.requireAirborne())) return false;
-            state = new PhysicsState(result.position(), result.velocity(), result.onGround(), result.fallDistance(), result.pose());
+        var lifetime = envelope.rocketLifetime();
+        // Legacy envelopes prepare an unpowered terminal continuation, not a full
+        // rocket-lifetime episode. Their powered check covers only the replay window.
+        if (lifetime == null) return rocketBranchSafe(sync, envelope, proofWindow(envelope, 0),
+                Integer.MAX_VALUE);
+        if (sync.hasAttachedFirework()) return false;
+        int[] inventory = envelope.rejectedRocketTermination().publicationInventory;
+        // No item at publication is the explicitly proved rejected-request outcome.
+        // An item appearing later is not: it could attach an unproved lifetime.
+        if (inventory != null && (!sync.fireworkRequestReady()
+                || !java.util.Arrays.equals(inventory, sync.inventoryManager.getHotbarFireworkFlightDurations())
+                || inventory.length > 0 && !lifetime.equals(FireworkSchedule.lifetimeBounds(inventory[0])))) return false;
+        var controls = allControls(envelope);
+        if (controls.size() <= lifetime.maximumPoweredTicks()) return false;
+        if (!rejectedOutcomeSafe(sync, envelope, 0, 0)) return false;
+        for (int poweredTicks = lifetime.minimumPoweredTicks();
+                poweredTicks <= lifetime.maximumPoweredTicks(); poweredTicks++)
+            if (!rocketBranchSafe(sync, envelope, controls, poweredTicks)) return false;
+        return true;
+    }
+
+    private static boolean rocketBranchSafe(MovementSync sync, Envelope envelope,
+            List<ElytraFlightController.Decision> controls, int poweredTicks) {
+        return rocketBranchSafe(sync, envelope, controls, poweredTicks, liveState(sync));
+    }
+
+    private static boolean rocketBranchSafe(MovementSync sync, Envelope envelope,
+            List<ElytraFlightController.Decision> controls, int poweredTicks,
+            PhysicsState initial) {
+        var state = initial;
+        for (int tick = 0; tick < controls.size(); tick++) {
+            var control = controls.get(tick);
+            boolean powered = tick < poweredTicks;
+            var result = new GlidingPhysics(control.yaw(), control.pitch(), powered, PlayerInput.NONE,
+                    sync.getMovementParameters()).step(sync.getWorld(), state,
+                            PlayerPose.HALF_WIDTH, PlayerPose.GLIDING.height());
+            if (powered && result.onGround() || !safeTravel(sync, state, result, control,
+                    envelope.corridor(), envelope.requireAirborne(), false, powered,
+                    envelope.preserveFallMargin())) {
+                return false;
+            }
+            state = FlightSafety.nextState(result);
+            if (result.onGround()) return false;
         }
         return true;
     }
 
-    private boolean revalidate(MovementSync sync, Envelope envelope, int index) {
-        if (index < 0 || index >= envelope.steps().size()) return false;
-        var state = new PhysicsState(sync.position.get(), sync.velocity.get(), sync.onGround.get(), sync.fallDistance.get(), PlayerPose.GLIDING);
-        // Fixed maximum of six physics steps, selected controls only, no candidate search.
-        for (int i = index; i < Math.min(index + 6, envelope.steps().size()); i++) {
-            var control = envelope.steps().get(i).control();
+    /** A rejected request may leave navigation geometry only when the complete remaining
+     * fixed episode closes on safe support. Re-entering the corridor does not erase departure. */
+    private static boolean rejectedRocketBranchSafe(MovementSync sync, Envelope envelope,
+            int index) {
+        var controls = remainingControls(envelope, index);
+        int executableTicks = envelope.steps().size() - index + envelope.recovery().size();
+        var state = liveState(sync);
+        boolean departedCorridor = false;
+        for (int tick = 0; tick < controls.size(); tick++) {
+            var control = controls.get(tick);
+            var result = new GlidingPhysics(control.yaw(), control.pitch(), false, PlayerInput.NONE,
+                    sync.getMovementParameters()).step(sync.getWorld(), state,
+                            PlayerPose.HALF_WIDTH, PlayerPose.GLIDING.height());
+            boolean insideCorridor = envelope.corridor() == null
+                    || envelope.corridor().contains(state.position(), result.position());
+            departedCorridor |= !insideCorridor;
+            WaypointFlightTarget requiredCorridor = departedCorridor ? null : envelope.corridor();
+            if (!safeTravel(sync, state, result, control, requiredCorridor, false, true, false,
+                    envelope.preserveFallMargin()))
+                return false;
+            state = FlightSafety.nextState(result);
+            if (result.onGround()) return true;
+            // Handoff is proof-only. It may extend a corridor-bound safety window, but it
+            // cannot promise the final off-corridor control needed to reach the ground.
+            if (departedCorridor && tick + 1 >= executableTicks) return false;
+        }
+        return !departedCorridor;
+    }
+
+    /** Without thrust the remaining rocket controls must close safely, or, while rejection
+     * is still unobserved, carry the body to the observation tick where the proved
+     * unpowered hand-over can take over. */
+    private static boolean rejectedOutcomeSafe(MovementSync sync, Envelope envelope, int index,
+            long elapsed) {
+        if (rejectedRocketBranchSafe(sync, envelope, index)) return true;
+        var handOver = envelope.rejectedRocketTermination().handOver;
+        if (handOver.isEmpty() || elapsed >= REJECTED_ROCKET_OBSERVATION_TICKS) return false;
+        var controls = remainingControls(envelope, index);
+        int untilObserved = REJECTED_ROCKET_OBSERVATION_TICKS - Math.toIntExact(elapsed);
+        if (controls.size() < untilObserved) return false;
+        var replay = new ArrayList<>(controls.subList(0, untilObserved));
+        handOver.forEach(step -> replay.add(step.control()));
+        var state = liveState(sync);
+        for (var control : replay) {
+            var result = new GlidingPhysics(control.yaw(), control.pitch(), false, PlayerInput.NONE,
+                    sync.getMovementParameters()).step(sync.getWorld(), state,
+                            PlayerPose.HALF_WIDTH, PlayerPose.GLIDING.height());
+            if (!safeTravel(sync, state, result, control, envelope.corridor(), true, false, false,
+                    envelope.preserveFallMargin())) return false;
+            state = FlightSafety.nextState(result);
+        }
+        return true;
+    }
+
+    private static boolean rejectionObserved(MovementSync sync, RejectedRocketTermination lease) {
+        return lease != null && !lease.handOver.isEmpty() && !lease.attachmentObserved
+                && !sync.hasAttachedFirework() && lease.requestedAt != Long.MIN_VALUE
+                && sync.physicsTickVersion() - lease.requestedAt >= REJECTED_ROCKET_OBSERVATION_TICKS;
+    }
+
+    private boolean requestedRocketSafe(MovementSync sync, Envelope envelope, int index,
+            RejectedRocketTermination lease) {
+        // Admission must prove the same unacknowledged state that will be consumed
+        // immediately after dispatch; otherwise the callback can fire before revocation.
+        long elapsed = lease.requestedAt == Long.MIN_VALUE ? 0
+                : sync.physicsTickVersion() - lease.requestedAt;
+        if (elapsed < 0) return false;
+        if (lease.rejectionConfirmed)
+            return rejectedRocketBranchSafe(sync, envelope, index);
+        if (sync.hasAttachedFirework()) {
+            lease.attachmentObserved = true;
+            int minimumRemaining = Math.max(1,
+                    lease.lifetime.minimumPoweredTicks() - Math.toIntExact(elapsed));
+            int maximumRemaining = lease.lifetime.maximumPoweredTicks() - Math.toIntExact(elapsed);
+            return poweredRemainingSafe(sync, envelope, remainingControls(envelope, index),
+                    liveState(sync), minimumRemaining, maximumRemaining);
+        }
+        if (lease.attachmentObserved) return revalidateOrdinary(sync, envelope, index);
+        if (elapsed >= lease.lifetime.maximumPoweredTicks()) {
+            lease.rejectionConfirmed = true;
+            return rejectedRocketBranchSafe(sync, envelope, index);
+        }
+        // Observed rejection keeps the rocket controls only while they stay safe without
+        // thrust; otherwise the caller switches to the proved hand-over.
+        if (rejectionObserved(sync, lease)) return rejectedRocketBranchSafe(sync, envelope, index);
+        if (!rejectedOutcomeSafe(sync, envelope, index, elapsed)) return false;
+
+        // The attachment snapshot is frozen for this physics tick. Prove the current
+        // unpowered step, then every request-relative lifetime that could be observed next tick.
+        var controls = remainingControls(envelope, index);
+        if (controls.isEmpty()) return false;
+        var control = controls.get(0);
+        var initial = liveState(sync);
+        var result = new GlidingPhysics(control.yaw(), control.pitch(), false, PlayerInput.NONE,
+                sync.getMovementParameters()).step(sync.getWorld(), initial,
+                        PlayerPose.HALF_WIDTH, PlayerPose.GLIDING.height());
+        long nextElapsed = elapsed + 1;
+        if (nextElapsed >= lease.lifetime.maximumPoweredTicks()) return true;
+        // Absence on the observation tick is rejection: the hand-over, already proved
+        // above, owns that tick, not a later acknowledgement.
+        if (!lease.handOver.isEmpty() && nextElapsed >= REJECTED_ROCKET_OBSERVATION_TICKS) return true;
+        if (result.onGround() || controls.size() == 1) return false;
+        int minimumRemaining = Math.max(1,
+                lease.lifetime.minimumPoweredTicks() - Math.toIntExact(nextElapsed));
+        int maximumRemaining = lease.lifetime.maximumPoweredTicks() - Math.toIntExact(nextElapsed);
+        return poweredRemainingSafe(sync, envelope, controls.subList(1, controls.size()),
+                FlightSafety.nextState(result), minimumRemaining, maximumRemaining);
+    }
+
+    private static boolean poweredRemainingSafe(MovementSync sync, Envelope envelope,
+            List<ElytraFlightController.Decision> controls, PhysicsState initial,
+            int minimumPoweredTicks, int maximumPoweredTicks) {
+        if (minimumPoweredTicks <= 0 || maximumPoweredTicks < minimumPoweredTicks
+                || controls.size() <= maximumPoweredTicks) return false;
+        for (int poweredTicks = minimumPoweredTicks;
+                poweredTicks <= maximumPoweredTicks; poweredTicks++)
+            if (!rocketBranchSafe(sync, envelope, controls, poweredTicks, initial)) return false;
+        return true;
+    }
+
+    private static PhysicsState liveState(MovementSync sync) {
+        return new PhysicsState(sync.position.get(), sync.velocity.get(), sync.onGround.get(),
+                sync.fallDistance.get(), PlayerPose.GLIDING);
+    }
+
+    private static List<ElytraFlightController.Decision> allControls(Envelope envelope) {
+        return remainingControls(envelope, 0);
+    }
+
+    private static List<ElytraFlightController.Decision> remainingControls(Envelope envelope,
+            int index) {
+        var controls = new ArrayList<ElytraFlightController.Decision>(
+                envelope.steps().size() - index + envelope.recovery().size()
+                        + envelope.handoff().size());
+        for (int step = index; step < envelope.steps().size(); step++)
+            controls.add(envelope.steps().get(step).control());
+        envelope.recovery().forEach(step -> controls.add(step.control()));
+        envelope.handoff().forEach(step -> controls.add(step.control()));
+        return controls;
+    }
+
+    private boolean preservesExecutableHorizon(MovementSync sync, Envelope candidate) {
+        if (active == null || active.witness() != null
+                || active.source().generation() != sync.getNavigationGeneration()) return true;
+        int activeIndex = (int) (sync.physicsTickVersion() - admittedAt);
+        int activeRemaining;
+        boolean activeStillValid;
+        if (activeIndex >= 0 && activeIndex < active.steps().size()) {
+            activeRemaining = active.steps().size() - activeIndex + active.recovery().size();
+            activeStillValid = revalidate(sync, active, activeIndex);
+        } else if (!recovering && activeIndex == active.steps().size()
+                && !active.recovery().isEmpty()) {
+            var reserve = new Envelope(active.owner(), active.source(), active.recovery(),
+                    active.corridor(), () -> {}, List.of(), active.handoff(), null,
+                    active.requireAirborne(), null, active.rejectedRocketTermination(),
+                    active.preserveFallMargin());
+            activeRemaining = reserve.steps().size();
+            activeStillValid = revalidate(sync, reserve, 0);
+        } else {
+            return true;
+        }
+        int candidateRemaining = candidate.steps().size() + candidate.recovery().size();
+        return !activeStillValid || candidateRemaining >= activeRemaining
+                || closesExecutableEpisode(sync, candidate);
+    }
+
+    private static boolean closesExecutableEpisode(MovementSync sync, Envelope envelope) {
+        if (envelope.requireAirborne() || envelope.corridor() == null) return false;
+        var state = new PhysicsState(sync.position.get(), sync.velocity.get(), sync.onGround.get(),
+                sync.fallDistance.get(), PlayerPose.GLIDING);
+        var controls = new ArrayList<ElytraFlightController.Decision>(
+                envelope.steps().size() + envelope.recovery().size());
+        envelope.steps().forEach(step -> controls.add(step.control()));
+        envelope.recovery().forEach(step -> controls.add(step.control()));
+        for (int index = 0; index < controls.size(); index++) {
+            var control = controls.get(index);
             var result = new GlidingPhysics(control.yaw(), control.pitch(), sync.hasAttachedFirework(),
                     PlayerInput.NONE, sync.getMovementParameters()).step(sync.getWorld(), state,
-                    PlayerPose.HALF_WIDTH, PlayerPose.GLIDING.height());
-            if (!safeTravel(sync, state, result, control, envelope.corridor(),
-                    envelope.requireAirborne())) return false;
-            state = new PhysicsState(result.position(), result.velocity(), result.onGround(), result.fallDistance(), result.pose());
-            if (result.onGround()) break;
+                            PlayerPose.HALF_WIDTH, PlayerPose.GLIDING.height());
+            boolean rejectedRocketLanding = index == 0 && control.firework();
+            if (!safeTravel(sync, state, result, control, envelope.corridor(), false,
+                    rejectedRocketLanding, sync.hasAttachedFirework(),
+                    envelope.preserveFallMargin())) return false;
+            state = FlightSafety.nextState(result);
+            if (result.onGround()) return envelope.corridor().acceptsLanding(sync.getWorld(), state)
+                    || rejectedRocketLanding && FlightHazards.safeLanding(sync.getWorld(), state.position());
+        }
+        return false;
+    }
+
+    private static List<ElytraFlightController.Decision> proofWindow(Envelope envelope, int index) {
+        var controls = new ArrayList<ElytraFlightController.Decision>(6);
+        appendControls(controls, envelope.steps(), index);
+        appendControls(controls, envelope.recovery(), 0);
+        appendControls(controls, envelope.handoff(), 0);
+        return controls;
+    }
+
+    private static void appendControls(List<ElytraFlightController.Decision> controls,
+            List<Step> steps, int index) {
+        for (int i = index; i < steps.size() && controls.size() < 6; i++)
+            controls.add(steps.get(i).control());
+    }
+
+    private boolean revalidate(MovementSync sync, Envelope envelope, int index) {
+        if (index < 0 || index >= envelope.steps().size()) return false;
+        var rejectedRocketTermination = envelope.rejectedRocketTermination();
+        if (rejectedRocketTermination != null)
+            return requestedRocketSafe(sync, envelope, index, rejectedRocketTermination);
+        return revalidateOrdinary(sync, envelope, index);
+    }
+
+    private boolean revalidateOrdinary(MovementSync sync, Envelope envelope, int index) {
+        var controls = proofWindow(envelope, index);
+        int maximumPoweredTicks = sync.hasAttachedFirework() ? controls.size() : 0;
+        PhysicsState state = null;
+        for (int poweredTicks = 0; poweredTicks <= maximumPoweredTicks; poweredTicks++) {
+            state = new PhysicsState(sync.position.get(), sync.velocity.get(), sync.onGround.get(),
+                    sync.fallDistance.get(), PlayerPose.GLIDING);
+            for (int tick = 0; tick < controls.size(); tick++) {
+                var control = controls.get(tick);
+                boolean powered = tick < poweredTicks;
+                var result = new GlidingPhysics(control.yaw(), control.pitch(), powered,
+                        PlayerInput.NONE, sync.getMovementParameters()).step(sync.getWorld(), state,
+                                PlayerPose.HALF_WIDTH, PlayerPose.GLIDING.height());
+                if (!safeTravel(sync, state, result, control, envelope.corridor(),
+                        envelope.requireAirborne(), false, powered, envelope.preserveFallMargin())) {
+                    return false;
+                }
+                state = FlightSafety.nextState(result);
+                if (result.onGround()) break;
+            }
         }
         // A short landing prefix must not spend the last recoverable descent tick.
         // Replay the fixed fallback attitude from its end, rather than assuming
@@ -745,7 +1262,8 @@ public final class FlightControlAdmission {
         if (mode == Mode.LOCAL_SOLVER
                 && envelope.steps().get(index).control().phase() == ElytraFlightController.Phase.LANDING
                 && !state.onGround() && state.fallDistance() > 1
-                && !checkedLanding(sync, state, envelope.steps().get(index).control(), envelope.corridor())) {
+                && !checkedLanding(sync, state, envelope.steps().get(index).control(), envelope.corridor(),
+                        envelope.preserveFallMargin())) {
             float yaw = envelope.steps().get(index).control().yaw();
             for (int i = 0; i < 6; i++) {
                 var result = new GlidingPhysics(yaw, -55f, sync.hasAttachedFirework(),
@@ -766,12 +1284,20 @@ public final class FlightControlAdmission {
      */
     private static boolean checkedLanding(MovementSync sync, PhysicsState state,
             ElytraFlightController.Decision control, WaypointFlightTarget route) {
+        return checkedLanding(sync, state, control, route, false);
+    }
+
+    private static boolean checkedLanding(MovementSync sync, PhysicsState state,
+            ElytraFlightController.Decision control, WaypointFlightTarget route,
+            boolean preserveFallMargin) {
         if (control.phase() != ElytraFlightController.Phase.LANDING || control.firework()
                 || sync.hasAttachedFirework()) return false;
         for (int i = 0; i < 80; i++) {
             var next = new GlidingPhysics(control.yaw(), control.pitch(), false, PlayerInput.NONE,
                     sync.getMovementParameters()).step(sync.getWorld(), state,
                             PlayerPose.HALF_WIDTH, PlayerPose.GLIDING.height());
+            if (preserveFallMargin && !(next.fallDistance() < sync.getMovementParameters().safeFallDistance()))
+                return false;
             if (!FlightSafety.knownStep(sync.getWorld(), state, next)
                     || !safe(sync, state, next, route)) return false;
             if (next.onGround()) return (route == null
@@ -788,10 +1314,25 @@ public final class FlightControlAdmission {
     /** Inspect pre-thrust travel from the same state: thrust can hide a ceiling-clipped Y. */
     private static boolean safeTravel(MovementSync sync, PhysicsState before, PhysicsResult after,
             ElytraFlightController.Decision control, WaypointFlightTarget corridor,
-            boolean requireAirborne) {
-        if (requireAirborne && (before.onGround() || after.onGround())) return false;
-        if (after.onGround() && (sync.hasAttachedFirework() || corridor != null
-                && !corridor.acceptsLanding(sync.getWorld(), FlightSafety.nextState(after)))) return false;
+            boolean requireAirborne, boolean rejectedRocketLanding, boolean powered,
+            boolean preserveFallMargin) {
+        if (preserveFallMargin && !(after.fallDistance() < sync.getMovementParameters().safeFallDistance()))
+            return false;
+        if (!FlightSafety.knownStep(sync.getWorld(), before, after)) return false;
+        if (requireAirborne && !rejectedRocketLanding
+                && (before.onGround() || after.onGround())) return false;
+        if (after.onGround()) {
+            if (powered) return false;
+            if (new FlightSafety(sync.getMovementParameters(), DamageParameters.NONE, 20)
+                    .collisionDamage(sync.getWorld(), before, after, control.yaw(), control.pitch(), false)
+                    .raw() != 0) return false;
+            if (rejectedRocketLanding) {
+                if (!FlightHazards.safeLanding(sync.getWorld(), after.position())) return false;
+            } else if (corridor != null
+                    && !corridor.acceptsLanding(sync.getWorld(), FlightSafety.nextState(after))) {
+                return false;
+            }
+        }
         if (before.velocity().y > .003 && !after.onGround()) {
             var travel = new GlidingPhysics(control.yaw(), control.pitch(), false, PlayerInput.NONE,
                     sync.getMovementParameters()).step(sync.getWorld(), before,
@@ -803,7 +1344,8 @@ public final class FlightControlAdmission {
 
     private static boolean safe(MovementSync sync, PhysicsState before, PhysicsResult after, WaypointFlightTarget corridor) {
         var p = after.position();
-        return p.isFinite() && sync.getWorld().chunkLoaded(((int)Math.floor(p.x)) >> 4, ((int)Math.floor(p.z)) >> 4)
+        return p.isFinite() && FlightSafety.knownStep(sync.getWorld(), before, after)
+                && sync.getWorld().chunkLoaded(((int)Math.floor(p.x)) >> 4, ((int)Math.floor(p.z)) >> 4)
                 && !after.collidedX() && !after.collidedZ()
                 && FlightHazards.damage(sync.getWorld(), before, after, DamageParameters.NONE, true).raw() == 0
                 && FlightHazards.damage(sync.getWorld(), before, after, DamageParameters.NONE, false).raw() == 0

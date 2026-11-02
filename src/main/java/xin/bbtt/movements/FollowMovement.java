@@ -252,11 +252,17 @@ public final class FollowMovement extends Movement {
                 var reserve = new xin.bbtt.physics.HazardRecovery.Context(
                         sync.getInventoryManager().getHotbarFireworkFlightDurations(), 0,
                         sync.hasAttachedFirework(), sync.getLandingMemory());
-                lowPlan = !target.lost() && !target.gliding()
-                        ? LowAltitudeFlightPlan.pursuit(sync.getWorld(), state, target.aim(state),
-                                sync.getMovementParameters(), sync.isGliding(), reserve)
-                        : LowAltitudeFlightPlan.submit(sync.getWorld(), state, target.lost() ? searchDestination() : target.aim(state),
-                                sync.getMovementParameters(), sync.isGliding(), reserve);
+                Vector3d destination = target.lost() ? searchDestination() : target.aim(state);
+                if (target.lost()) {
+                    lowPlan = LowAltitudeFlightPlan.fixedFollow(sync.getWorld(), state, destination,
+                            sync.getMovementParameters(), sync.isGliding(), reserve);
+                } else {
+                    lowPlan = !target.gliding()
+                            ? LowAltitudeFlightPlan.pursuit(sync.getWorld(), state, destination,
+                                    sync.getMovementParameters(), sync.isGliding(), reserve)
+                            : LowAltitudeFlightPlan.submit(sync.getWorld(), state, destination,
+                                    sync.getMovementParameters(), sync.isGliding(), reserve);
+                }
                 submitted[0] = true;
             }
         });

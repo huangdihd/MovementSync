@@ -4,6 +4,13 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class FireworkScheduleTest {
+    @Test void vanillaLifetimeBoundsIncludeTheFinalPoweredTick() {
+        assertEquals(11, FireworkSchedule.minimumBoostTicks(0));
+        assertEquals(22, FireworkSchedule.maximumBoostTicks(0));
+        assertEquals(21, FireworkSchedule.minimumBoostTicks(1));
+        assertEquals(32, FireworkSchedule.maximumBoostTicks(1));
+    }
+
     @Test void scheduledReachRejectsLavaBeforeDelayedRecovery() {
         var air = new xin.bbtt.world.World() {
             @Override public boolean chunkLoaded(int x, int z) { return true; }

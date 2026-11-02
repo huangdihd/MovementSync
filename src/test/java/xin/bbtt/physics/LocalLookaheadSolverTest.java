@@ -132,6 +132,20 @@ class LocalLookaheadSolverTest {
         assertThrows(IllegalArgumentException.class, () -> target.predict(-1));
     }
 
+    @Test void horizontalPursuitIgnoresVerticalErrorButNormalPursuitRemainsThreeDimensional() {
+        var target = new LocalLookaheadSolver.MovingTarget(
+                new Vector3d(10, 100, 8), new Vector3d(2, .5, 0));
+        var aligned = new PhysicsState(new Vector3d(20, 102.5, 8),
+                new Vector3d(2, .5, 0), false);
+        var verticallyWrong = new PhysicsState(new Vector3d(20, 500, 8),
+                new Vector3d(2, -30, 0), false);
+
+        assertEquals(target.horizontalScore(aligned, 5),
+                target.horizontalScore(verticallyWrong, 5), 0.0);
+        assertEquals(0, target.score(aligned, 5), 0.0);
+        assertTrue(target.score(aligned, 5) > target.score(verticallyWrong, 5));
+    }
+
     @Test void attachedRocketPredictionDoesNotRequestAnotherRocket() {
         var initial = state(8, -1);
         var result = solver.solve(List.of(new Vector3d(-40, 100, 8)), initial, air,

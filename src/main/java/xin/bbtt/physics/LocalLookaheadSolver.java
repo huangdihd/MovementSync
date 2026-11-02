@@ -38,6 +38,17 @@ public final class LocalLookaheadSolver {
             return -state.position().distanceSquared(predict(ticks))
                     - .25 * state.velocity().distanceSquared(velocity);
         }
+        /** Route-owned control uses the live observation only for horizontal pursuit urgency. */
+        public double horizontalScore(PhysicsState state, double ticks) {
+            Vector3d predicted = predict(ticks);
+            Vector3d position = state.position();
+            Vector3d stateVelocity = state.velocity();
+            double x = position.x - predicted.x;
+            double z = position.z - predicted.z;
+            double velocityX = stateVelocity.x - velocity.x;
+            double velocityZ = stateVelocity.z - velocity.z;
+            return -x * x - z * z - .25 * (velocityX * velocityX + velocityZ * velocityZ);
+        }
     }
 
     public Result solve(List<Vector3d> lookahead, PhysicsState initial, World world,
@@ -119,8 +130,17 @@ public final class LocalLookaheadSolver {
 
     public enum PrefixStatus { SAFE_PREFIX, UNPROVEN }
 
+    /** Optional caller-owned uncertainty proof returning the longest executable prefix. */
+    @FunctionalInterface
+    public interface PrefixValidator {
+        int validTicks(List<FlightControlAdmission.Step> prefix);
+    }
+
     /** First failing check per candidate; budget counts the shared search cutoff once. */
-    public record Rejections(int unknown, int collision, int damage, int budget) {}
+    public record Rejections(int unknown, int collision, int damage, int corridor, int budget) {}
+
+    private record PrefixCandidate(List<FlightControlAdmission.Step> prefix,
+                                   PhysicsState end, double score) {}
 
     /** Steps contain tick-start states, as required by admission, not tick-end predictions.
      * SAFE_PREFIX is only a local preview, never a terminal safety guarantee.
@@ -134,13 +154,40 @@ public final class LocalLookaheadSolver {
 
     public PrefixResult solvePrefix(List<Vector3d> lookahead, PhysicsState initial, World world,
             MovementParameters movement, float yaw, float pitch, boolean attached, Budget budget) {
-        return solvePrefix(lookahead, initial, world, movement, yaw, pitch, attached, budget, null);
+        return solvePrefix(lookahead, initial, world, movement, yaw, pitch, attached, budget,
+                null, null, null);
     }
 
-    /** Longest known, collision/damage-free prefix wins; progress breaks length ties. */
     public PrefixResult solvePrefix(List<Vector3d> lookahead, PhysicsState initial, World world,
             MovementParameters movement, float yaw, float pitch, boolean attached, Budget budget,
             MovingTarget movingTarget) {
+        return solvePrefix(lookahead, initial, world, movement, yaw, pitch, attached, budget,
+                movingTarget, null, null);
+    }
+
+    /** Longest known, collision/damage-free prefix inside the optional planner corridor wins. */
+    public PrefixResult solvePrefix(List<Vector3d> lookahead, PhysicsState initial, World world,
+            MovementParameters movement, float yaw, float pitch, boolean attached, Budget budget,
+            MovingTarget movingTarget, WaypointFlightTarget corridor) {
+        return solvePrefix(lookahead, initial, world, movement, yaw, pitch, attached, budget,
+                movingTarget, corridor, null);
+    }
+
+    /** Candidate ranking may additionally require a caller-owned execution uncertainty proof. */
+    public PrefixResult solvePrefix(List<Vector3d> lookahead, PhysicsState initial, World world,
+            MovementParameters movement, float yaw, float pitch, boolean attached, Budget budget,
+            MovingTarget movingTarget, WaypointFlightTarget corridor,
+            PrefixValidator validator) {
+        return solvePrefix(lookahead, initial, world, movement, yaw, pitch, attached, budget,
+                movingTarget, corridor, validator, lookahead);
+    }
+
+    /** Select steering against local samples, then report progress on a shared route
+     * so powered/unpowered comparison does not treat those samples as destinations. */
+    public PrefixResult solvePrefix(List<Vector3d> lookahead, PhysicsState initial, World world,
+            MovementParameters movement, float yaw, float pitch, boolean attached, Budget budget,
+            MovingTarget movingTarget, WaypointFlightTarget corridor,
+            PrefixValidator validator, List<Vector3d> progressRoute) {
         Objects.requireNonNull(world);
         Objects.requireNonNull(movement);
         Objects.requireNonNull(budget);
@@ -148,8 +195,12 @@ public final class LocalLookaheadSolver {
         checked(initial.position());
         checked(initial.velocity());
         if (lookahead.isEmpty()) throw new IllegalArgumentException("Empty lookahead");
-        List<Vector3d> route = lookahead.stream().map(LocalLookaheadSolver::checked)
-                .sorted(java.util.Comparator.comparingDouble(p -> p.distanceSquared(initial.position()))).toList();
+        // LocalAirRoute supplies farthest-first points along increasing route arc. Keep
+        // that direction: sorting by Euclidean distance can move an already-passed near
+        // sample ahead of the valid forward anchors and reverse the candidate hemisphere.
+        List<Vector3d> route = lookahead.stream().map(LocalLookaheadSolver::checked).toList();
+        if (progressRoute.isEmpty()) throw new IllegalArgumentException("Empty progress route");
+        List<Vector3d> scoringRoute = progressRoute.stream().map(LocalLookaheadSolver::checked).toList();
         long started = System.nanoTime();
         float aim = yaw;
         for (Vector3d point : route) {
@@ -171,13 +222,27 @@ public final class LocalLookaheadSolver {
         addYaw(yaws, yaw + 30);
         final float forward = aim;
         yaws.removeIf(candidate -> Math.cos(Math.toRadians(candidate - forward)) <= 1.0e-7);
+        // Candidate order is observable under the bounded wall-clock budget. Prefer a
+        // terrain-validated tangent only while it agrees with the live forward route;
+        // a stale planner cursor must not reintroduce a heading filtered out above.
+        if (corridor != null) {
+            Float plannerYaw = plannerForwardYaw(corridor);
+            if (plannerYaw != null
+                    && Math.cos(Math.toRadians(plannerYaw - forward)) > 1.0e-7)
+                prioritizeYaw(yaws, plannerYaw);
+        }
         float center = Math.max(-75, Math.min(60, pitch));
         float[] pitches = {center, -20, Math.max(-80, center - 15), Math.min(70, center + 15), -45, 20};
-        int steps = 0, unknown = 0, collision = 0, damage = 0, cutoff = 0;
+        int steps = 0, unknown = 0, collision = 0, damage = 0, outsideCorridor = 0, cutoff = 0;
         List<FlightControlAdmission.Step> best = List.of();
         PhysicsState bestState = null;
         double bestScore = Double.NEGATIVE_INFINITY;
+        var candidates = validator == null ? null : new ArrayList<PrefixCandidate>();
         boolean exhausted = false;
+        // Planner geometry owns altitude. A live target may add horizontal pursuit
+        // urgency, but must never pull a certified mountain/ridge route back toward
+        // the entity's ground Y after the first vertical segment is passed.
+        boolean horizontalPursuit = movingTarget != null && corridor != null;
         for (float candidateYaw : yaws) {
             for (float candidatePitch : pitches) {
                 PhysicsState state = new PhysicsState(initial.position(), initial.velocity(), initial.onGround(),
@@ -203,29 +268,85 @@ public final class LocalLookaheadSolver {
                         damage++;
                         break;
                     }
+                    if (corridor != null && !corridor.contains(state.position(), result.position())) {
+                        outsideCorridor++;
+                        break;
+                    }
                     prefix.add(new FlightControlAdmission.Step(control, state));
                     state = new PhysicsState(result.position(), result.velocity(), result.onGround(),
                             result.fallDistance(), PlayerPose.GLIDING);
                 }
                 if (!prefix.isEmpty()) {
-                    double score = routeScore(route, initial.position(), state.position());
-                    if (movingTarget != null) score += movingTarget.score(state, prefix.size());
-                    if (prefix.size() > best.size() || prefix.size() == best.size() && score > bestScore) {
-                        best = List.copyOf(prefix);
-                        bestState = state;
-                        bestScore = score;
+                    List<FlightControlAdmission.Step> candidate = List.copyOf(prefix);
+                    double score = candidateScore(route, initial, state, candidate.size(),
+                            movingTarget, horizontalPursuit);
+                    if (validator != null) {
+                        candidates.add(new PrefixCandidate(candidate, state, score));
+                    } else {
+                        if (candidate.size() > best.size()
+                                || candidate.size() == best.size() && score > bestScore) {
+                            best = candidate;
+                            bestState = state;
+                            bestScore = score;
+                        }
                     }
                 }
                 if (exhausted) break;
             }
             if (exhausted) break;
         }
+        if (validator != null) {
+            candidates.sort(java.util.Comparator
+                    .comparingInt((PrefixCandidate candidate) -> candidate.prefix().size()).reversed()
+                    .thenComparing(java.util.Comparator.comparingDouble(PrefixCandidate::score).reversed()));
+            for (var candidate : candidates) {
+                if (candidate.prefix().size() < best.size()) break;
+                int validTicks = validator.validTicks(candidate.prefix());
+                if (validTicks <= 0) continue;
+                validTicks = Math.min(validTicks, candidate.prefix().size());
+                List<FlightControlAdmission.Step> validated = validTicks == candidate.prefix().size()
+                        ? candidate.prefix() : List.copyOf(candidate.prefix().subList(0, validTicks));
+                PhysicsState validatedEnd = validTicks == candidate.prefix().size()
+                        ? candidate.end() : candidate.prefix().get(validTicks).expected();
+                double score = validTicks == candidate.prefix().size() ? candidate.score()
+                        : candidateScore(route, initial, validatedEnd, validTicks,
+                                movingTarget, horizontalPursuit);
+                if (validated.size() > best.size()
+                        || validated.size() == best.size() && score > bestScore) {
+                    best = validated;
+                    bestState = validatedEnd;
+                    bestScore = score;
+                }
+                if (validTicks == candidate.prefix().size()) break;
+            }
+        }
         var decision = best.isEmpty()
                 ? new ElytraFlightController.Decision(aim, -20, false, ElytraFlightController.Phase.CRUISE)
                 : best.get(0).control();
+        double progressScore = best.isEmpty() ? Double.NEGATIVE_INFINITY
+                : candidateScore(scoringRoute, initial, bestState, best.size(), movingTarget, horizontalPursuit);
         return new PrefixResult(decision, best, steps, System.nanoTime() - started,
-                best.isEmpty() ? PrefixStatus.UNPROVEN : PrefixStatus.SAFE_PREFIX, bestState, bestScore,
-                new Rejections(unknown, collision, damage, cutoff));
+                best.isEmpty() ? PrefixStatus.UNPROVEN : PrefixStatus.SAFE_PREFIX, bestState, progressScore,
+                new Rejections(unknown, collision, damage, outsideCorridor, cutoff));
+    }
+
+    private static double candidateScore(List<Vector3d> route, PhysicsState initial,
+            PhysicsState end, int ticks, MovingTarget movingTarget, boolean horizontalPursuit) {
+        double score = routeScore(route, initial.position(), end.position());
+        if (movingTarget != null) score += horizontalPursuit
+                ? movingTarget.horizontalScore(end, ticks)
+                : movingTarget.score(end, ticks);
+        return score;
+    }
+
+    private static Float plannerForwardYaw(WaypointFlightTarget corridor) {
+        List<Vector3d> points = corridor.waypoints();
+        for (int endpoint = Math.max(1, corridor.index()); endpoint < points.size(); endpoint++) {
+            Vector3d delta = new Vector3d(points.get(endpoint)).sub(points.get(endpoint - 1));
+            if (Math.hypot(delta.x, delta.z) > 1.0e-8)
+                return (float) Math.toDegrees(Math.atan2(-delta.x, delta.z));
+        }
+        return null;
     }
 
     private static boolean touchesCollision(World world, Vector3d feet) {
@@ -239,9 +360,19 @@ public final class LocalLookaheadSolver {
                 result.onGround(), result.fallDistance(), PlayerPose.GLIDING);
     }
 
+    private static void prioritizeYaw(List<Float> yaws, float yaw) {
+        float wrapped = wrappedYaw(yaw);
+        yaws.remove(wrapped);
+        yaws.add(0, wrapped);
+    }
+
     private static void addYaw(List<Float> yaws, float yaw) {
-        float wrapped = ((yaw + 180) % 360 + 360) % 360 - 180;
+        float wrapped = wrappedYaw(yaw);
         if (!yaws.contains(wrapped)) yaws.add(wrapped);
+    }
+
+    private static float wrappedYaw(float yaw) {
+        return ((yaw + 180) % 360 + 360) % 360 - 180;
     }
 
     /** Arc-length progress minus cross-track distance along the ordered local polyline. */

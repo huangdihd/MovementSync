@@ -104,6 +104,87 @@ class LocalGotoControllerTest extends ElytraCommandTestSupport {
         }
     }
 
+    @Test void busyWorkerObservesReplacementRouteAndCannotPublishObsoleteGeometry() throws Exception {
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        World gated = new World() {
+            @Override public boolean chunkLoaded(int x, int z) {
+                entered.countDown();
+                try { assertTrue(release.await(5, TimeUnit.SECONDS)); }
+                catch (InterruptedException error) { throw new AssertionError(error); }
+                return true;
+            }
+        };
+        Object owner = new Object();
+        var source = source(gated, owner);
+        var replacementGoal = new Vector3d(40, 100, 0);
+        var replacementRoute = new WaypointFlightTarget(
+                List.of(source.state().position(), replacementGoal), replacementGoal, false, false, 64);
+        try (var controller = new LocalGotoController()) {
+            assertTrue(controller.request(movementSync, owner, source, route(), GOAL));
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            try {
+                assertFalse(controller.request(movementSync, owner, source,
+                        replacementRoute, replacementGoal), "single-flight must not queue a second worker");
+            } finally {
+                release.countDown();
+            }
+            controller.awaitIdle(5, TimeUnit.SECONDS);
+
+            assertNull(controller.latest(), "route replacement must revoke the old worker's publication rights");
+            assertTrue(controller.request(movementSync, owner, source, replacementRoute, replacementGoal),
+                    "the latest route must remain eligible after the obsolete worker exits");
+            controller.awaitIdle(5, TimeUnit.SECONDS);
+            assertEquals(LocalGotoController.Status.SAFE_PREFIX, controller.latest().status());
+            assertTrue(pendingEnvelope().corridor().sameCorridor(replacementRoute));
+        } finally {
+            release.countDown();
+        }
+    }
+
+    @Test void invalidatedRouteCannotPublishOrRemainPendingAndReplacementSteersForward() throws Exception {
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        World gated = new World() {
+            @Override public boolean chunkLoaded(int x, int z) {
+                entered.countDown();
+                try { assertTrue(release.await(5, TimeUnit.SECONDS)); }
+                catch (InterruptedException error) { throw new AssertionError(error); }
+                return true;
+            }
+        };
+        Object owner = new Object();
+        var source = source(gated, owner);
+        var replacementGoal = new Vector3d(40, 100, 0);
+        var replacementRoute = new WaypointFlightTarget(
+                List.of(source.state().position(), replacementGoal), replacementGoal, false, false, 64);
+        try (var controller = new LocalGotoController()) {
+            assertTrue(controller.request(movementSync, owner, source, route(), GOAL));
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            try {
+                controller.invalidateRoute(movementSync, owner);
+            } finally {
+                release.countDown();
+            }
+            controller.awaitIdle(5, TimeUnit.SECONDS);
+
+            assertNull(controller.latest(), "an invalidated worker cannot publish its obsolete route");
+            assertNull(pendingEnvelopeValue(), "invalidation must also remove an unpublished old envelope");
+            assertTrue(controller.request(movementSync, owner, source, replacementRoute, replacementGoal));
+            controller.awaitIdle(5, TimeUnit.SECONDS);
+
+            var envelope = pendingEnvelope();
+            assertTrue(envelope.corridor().sameCorridor(replacementRoute));
+            float yaw = envelope.steps().get(0).control().yaw();
+            var tangent = new Vector3d(replacementGoal).sub(source.state().position()).normalize();
+            double headingDot = -Math.sin(Math.toRadians(yaw)) * tangent.x
+                    + Math.cos(Math.toRadians(yaw)) * tangent.z;
+            assertTrue(headingDot > 0, "replacement control must point into its forward tangent");
+        } finally {
+            release.countDown();
+        }
+    }
+
     @Test void unknownTerrainIsExplicitUnprovenNotLandingOrRocket() throws Exception {
         Object owner = new Object();
         var source = source(new World() {}, owner);
@@ -196,12 +277,15 @@ class LocalGotoControllerTest extends ElytraCommandTestSupport {
     }
 
     private FlightControlAdmission.Envelope pendingEnvelope() throws Exception {
+        return assertInstanceOf(FlightControlAdmission.Envelope.class, pendingEnvelopeValue());
+    }
+
+    private Object pendingEnvelopeValue() throws Exception {
         var controls = MovementSync.class.getDeclaredField("flightControls");
         controls.setAccessible(true);
         var pending = FlightControlAdmission.class.getDeclaredField("pending");
         pending.setAccessible(true);
-        return assertInstanceOf(FlightControlAdmission.Envelope.class,
-                pending.get(controls.get(movementSync)));
+        return pending.get(controls.get(movementSync));
     }
 
     @Test void equalGeometryRenewalCannotReuseWorkerCursorBehindLiveRouteIndex() throws Exception {
@@ -298,6 +382,52 @@ class LocalGotoControllerTest extends ElytraCommandTestSupport {
         }
     }
 
+    @Test void ridgePursuitPreparesTurningEpisodeBeforeComparingConstantControlHorizons() throws Exception {
+        World ridge = new World() {
+            @Override public boolean chunkLoaded(int x, int z) { return true; }
+            @Override public BlockState getBlockStateAt(Vector3d position) {
+                return position.y < 64 || position.x >= 112 && position.x < 128 && position.y < 84
+                        ? new BlockState("stone", 1, Map.of(), "block", 1.5, true, "STONE")
+                        : super.getBlockStateAt(position);
+            }
+        };
+        Object owner = new Object();
+        source(ridge, owner);
+        movementSync.position.set(new Vector3d(110.9, 65.95, 10.98));
+        movementSync.velocity.set(new Vector3d(-.01365, -.1822, .08598));
+        movementSync.fallDistance.set(1.1822);
+        movementSync.setGliding(true);
+        movementSync.yaw.set(-90f);
+        movementSync.pitch.set(-5f);
+        inventory[36] = item("firework_rocket", 1);
+        movementSync.inventoryManager.setContainerItems(0, inventory);
+        var source = FlightControlAdmission.snapshot(movementSync);
+        var goal = new Vector3d(143.7, 64, 8.5);
+        var routeSource = new PhysicsState(new Vector3d(111, 66.7, 10.31),
+                new Vector3d(), false, 1, PlayerPose.GLIDING);
+        var route = LowAltitudePlanner.planPursuit(ridge, routeSource,
+                new Vector3d(157.3, 64, 8.5), MovementParameters.DEFAULT);
+        assertNotNull(route);
+        var accepted = new AtomicInteger();
+        try (var controller = new LocalGotoController()) {
+            assertTrue(controller.request(movementSync, owner, source, route, goal, true,
+                    accepted::incrementAndGet,
+                    new LocalLookaheadSolver.MovingTarget(goal, new Vector3d(.8, 0, 0))));
+            controller.awaitIdle(5, TimeUnit.SECONDS);
+            assertTrue(controller.latest().powered().prefix().size()
+                    < controller.latest().unpowered().prefix().size(),
+                    "fixture must exercise the shorter constant-control powered seed");
+            assertTrue(controller.latest().rocket(),
+                    "a shorter constant-control seed must not veto a fully proved turning climb");
+            var envelope = pendingEnvelope();
+            assertEquals(27, envelope.steps().size());
+            assertEquals(6, envelope.recovery().size());
+            assertEquals(1, envelope.handoff().size());
+            movementSync.snapshotInput();
+            assertEquals(1, accepted.get(), "live admission must accept the complete ridge episode");
+        }
+    }
+
     @Test void arrivalDoesNotRequestRocketAtCorrectGoalElevation() throws Exception {
         Object owner = new Object();
         var initial = source(air(), owner);
@@ -308,6 +438,86 @@ class LocalGotoControllerTest extends ElytraCommandTestSupport {
             controller.awaitIdle(5, TimeUnit.SECONDS);
             assertFalse(controller.latest().rocket());
             assertNull(controller.latest().powered(), "arrival must not evaluate unnecessary thrust");
+        }
+    }
+
+    @Test void lowEnergySupportedApproachCanPrepareProvenRescueBeforePrematureTouchdown() throws Exception {
+        World roofed = new World() {
+            @Override public boolean chunkLoaded(int x, int z) { return true; }
+            @Override public BlockState getBlockStateAt(Vector3d position) {
+                return position.y < 64 || position.y >= 80
+                        ? new BlockState("minecraft:stone", 1, Map.of(), "block", 1.5, true, "STONE")
+                        : super.getBlockStateAt(position);
+            }
+        };
+        Object owner = new Object();
+        source(roofed, owner);
+        movementSync.position.set(new Vector3d(16.5, 65.77, 578.2));
+        movementSync.velocity.set(new Vector3d(0, -.0145339, .4171));
+        movementSync.fallDistance.set(1.0145339);
+        movementSync.setGliding(true);
+        inventory[36] = item("firework_rocket", 64);
+        movementSync.inventoryManager.setContainerItems(0, inventory);
+        var initial = FlightControlAdmission.snapshot(movementSync);
+        var goal = new Vector3d(16.5, 64, 608.5);
+        assertTrue(LocalGotoController.arrival(roofed, MovementParameters.DEFAULT,
+                initial.state(), goal, false, 0).isEmpty());
+        var route = LowAltitudePlanner.plan(roofed, initial.state(), goal, MovementParameters.DEFAULT);
+        assertNotNull(route);
+        var accepted = new AtomicInteger();
+        try (var controller = new LocalGotoController()) {
+            assertTrue(controller.request(movementSync, owner, initial, route, goal, true,
+                    accepted::incrementAndGet, null,
+                    new HazardRecovery.Context(new int[] {1}, 0, false, null), true));
+            assertTrue(controller.awaitIdle(5, TimeUnit.SECONDS));
+            assertNotNull(controller.latest().powered(), "proximity cannot disable a needed rescue search");
+            assertTrue(controller.latest().rocket(), "rescue must own a complete all-outcome episode");
+            movementSync.snapshotInput();
+            assertEquals(1, accepted.get());
+            assertTrue(Math.cos(Math.toRadians(movementSync.yaw.get())) > 0,
+                    "new thrust must point toward the landing destination");
+        }
+    }
+
+    @Test void partialCruiseBoostsBeforeItsShortLookaheadBecomesAnArtificialEndpoint() throws Exception {
+        World roofed = new World() {
+            @Override public boolean chunkLoaded(int x, int z) {
+                return x >= -2 && x <= 2 && Math.abs(z - 17) <= 3;
+            }
+            @Override public BlockState getBlockStateAt(Vector3d position) {
+                return position.y < 64 || position.y >= 80
+                        ? new BlockState("minecraft:stone", 1, Map.of(), "block", 1.5, true, "STONE")
+                        : super.getBlockStateAt(position);
+            }
+        };
+        Object owner = new Object();
+        source(roofed, owner);
+        movementSync.position.set(new Vector3d(16.5, 65.56, 282.8));
+        movementSync.velocity.set(new Vector3d(0, .007474, .7228));
+        movementSync.fallDistance.set(1.0);
+        movementSync.pitch.set(-20f);
+        movementSync.setGliding(true);
+        inventory[36] = item("firework_rocket", 64);
+        movementSync.inventoryManager.setContainerItems(0, inventory);
+        var initial = FlightControlAdmission.snapshot(movementSync);
+        var goal = new Vector3d(16.5, 64, 608.5);
+        var route = LowAltitudePlanner.plan(roofed, initial.state(), goal, MovementParameters.DEFAULT);
+        assertNotNull(route);
+        assertTrue(route.partial());
+        var accepted = new AtomicInteger();
+        try (var controller = new LocalGotoController()) {
+            assertTrue(controller.request(movementSync, owner, initial, route, goal, true,
+                    accepted::incrementAndGet, null,
+                    new HazardRecovery.Context(new int[] {1}, 0, false, null), true));
+            assertTrue(controller.awaitIdle(5, TimeUnit.SECONDS));
+            assertEquals(12, controller.latest().unpowered().prefix().size());
+            assertTrue(controller.latest().powered().score() > controller.latest().unpowered().score());
+            assertTrue(controller.latest().rocket(), "cruise must not wait for imminent touchdown");
+            assertEquals(27, pendingEnvelope().steps().size());
+            assertEquals(6, pendingEnvelope().recovery().size());
+            assertEquals(1, pendingEnvelope().handoff().size());
+            movementSync.snapshotInput();
+            assertEquals(1, accepted.get(), "the complete episode must also pass live admission");
         }
     }
 

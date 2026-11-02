@@ -198,6 +198,8 @@ final class FollowLostRollingTerrainTest extends ElytraCommandTestSupport {
                 var input = movementSync.snapshotInput();
                 var packet = movementSync.pollBeforeMovementPacket();
                 while (packet != null) {
+                    assertEquals(xin.bbtt.MovementSync.BeforeMovementDispatch.SENT,
+                            movementSync.sendBeforeMovementPacket(packet, packet));
                     if (packet instanceof org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundPlayerCommandPacket command
                             && command.getState() == org.geysermc.mcprotocollib.protocol.data.game.entity.player.PlayerState.START_ELYTRA_FLYING) {
                         assertFalse(movementSync.onGround.get(), "deployment follows a physical jump");
@@ -239,6 +241,7 @@ final class FollowLostRollingTerrainTest extends ElytraCommandTestSupport {
                 movementSync.velocity.set(next.velocity());
                 movementSync.onGround.set(next.onGround());
                 movementSync.fallDistance.set(next.fallDistance());
+                movementSync.completePhysicsStep();
                 pose = pose.afterTravel(world, next.position(), gliding, false, input.sneak());
                 if (rocketTicks > 0 && --rocketTicks == 0) world.getEntities().remove(9001);
                 if (gliding && next.onGround()) {

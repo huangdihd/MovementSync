@@ -2,6 +2,13 @@ package xin.bbtt.physics;
 
 /** Shared minimum-lifetime resource clock. One call consumes one simulated travel tick. */
 public final class FireworkSchedule {
+    public record LifetimeBounds(int minimumPoweredTicks, int maximumPoweredTicks) {
+        public LifetimeBounds {
+            if (minimumPoweredTicks <= 0 || maximumPoweredTicks < minimumPoweredTicks)
+                throw new IllegalArgumentException("Invalid firework lifetime bounds");
+        }
+    }
+
     /** Tick-boundary resource state, safe to retain alongside a physical witness. */
     public record Checkpoint(long boostTicks, int cooldownTicks, int consumed,
                              int pendingTicks, long pendingBoostTicks) {}
@@ -32,6 +39,16 @@ public final class FireworkSchedule {
     public static long minimumBoostTicks(int flight) {
         // Boost precedes ++life > lifeTime, including the expiry tick; random minima.
         return 10L * (1 + Math.max(0L, flight)) + 1;
+    }
+
+    /** Latest possible expiry, including the final powered tick from both random terms. */
+    public static long maximumBoostTicks(int flight) {
+        return 10L * (1 + Math.max(0L, flight)) + 12;
+    }
+
+    public static LifetimeBounds lifetimeBounds(int flight) {
+        return new LifetimeBounds(Math.toIntExact(minimumBoostTicks(flight)),
+                Math.toIntExact(maximumBoostTicks(flight)));
     }
 
     static FireworkSchedule consecutive(long boostTicks) {

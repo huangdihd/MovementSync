@@ -5,6 +5,7 @@ import java.util.Map;
 import java.util.OptionalInt;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
+import org.geysermc.mcprotocollib.network.packet.Packet;
 import org.geysermc.mcprotocollib.protocol.data.game.entity.type.EntityType;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundPlayerCommandPacket;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundUseItemPacket;
@@ -73,8 +74,10 @@ class P5SharedClimbFollowTest extends ElytraCommandTestSupport {
                 assertSame(target, field(owner, "target"), "never replace entity with the clearance waypoint");
                 assertFalse(owner.isFinished());
                 var input = movementSync.snapshotInput();
-                Object packet;
+                Packet packet;
                 while ((packet = movementSync.pollBeforeMovementPacket()) != null) {
+                    assertEquals(xin.bbtt.MovementSync.BeforeMovementDispatch.SENT,
+                            movementSync.sendBeforeMovementPacket(packet, packet));
                     if (packet instanceof ServerboundPlayerCommandPacket) {
                         deployments++;
                         assertFalse(movementSync.onGround.get());

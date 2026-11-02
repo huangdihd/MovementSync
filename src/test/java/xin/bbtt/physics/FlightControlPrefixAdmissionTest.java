@@ -1,11 +1,16 @@
 package xin.bbtt.physics;
 
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.joml.Vector3d;
 import org.junit.jupiter.api.Test;
+import xin.bbtt.Block.BlockState;
 import xin.bbtt.ElytraCommandTestSupport;
 import xin.bbtt.MovementSync;
+import xin.bbtt.flight.LocalClimbHandoff;
+import xin.bbtt.flight.LocalGotoController;
 import xin.bbtt.world.World;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -42,6 +47,84 @@ class FlightControlPrefixAdmissionTest extends ElytraCommandTestSupport {
                 goal, false, false, 64);
     }
 
+    private WaypointFlightTarget routeTo(FlightControlAdmission.Source source, double x, double z) {
+        var goal = new Vector3d(source.state().position()).add(x, 0, z);
+        return new WaypointFlightTarget(List.of(source.state().position(), goal),
+                goal, false, false, 64);
+    }
+
+    @Test void delayedSourceWithCurrentAuthorityAcceptsDifferentExecutionWitness() throws Exception {
+        setupFlight();
+        synchronized (movementSync) {
+            var source = source();
+            var authorityRoute = wideForwardRoute(source);
+            var executionRoute = routeTo(source, 24, 8);
+            assertTrue(admission.registerForwardEmergency(movementSync, owner, source, 0, authorityRoute));
+            movementSync.completePhysicsStep();
+            assertTrue(admission.publishPrefix(movementSync, owner, source, steps(0, -5), List.of(),
+                    List.of(), executionRoute, authorityRoute, () -> {}, false, null, false),
+                    "a delayed worker may publish an execution witness under the current authority route");
+            admission.consume(movementSync);
+            assertEquals(0f, movementSync.yaw.get(), .001f,
+                    "physical replay must validate and steer through the execution witness");
+        }
+    }
+
+    @Test void authorityRouteChangeAndWrongRouteRejectPublication() throws Exception {
+        setupFlight();
+        synchronized (movementSync) {
+            var source = source();
+            var authorityRoute = wideForwardRoute(source);
+            var differentRoute = routeTo(source, 32, 0);
+            assertTrue(admission.registerForwardEmergency(movementSync, owner, source, 0, authorityRoute));
+            assertFalse(admission.publishPrefix(movementSync, owner, source, steps(0, -5), List.of(),
+                    List.of(), differentRoute, differentRoute, () -> {}, false, null, false));
+            assertFalse(admission.publishPrefix(movementSync, owner, source, steps(0, -5), List.of(),
+                    List.of(), differentRoute, routeTo(source, -32, 0), () -> {}, false, null, false));
+        }
+    }
+
+    @Test void ownerEpochGenerationAndSourceAgeRejectPublication() throws Exception {
+        setupFlight();
+        synchronized (movementSync) {
+            var source = source();
+            var authorityRoute = wideForwardRoute(source);
+            assertTrue(admission.registerForwardEmergency(movementSync, owner, source, 0, authorityRoute));
+
+            var wrongGeneration = new FlightControlAdmission.Source(source.tick(),
+                    source.generation() + 1, source.state(), source.epoch());
+            assertFalse(admission.publishPrefix(movementSync, owner, wrongGeneration, steps(0, -5), List.of(),
+                    List.of(), authorityRoute, authorityRoute, () -> {}, false, null, false));
+
+            var otherOwner = new Object();
+            admission.claim(otherOwner, FlightControlAdmission.Mode.LOCAL_SOLVER);
+            assertFalse(admission.publishPrefix(movementSync, owner, source, steps(0, -5), List.of(),
+                    List.of(), authorityRoute, authorityRoute, () -> {}, false, null, false));
+        }
+
+        setupFlight();
+        synchronized (movementSync) {
+            var source = source();
+            var authorityRoute = wideForwardRoute(source);
+            assertTrue(admission.registerForwardEmergency(movementSync, owner, source, 0, authorityRoute));
+            for (int index = 0; index < 9; index++) movementSync.completePhysicsStep();
+            assertFalse(admission.publishPrefix(movementSync, owner, source, steps(0, -5), List.of(),
+                    List.of(), authorityRoute, authorityRoute, () -> {}, false, null, false));
+        }
+    }
+
+    @Test void revokedAuthorityRouteRejectsLaterPublication() throws Exception {
+        setupFlight();
+        synchronized (movementSync) {
+            var source = source();
+            var authorityRoute = wideForwardRoute(source);
+            assertTrue(admission.registerForwardEmergency(movementSync, owner, source, 0, authorityRoute));
+            admission.invalidateForwardEmergency(owner);
+            assertFalse(admission.publishPrefix(movementSync, owner, source, steps(0, -5), List.of(),
+                    List.of(), authorityRoute, authorityRoute, () -> {}, false, null, false));
+        }
+    }
+
     @Test void slowWorkerExhaustsExactPrefixThenFixedRecoveryThenForwardEmergency() throws Exception {
         setupFlight();
         synchronized (movementSync) {
@@ -52,6 +135,7 @@ class FlightControlPrefixAdmissionTest extends ElytraCommandTestSupport {
             var envelope = FlightControlAdmission.createPrefix(owner, source(), prefix, recovery, null, () -> {});
             assertEquals(prefix, envelope.steps(), "no appended terminal rollout");
             assertEquals(recovery, envelope.recovery());
+            assertTrue(envelope.handoff().isEmpty(), "legacy envelopes have no proof-only continuation");
             var emergencySource = source();
             assertTrue(admission.registerForwardEmergency(movementSync, owner, emergencySource, 0,
                     wideForwardRoute(emergencySource)));
@@ -74,6 +158,63 @@ class FlightControlPrefixAdmissionTest extends ElytraCommandTestSupport {
                 assertEquals(-20f, movementSync.pitch.get());
                 assertEquals(0f, movementSync.yaw.get() % 360f, .001f);
             }
+        }
+    }
+
+    @Test void shorterRenewalCannotReduceAStillValidExecutableHorizon() throws Exception {
+        setupFlight();
+        synchronized (movementSync) {
+            var initial = source();
+            var control = new ElytraFlightController.Decision(0, -20, false,
+                    ElytraFlightController.Phase.CRUISE);
+            var longPrefix = java.util.stream.IntStream.range(0, 10)
+                    .mapToObj(index -> new FlightControlAdmission.Step(control, initial.state())).toList();
+            var reserve = java.util.stream.IntStream.range(0, 6)
+                    .mapToObj(index -> new FlightControlAdmission.Step(control, initial.state())).toList();
+            admission.submit(FlightControlAdmission.createPrefix(owner, initial,
+                    longPrefix, reserve, null, () -> {}));
+            admission.consume(movementSync);
+            assertEquals(initial.tick(), admission.ownershipTrace().sourceTick());
+
+            movementSync.completePhysicsStep();
+            var renewal = source();
+            var shortPrefix = java.util.stream.IntStream.range(0, 3)
+                    .mapToObj(index -> new FlightControlAdmission.Step(control, renewal.state())).toList();
+            var callback = new AtomicInteger();
+            admission.submit(FlightControlAdmission.createPrefix(owner, renewal,
+                    shortPrefix, reserve, null, callback::incrementAndGet));
+            admission.consume(movementSync);
+
+            assertEquals(initial.tick(), admission.ownershipTrace().sourceTick(),
+                    "a shorter renewal must not discard a longer live-revalidated commitment");
+            assertEquals(1, admission.ownershipTrace().cursor());
+            assertEquals(0, callback.get(), "a rejected renewal cannot dispatch its action");
+        }
+    }
+
+    @Test void corridorBoundRecoveryRetainsProvenSteeringAtHandoff() throws Exception {
+        setupFlight();
+        synchronized (movementSync) {
+            var source = source();
+            var prefixControl = new ElytraFlightController.Decision(0, 0, false,
+                    ElytraFlightController.Phase.CRUISE);
+            var recoveryControl = new ElytraFlightController.Decision(180, 25, false,
+                    ElytraFlightController.Phase.CRUISE);
+            var prefix = List.of(new FlightControlAdmission.Step(prefixControl, source.state()));
+            var recovery = List.of(new FlightControlAdmission.Step(recoveryControl, source.state()));
+            var envelope = FlightControlAdmission.createPrefix(owner, source, prefix, recovery,
+                    wideForwardRoute(source), () -> {});
+            assertEquals(recovery, envelope.recovery(),
+                    "a corridor-bound reserve has already proved its steering against that corridor");
+
+            admission.submit(envelope);
+            admission.consume(movementSync);
+            movementSync.completePhysicsStep();
+            admission.consume(movementSync);
+
+            assertTrue(admission.ownershipTrace().recovering());
+            assertEquals(180f, Math.abs(movementSync.yaw.get()), .001f);
+            assertEquals(25f, movementSync.pitch.get());
         }
     }
 
@@ -125,6 +266,56 @@ class FlightControlPrefixAdmissionTest extends ElytraCommandTestSupport {
         }
     }
 
+    @Test void newerObservationOfSameCorridorDoesNotStarveFreshWorker() throws Exception {
+        setupFlight();
+        synchronized (movementSync) {
+            var older = source();
+            var route = wideForwardRoute(older);
+            assertTrue(admission.registerForwardEmergency(movementSync, owner, older, 0, route));
+
+            movementSync.completePhysicsStep();
+            var newer = source();
+            assertTrue(admission.registerForwardEmergency(movementSync, owner, newer, -90, route));
+            assertTrue(admission.refineForwardEmergency(movementSync, owner, older, 45, route),
+                    "a fresh worker for the same corridor must remain publishable");
+            assertTrue(admission.publishPrefix(movementSync, owner, older, steps(0, 0), List.of(),
+                    route, () -> {}));
+
+            admission.consume(movementSync);
+            assertTrue(admission.ownershipTrace().active());
+            assertEquals(0f, movementSync.yaw.get(), .001f);
+
+            movementSync.completePhysicsStep();
+            admission.consume(movementSync);
+            assertFalse(admission.ownershipTrace().active());
+            assertEquals(-90f, movementSync.yaw.get(), .001f,
+                    "the older worker must not overwrite the newer emergency heading");
+            assertEquals(-20f, movementSync.pitch.get());
+        }
+    }
+
+    @Test void sameTickNewerObservationOfSameCorridorDoesNotStarveFreshWorker() throws Exception {
+        setupFlight();
+        synchronized (movementSync) {
+            var older = source();
+            var route = wideForwardRoute(older);
+            assertTrue(admission.registerForwardEmergency(movementSync, owner, older, 0, route));
+
+            movementSync.position.set(new Vector3d(1, 100, 0));
+            var newer = source();
+            assertEquals(older.tick(), newer.tick());
+            assertTrue(admission.registerForwardEmergency(movementSync, owner, newer, -90, route));
+
+            assertTrue(admission.refineForwardEmergency(movementSync, owner, older, 45, route));
+            assertTrue(admission.publishPrefix(movementSync, owner, older, steps(0, 0), List.of(),
+                    route, () -> {}));
+            admission.consume(movementSync);
+
+            assertTrue(admission.ownershipTrace().active());
+            assertEquals(0f, movementSync.yaw.get(), .001f);
+        }
+    }
+
     @Test void sameTickReplacementRejectsTheEarlierWorkerCheckpoint() throws Exception {
         setupFlight();
         synchronized (movementSync) {
@@ -152,6 +343,74 @@ class FlightControlPrefixAdmissionTest extends ElytraCommandTestSupport {
                     List.of(), olderRoute, () -> fail("stale callback")));
             assertTrue(admission.refineForwardEmergency(
                     movementSync, owner, newer, -90, newerRoute));
+        }
+    }
+
+    @Test void invalidationClearsPendingAndRevokedSourceCannotReauthorizeItself() throws Exception {
+        setupFlight();
+        synchronized (movementSync) {
+            var routeA = wideForwardRoute(source());
+            var sourceA = source();
+            var accepted = new AtomicInteger();
+            assertTrue(admission.registerForwardEmergency(movementSync, owner, sourceA, 0, routeA));
+            assertTrue(admission.publishPrefix(movementSync, owner, sourceA,
+                    steps(0, -5), List.of(), routeA, accepted::incrementAndGet));
+
+            admission.invalidateForwardEmergency(owner);
+
+            assertFalse(admission.registerForwardEmergency(movementSync, owner, sourceA, 180, routeA),
+                    "the revoked worker capability must not revive its own emergency checkpoint");
+            assertFalse(admission.refineForwardEmergency(movementSync, owner, sourceA, 180, routeA));
+            assertFalse(admission.publishPrefix(movementSync, owner, sourceA,
+                    steps(180, 25), List.of(), routeA, accepted::incrementAndGet));
+            admission.consume(movementSync);
+            assertEquals(0, accepted.get(), "a revoked pending envelope must never dispatch its callback");
+            assertFalse(admission.ownershipTrace().active());
+        }
+    }
+
+    @Test void invalidationPreservesActivePrefixThenOnlyFreshRouteCanTakeOver() throws Exception {
+        setupFlight();
+        synchronized (movementSync) {
+            var sourceA = source();
+            var routeA = wideForwardRoute(sourceA);
+            var controlA = new ElytraFlightController.Decision(0, -5, false,
+                    ElytraFlightController.Phase.CRUISE);
+            var prefixA = List.of(
+                    new FlightControlAdmission.Step(controlA, sourceA.state()),
+                    new FlightControlAdmission.Step(controlA, sourceA.state()));
+            assertTrue(admission.registerForwardEmergency(movementSync, owner, sourceA, 0, routeA));
+            assertTrue(admission.publishPrefix(movementSync, owner, sourceA,
+                    prefixA, List.of(), routeA, () -> {}));
+            admission.consume(movementSync);
+            assertTrue(admission.ownershipTrace().active());
+
+            admission.invalidateForwardEmergency(owner);
+            movementSync.completePhysicsStep();
+            admission.consume(movementSync);
+
+            assertTrue(admission.ownershipTrace().active(),
+                    "route invalidation must not tear down an already admitted finite prefix");
+            assertEquals(-5f, movementSync.pitch.get());
+
+            movementSync.completePhysicsStep();
+            admission.consume(movementSync);
+            assertFalse(admission.ownershipTrace().active());
+            assertFalse(admission.registerForwardEmergency(movementSync, owner, sourceA, 180, routeA),
+                    "exhaustion must not revive the revoked route-A fallback");
+
+            var sourceB = source();
+            var goalB = new Vector3d(32, 100, 0);
+            var routeB = new WaypointFlightTarget(List.of(sourceB.state().position(), goalB),
+                    goalB, false, false, 64);
+            assertTrue(admission.registerForwardEmergency(movementSync, owner, sourceB, -90, routeB));
+            assertTrue(admission.publishPrefix(movementSync, owner, sourceB,
+                    steps(-90, -5), List.of(), routeB, () -> {}));
+            admission.consume(movementSync);
+
+            assertTrue(admission.ownershipTrace().active());
+            assertEquals(-90f, movementSync.yaw.get(), .001f,
+                    "only the fresh route-B checkpoint may take over after revocation");
         }
     }
 
@@ -339,6 +598,391 @@ class FlightControlPrefixAdmissionTest extends ElytraCommandTestSupport {
         admission.consume(movementSync);
 
         assertEquals(0, accepted.get(), "touchdown while simulated thrust is attached cannot dispatch a rocket");
+    }
+
+    @Test void rebasedReserveRejectsUnsafeHandoffBeforeApplyingItsDangerousTail() throws Exception {
+        setupFlight();
+        var field = MovementSync.class.getDeclaredField("world");
+        field.setAccessible(true);
+        field.set(movementSync, new World() {
+            @Override public boolean chunkLoaded(int x, int z) { return true; }
+            @Override public int getBlockAt(Vector3d position) { return position.x >= 1 ? 1 : 0; }
+        });
+        var cruise = new ElytraFlightController.Decision(0, 0, false,
+                ElytraFlightController.Phase.CRUISE);
+        var bridgeControl = new ElytraFlightController.Decision(-90, 0, false,
+                ElytraFlightController.Phase.CRUISE);
+        var plannedState = new PhysicsState(new Vector3d(-10, 100, 0),
+                new Vector3d(0, 0, .3), false, 0, PlayerPose.GLIDING);
+        var source = new FlightControlAdmission.Source(movementSync.physicsTickVersion(),
+                movementSync.getNavigationGeneration(), plannedState, admission.epoch());
+        var prefix = List.of(new FlightControlAdmission.Step(cruise, plannedState));
+        var reserve = java.util.stream.IntStream.range(0, 6)
+                .mapToObj(index -> new FlightControlAdmission.Step(cruise, plannedState)).toList();
+        var handoff = List.of(new FlightControlAdmission.Step(bridgeControl, plannedState));
+        var envelope = FlightControlAdmission.createPrefix(owner, source, prefix, reserve, handoff,
+                null, () -> {}, true);
+        var batch = TickControlBatch.admitted(envelope, 17);
+        assertEquals(1, batch.commands().size(),
+                "proof-only handoff and reserve must not extend the executable prefix batch");
+        assertEquals(cruise.pitch(), batch.commands().get(0).pitch());
+
+        PhysicsState plannedReplay = plannedState;
+        for (var step : java.util.stream.Stream.of(prefix, reserve, handoff)
+                .flatMap(List::stream).toList()) {
+            var result = new GlidingPhysics(step.control().yaw(), step.control().pitch(), false,
+                    PlayerInput.NONE, movementSync.getMovementParameters()).step(
+                            movementSync.getWorld(), plannedReplay, PlayerPose.HALF_WIDTH,
+                            PlayerPose.GLIDING.height());
+            assertFalse(result.collidedX() || result.collidedZ(),
+                    "the worker-side episode must be safe at its original source");
+            plannedReplay = FlightSafety.nextState(result);
+        }
+
+        var liveState = new PhysicsState(new Vector3d(.699, 100, 0),
+                new Vector3d(0, 0, .3), false, 0, PlayerPose.GLIDING);
+        PhysicsState liveReplay = liveState;
+        for (var step : java.util.stream.Stream.of(prefix, reserve).flatMap(List::stream).toList()) {
+            var result = new GlidingPhysics(step.control().yaw(), step.control().pitch(), false,
+                    PlayerInput.NONE, movementSync.getMovementParameters()).step(
+                            movementSync.getWorld(), liveReplay, PlayerPose.HALF_WIDTH,
+                            PlayerPose.GLIDING.height());
+            assertFalse(result.collidedX() || result.collidedZ(),
+                    "all executable controls must remain safe after rebasing");
+            liveReplay = FlightSafety.nextState(result);
+        }
+        var bridgeResult = new GlidingPhysics(bridgeControl.yaw(), bridgeControl.pitch(), false,
+                PlayerInput.NONE, movementSync.getMovementParameters()).step(movementSync.getWorld(),
+                        liveReplay, PlayerPose.HALF_WIDTH, PlayerPose.GLIDING.height());
+        assertTrue(bridgeResult.collidedX(), "fixture handoff must hit the live wall");
+
+        movementSync.position.set(liveState.position());
+        movementSync.velocity.set(liveState.velocity());
+        movementSync.onGround.set(false);
+        admission.submit(envelope);
+        admission.consume(movementSync);
+        assertTrue(admission.ownershipTrace().active(),
+                "the six-step window must not inspect a seventh control early");
+        applyCurrentControl();
+
+        admission.consume(movementSync);
+        assertTrue(admission.ownershipTrace().recovering(),
+                "the complete six-step reserve remains executable at handoff");
+        applyCurrentControl();
+
+        admission.consume(movementSync);
+        assertFalse(admission.ownershipTrace().active(),
+                "five remaining reserve steps plus the handoff must fail closed");
+        assertEquals(0f, movementSync.yaw.get() % 360f, .001f,
+                "the proof-only handoff must never reach the applied control");
+        assertNotNull(admission.failure());
+    }
+
+    @Test void directEnvelopeCannotSmuggleAFireworkIntoProofOnlyHandoff() throws Exception {
+        setupFlight();
+        var checkpoint = source();
+        var firework = new ElytraFlightController.Decision(0, -20, true,
+                ElytraFlightController.Phase.CRUISE);
+        var handoff = List.of(new FlightControlAdmission.Step(firework, checkpoint.state()));
+
+        assertThrows(IllegalArgumentException.class, () -> new FlightControlAdmission.Envelope(
+                owner, checkpoint, steps(0, 0), null, () -> {}, steps(0, -20), handoff, null,
+                true));
+    }
+
+    @Test void newlyAppearedFlightOneRocketRejectsOrdinaryPrefixPublishedWithEmptyHotbar() throws Exception {
+        World roof = new World() {
+            @Override public boolean chunkLoaded(int x, int z) { return true; }
+            @Override public BlockState getBlockStateAt(Vector3d position) {
+                return position.y < 128
+                        ? new BlockState("bedrock", 1, Map.of(), "block", -1, true, "STONE")
+                        : super.getBlockStateAt(position);
+            }
+        };
+        var worldField = MovementSync.class.getDeclaredField("world");
+        worldField.setAccessible(true);
+        worldField.set(movementSync, roof);
+        movementSync.position.set(new Vector3d(1000.53, 129.08, .5));
+        movementSync.velocity.set(new Vector3d(.018, -.092, 0));
+        movementSync.onGround.set(false);
+        movementSync.setGliding(true);
+        movementSync.claimFlightControlOwner(owner, FlightControlAdmission.Mode.LOCAL_SOLVER);
+        var checkpoint = FlightControlAdmission.snapshot(movementSync);
+        var handoff = new LocalClimbHandoff();
+        handoff.deployed(129.29);
+        var route = handoff.route(checkpoint.state(), new Vector3d(1600, 128, 0), -90);
+        var callback = new AtomicInteger();
+        assertArrayEquals(new int[0], movementSync.inventoryManager.getHotbarFireworkFlightDurations());
+
+        try (var controller = new LocalGotoController()) {
+            assertTrue(controller.request(movementSync, owner, checkpoint, route, route.goal(), true,
+                    callback::incrementAndGet, null,
+                    new HazardRecovery.Context(new int[] {1}, 0, false, null), true));
+            controller.awaitIdle(5, TimeUnit.SECONDS);
+            assertNotNull(controller.latest());
+            assertTrue(controller.latest().rocket(), "fixture must select the ordinary powered local-climb prefix");
+            var controlsField = MovementSync.class.getDeclaredField("flightControls");
+            controlsField.setAccessible(true);
+            var pendingField = FlightControlAdmission.class.getDeclaredField("pending");
+            pendingField.setAccessible(true);
+            var envelope = (FlightControlAdmission.Envelope) pendingField.get(controlsField.get(movementSync));
+            assertNotNull(envelope, "ordinary publication must accept the proved rejected-request branch");
+            assertEquals(FireworkSchedule.lifetimeBounds(1), envelope.rocketLifetime());
+            assertTrue(envelope.steps().get(0).control().firework());
+            assertArrayEquals(new int[0], movementSync.inventoryManager.getHotbarFireworkFlightDurations(),
+                    "actual hotbar must remain empty through publication despite the provided Flight1 context");
+            assertEquals(0, callback.get(), "publication cannot dispatch the action");
+
+            movementSync.inventoryManager.setSlot(0, 36, item("firework_rocket", 1));
+            assertArrayEquals(new int[] {1}, movementSync.inventoryManager.getHotbarFireworkFlightDurations());
+            assertTrue(movementSync.fireworkRequestReady(), "only inventory changed, not the request latch");
+            assertFalse(movementSync.hasAttachedFirework());
+
+            movementSync.snapshotInput();
+
+            assertEquals(0, callback.get(),
+                    "an empty-publication capability cannot authorize a newly appeared rocket, even Flight1");
+            assertTrue(movementSync.flightControlOwnership().recovering(),
+                    "rejecting the request must retain the independently revalidated no-thrust reserve");
+            assertNull(movementSync.pollBeforeMovementPacket(), "no rocket action may be queued");
+        }
+    }
+
+    @Test void boundedLifetimesAdmitFromLiveStateAndDispatchExactlyOnce() throws Exception {
+        setupFlight();
+        for (int flight = 0; flight <= 1; flight++) {
+            admission.clear();
+            admission.claim(owner, FlightControlAdmission.Mode.LOCAL_SOLVER);
+            var checkpoint = source();
+            var callback = new AtomicInteger();
+            var envelope = lifetimeEnvelope(checkpoint, flight, wideForwardRoute(checkpoint), callback);
+            movementSync.position.set(checkpoint.state().position().add(1, 0, 0));
+            movementSync.completePhysicsStep();
+            admission.submit(envelope);
+            admission.consume(movementSync);
+            assertEquals(1, callback.get(), "admission must rebase every legal lifetime to live state");
+            assertTrue(admission.ownershipTrace().active());
+            admission.consume(movementSync);
+            admission.submit(envelope);
+            admission.consume(movementSync);
+            assertEquals(1, callback.get(), "repeated consumption/publication cannot repeat the request");
+        }
+    }
+
+    @Test void boundedLifetimeCannotAdmitFromLiveStateOutsidePoweredCorridor() throws Exception {
+        setupFlight();
+        var checkpoint = source();
+        var callback = new AtomicInteger();
+        var goal = checkpoint.state().position().add(0, 0, 100);
+        var corridor = new WaypointFlightTarget(List.of(checkpoint.state().position(), goal),
+                goal, false, false, 20);
+        var envelope = lifetimeEnvelope(checkpoint, 1, corridor, callback);
+        movementSync.position.set(checkpoint.state().position().add(40, 0, 0));
+        movementSync.completePhysicsStep();
+        admission.submit(envelope);
+        admission.consume(movementSync);
+        assertEquals(0, callback.get());
+        assertFalse(admission.ownershipTrace().active());
+    }
+
+    @Test void requestRelativeLifetimeSurvivesDelayedAttachmentAndReserveHandoff() throws Exception {
+        setupFlight();
+        var checkpoint = source();
+        var callback = new AtomicInteger();
+        var envelope = lifetimeEnvelope(checkpoint, 1, wideForwardRoute(checkpoint), callback);
+        admission.submit(envelope);
+        admission.consume(movementSync);
+        assertEquals(1, callback.get());
+        var rocket = new xin.bbtt.Entity.Entity(9001, new java.util.UUID(0, 9001),
+                org.geysermc.mcprotocollib.protocol.data.game.entity.type.EntityType.FIREWORK_ROCKET,
+                0, 100, 0, 0, 0, 0, new Vector3d());
+        rocket.getMetadata().put("attached_to_target", java.util.OptionalInt.of(movementSync.entityId));
+        for (int tick = 0; tick < 32; tick++) {
+            if (tick == 2) movementSync.getWorld().getEntities().put(9001, rocket);
+            applyCurrentControl();
+            // Acknowledgement delay does not extend the physical request-relative lifetime.
+            if (tick == 31) movementSync.getWorld().getEntities().remove(9001);
+            admission.consume(movementSync);
+            assertTrue(admission.ownershipTrace().active(), "lost lifetime owner at tick=" + (tick + 1));
+            assertEquals(tick + 1 >= 27, admission.ownershipTrace().recovering());
+            assertEquals(1, callback.get());
+        }
+        movementSync.getWorld().getEntities().remove(9001);
+    }
+
+    @Test void rejectedRequestMayTerminateOnSafeSupportOutsidePoweredCorridor() throws Exception {
+        setupFlight();
+        installLandingWorld("minecraft:stone");
+        var initial = new PhysicsState(new Vector3d(.5, 1.45, .5), new Vector3d(0, -.1, .3),
+                false, 0, PlayerPose.GLIDING);
+        movementSync.position.set(initial.position());
+        movementSync.velocity.set(initial.velocity());
+        var checkpoint = source();
+        var callback = new AtomicInteger();
+        var corridor = poweredLifetimeCorridor(checkpoint.state(), 1);
+        var envelope = lifetimeEnvelope(checkpoint, 1, corridor, callback);
+        var rejected = checkpoint.state();
+        boolean departed = false;
+        var executable = new java.util.ArrayList<>(envelope.steps());
+        executable.addAll(envelope.recovery());
+        for (var step : executable) {
+            var control = step.control();
+            var result = new GlidingPhysics(control.yaw(), control.pitch(), false, PlayerInput.NONE,
+                    movementSync.getMovementParameters()).step(movementSync.getWorld(), rejected,
+                            PlayerPose.HALF_WIDTH, PlayerPose.GLIDING.height());
+            departed |= !corridor.contains(rejected.position(), result.position());
+            rejected = FlightSafety.nextState(result);
+            if (rejected.onGround()) break;
+        }
+        assertTrue(departed, "fixture must actually leave the powered corridor");
+        assertTrue(rejected.onGround(), "rejection must terminate within executable controls");
+        assertTrue(FlightHazards.safeLanding(movementSync.getWorld(), rejected.position()));
+        admission.submit(envelope);
+        admission.consume(movementSync);
+        assertEquals(1, callback.get());
+        assertTrue(admission.ownershipTrace().active());
+    }
+
+    @Test void immediateOnlyWitnessCannotDispatchBeforeDelayedObservationIsProven() throws Exception {
+        setupFlight();
+        installLandingWorld("minecraft:stone");
+        movementSync.position.set(new Vector3d(.5, 1.45, .5));
+        movementSync.velocity.set(new Vector3d(0, -.1, .3));
+        var checkpoint = source();
+        var callback = new AtomicInteger();
+        var envelope = lifetimeEnvelope(checkpoint, 1,
+                poweredLifetimeCorridor(checkpoint.state(), 1, 0), callback);
+
+        admission.submit(envelope);
+        admission.consume(movementSync);
+
+        assertEquals(0, callback.get(), "prove delayed observation before dispatch, not after it");
+        assertFalse(admission.ownershipTrace().active());
+    }
+
+    @Test void airborneRejectedRequestCannotEscapeItsCorridorWithoutTerminalSupport() throws Exception {
+        setupFlight();
+        var checkpoint = source();
+        var callback = new AtomicInteger();
+        var envelope = lifetimeEnvelope(checkpoint, 1,
+                poweredLifetimeCorridor(checkpoint.state(), 1), callback);
+
+        admission.submit(envelope);
+        admission.consume(movementSync);
+
+        assertEquals(0, callback.get());
+        assertFalse(admission.ownershipTrace().active());
+    }
+
+    @Test void rejectedRequestCannotTerminateOnHotSupportOutsidePoweredCorridor() throws Exception {
+        setupFlight();
+        installLandingWorld("minecraft:magma_block");
+        movementSync.position.set(new Vector3d(.5, 1.45, .5));
+        movementSync.velocity.set(new Vector3d(0, -.1, .3));
+        var checkpoint = source();
+        var callback = new AtomicInteger();
+        var envelope = lifetimeEnvelope(checkpoint, 1,
+                poweredLifetimeCorridor(checkpoint.state(), 1), callback);
+        admission.submit(envelope);
+        admission.consume(movementSync);
+        assertEquals(0, callback.get());
+        assertFalse(admission.ownershipTrace().active());
+    }
+
+    @Test void rejectionCannotUseProofOnlyHandoffAsItsLandingControl() throws Exception {
+        setupFlight();
+        installLandingWorld("minecraft:stone");
+        movementSync.position.set(new Vector3d(.5, 1.45, .5));
+        movementSync.velocity.set(new Vector3d(0, -.1, .3));
+        var checkpoint = source();
+        var callback = new AtomicInteger();
+        var complete = lifetimeEnvelope(checkpoint, 1,
+                poweredLifetimeCorridor(checkpoint.state(), 1), callback);
+        var controls = new java.util.ArrayList<>(complete.steps());
+        controls.addAll(complete.recovery());
+        controls.addAll(complete.handoff());
+        var envelope = FlightControlAdmission.createPrefix(owner, checkpoint,
+                controls.subList(0, 1), List.of(), controls.subList(1, controls.size()),
+                complete.corridor(), callback::incrementAndGet, true, complete.rocketLifetime());
+        admission.submit(envelope);
+        admission.consume(movementSync);
+        assertEquals(0, callback.get(), "off-route landing must be executable, not merely predicted");
+        assertFalse(admission.ownershipTrace().active());
+    }
+
+    private void installLandingWorld(String support) throws Exception {
+        var block = new xin.bbtt.Block.BlockState(support, 1, java.util.Map.of(),
+                "block", 1.5, true, "STONE");
+        var field = MovementSync.class.getDeclaredField("world");
+        field.setAccessible(true);
+        field.set(movementSync, new World() {
+            @Override public boolean chunkLoaded(int x, int z) { return true; }
+            @Override public xin.bbtt.Block.BlockState getBlockStateAt(Vector3d position) {
+                return position.y < 1 ? block : super.getBlockStateAt(position);
+            }
+        });
+    }
+
+    private WaypointFlightTarget poweredLifetimeCorridor(PhysicsState initial, int flight) {
+        return poweredLifetimeCorridor(initial, flight, 1);
+    }
+
+    private WaypointFlightTarget poweredLifetimeCorridor(PhysicsState initial, int flight,
+            int maximumAcknowledgementDelay) {
+        var lifetime = FireworkSchedule.lifetimeBounds(flight);
+        var paths = new java.util.ArrayList<List<Vector3d>>();
+        for (int poweredTicks = lifetime.minimumPoweredTicks();
+                poweredTicks <= lifetime.maximumPoweredTicks(); poweredTicks++) {
+            for (int acknowledgementDelay = 0; acknowledgementDelay <= maximumAcknowledgementDelay;
+                    acknowledgementDelay++) {
+                var path = new java.util.ArrayList<Vector3d>();
+                var state = initial;
+                path.add(state.position());
+                for (int tick = 0; tick < lifetime.maximumPoweredTicks() + 2; tick++) {
+                    var result = new GlidingPhysics(0, -20,
+                            tick >= acknowledgementDelay && tick < poweredTicks, PlayerInput.NONE,
+                            movementSync.getMovementParameters()).step(movementSync.getWorld(), state,
+                                    PlayerPose.HALF_WIDTH, PlayerPose.GLIDING.height());
+                    assertFalse(result.onGround(), "all accepted powered lifetimes must remain airborne");
+                    state = FlightSafety.nextState(result);
+                    path.add(state.position());
+                }
+                paths.add(path);
+            }
+        }
+        return WaypointFlightTarget.executionWitness(paths, paths.get(0).get(paths.get(0).size() - 1), false);
+    }
+
+    private FlightControlAdmission.Envelope lifetimeEnvelope(FlightControlAdmission.Source checkpoint,
+            int flight, WaypointFlightTarget corridor, AtomicInteger callback) {
+        var lifetime = FireworkSchedule.lifetimeBounds(flight);
+        int prefixTicks = lifetime.maximumPoweredTicks() + 1 - 6;
+        var cruise = new ElytraFlightController.Decision(0, -20, false,
+                ElytraFlightController.Phase.CRUISE);
+        var prefix = new java.util.ArrayList<FlightControlAdmission.Step>();
+        prefix.add(new FlightControlAdmission.Step(new ElytraFlightController.Decision(0, -20, true,
+                ElytraFlightController.Phase.CRUISE), checkpoint.state()));
+        for (int tick = 1; tick < prefixTicks; tick++)
+            prefix.add(new FlightControlAdmission.Step(cruise, checkpoint.state()));
+        var reserve = java.util.Collections.nCopies(6,
+                new FlightControlAdmission.Step(cruise, checkpoint.state()));
+        var handoff = List.of(new FlightControlAdmission.Step(cruise, checkpoint.state()));
+        return FlightControlAdmission.createPrefix(owner, checkpoint, prefix, reserve, handoff,
+                corridor, callback::incrementAndGet, true, lifetime);
+    }
+
+    private void applyCurrentControl() {
+        var state = new PhysicsState(movementSync.position.get(), movementSync.velocity.get(),
+                movementSync.onGround.get(), movementSync.fallDistance.get(), PlayerPose.GLIDING);
+        var result = new GlidingPhysics(movementSync.yaw.get(), movementSync.pitch.get(),
+                movementSync.hasAttachedFirework(), PlayerInput.NONE,
+                movementSync.getMovementParameters()).step(movementSync.getWorld(), state,
+                        PlayerPose.HALF_WIDTH, PlayerPose.GLIDING.height());
+        movementSync.position.set(result.position());
+        movementSync.velocity.set(result.velocity());
+        movementSync.onGround.set(result.onGround());
+        movementSync.fallDistance.set(result.fallDistance());
+        movementSync.completePhysicsStep();
     }
 
     @Test void movingPursuitCannotAdmitRebasedGroundContact() throws Exception {

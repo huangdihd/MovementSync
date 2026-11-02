@@ -17,6 +17,13 @@ public final class FlightHazards {
                 && contact(world, feet, feet, 1.8, false) == 0;
     }
 
+    /** Exact swept-body contact check. Callers must provide the tick-end pose they are
+     * proving; flight previews commonly normalize it to {@link PlayerPose#GLIDING}. */
+    public static boolean safeTravel(World world, PhysicsState before, PhysicsResult after) {
+        return damage(world, before, after, DamageParameters.NONE, true).raw() == 0
+                && damage(world, before, after, DamageParameters.NONE, false).raw() == 0;
+    }
+
     static DamageModel.Damage damage(World world, PhysicsState before, PhysicsResult after,
             DamageParameters mitigation, boolean lava) {
         float raw = contact(world, before.position(), after.position(),

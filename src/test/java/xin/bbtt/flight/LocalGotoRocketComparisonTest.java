@@ -15,7 +15,7 @@ class LocalGotoRocketComparisonTest {
                 Collections.nCopies(ticks, new FlightControlAdmission.Step(control, state)),
                 ticks, 0, ticks == 0 ? LocalLookaheadSolver.PrefixStatus.UNPROVEN
                         : LocalLookaheadSolver.PrefixStatus.SAFE_PREFIX,
-                state, score, new LocalLookaheadSolver.Rejections(0, 0, 0, 0));
+                state, score, new LocalLookaheadSolver.Rejections(0, 0, 0, 0, 0));
     }
 
     @Test void safeHorizonTakesPriorityOverProgressForRocketComparison() {

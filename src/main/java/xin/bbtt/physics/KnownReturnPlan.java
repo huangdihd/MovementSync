@@ -3,6 +3,7 @@ package xin.bbtt.physics;
 import java.util.ArrayList;
 import java.util.List;
 import org.joml.Vector3d;
+import xin.bbtt.MovementSync;
 import xin.bbtt.world.World;
 
 /** Event-time bounded full-trajectory search. UNPROVEN is not evidence of impossibility.
@@ -31,10 +32,25 @@ public final class KnownReturnPlan {
      * quiescent at contact. Actual longer attachments require execution invalidation.
      * The budget is shared across all policies, not reset for each candidate.
      */
+    // Retained for direction-only estimates; live admission must supply its actual yaw.
     public static Result preview(World world, PhysicsState initial, MovementParameters movement,
             HazardRecovery.Context resources, Vector3d anchor, int confirmationDelay) {
+        return preview(world, initial, movement, resources, anchor, confirmationDelay, 0, false);
+    }
+
+    /** Executable witness using the same accumulated-yaw representation as setYawToward.
+     * Equivalent headings can select different float trigonometry table entries.
+     */
+    public static Result preview(World world, PhysicsState initial, MovementParameters movement,
+            HazardRecovery.Context resources, Vector3d anchor, int confirmationDelay, float initialYaw) {
+        return preview(world, initial, movement, resources, anchor, confirmationDelay, initialYaw, true);
+    }
+
+    private static Result preview(World world, PhysicsState initial, MovementParameters movement,
+            HazardRecovery.Context resources, Vector3d anchor, int confirmationDelay,
+            float initialYaw, boolean continuousYaw) {
         if (anchor == null || !anchor.isFinite() || !initial.position().isFinite()
-                || !initial.velocity().isFinite() || confirmationDelay < 0)
+                || !initial.velocity().isFinite() || confirmationDelay < 0 || !Float.isFinite(initialYaw))
             return new Result(List.of(), 0, "Invalid return inputs");
         int[] flights = resources.rocketFlightDurations();
         int[] work = {0};
@@ -50,12 +66,14 @@ public final class KnownReturnPlan {
                                 resources.cooldownTicks(), resources.guaranteedBoostTicks(), confirmationDelay);
                         var states = new ArrayList<Step>();
                         PhysicsState state = initial;
+                        float yaw = initialYaw;
                         boolean descending = false;
                         for (int tick = 0; tick < MAX_TICKS; tick++) {
                             if (Thread.currentThread().isInterrupted() || work[0] >= MAX_STEPS) return false;
                             Vector3d delta = new Vector3d(anchor).sub(state.position());
                             double distance = Math.hypot(delta.x, delta.z);
-                            float yaw = (float) Math.toDegrees(Math.atan2(-delta.x, delta.z));
+                            float heading = (float) Math.toDegrees(Math.atan2(-delta.x, delta.z));
+                            yaw = continuousYaw ? executionYaw(yaw, heading) : heading;
                             double toward = distance < 1.0e-6 ? 0
                                     : (state.velocity().x * delta.x + state.velocity().z * delta.z) / distance;
                             if (distance < approach && toward > 0) descending = true;
@@ -74,7 +92,7 @@ public final class KnownReturnPlan {
                             var step = new GlidingPhysics(yaw, pitch, resource.powered(), PlayerInput.NONE, movement)
                                     .step(world, state, PlayerPose.HALF_WIDTH, PlayerPose.GLIDING.height());
                             work[0]++;
-                            if (step.fallDistance() > movement.safeFallDistance()
+                            if (step.fallDistance() >= movement.safeFallDistance()
                                     || !FlightSafety.knownStep(world, state, step) || step.collidedX() || step.collidedZ()
                                     || FlightHazards.damage(world, state, step, DamageParameters.NONE, true).raw() > 0
                                     || FlightHazards.damage(world, state, step, DamageParameters.NONE, false).raw() > 0) break;
@@ -113,17 +131,35 @@ public final class KnownReturnPlan {
      * match at the caller; every swept step and the new terminal are checked again.
      */
     static Result replay(World world, PhysicsState initial, MovementParameters movement, Result plan) {
-        if (!plan.proven() || plan.steps().size() > MAX_TICKS) return new Result(List.of(), 0, "Invalid replay");
+        return replay(world, initial, movement, plan, 0, false);
+    }
+
+    /** Rebase fixed directions onto the current accumulated yaw without selecting a new policy. */
+    static Result replay(World world, PhysicsState initial, MovementParameters movement, Result plan,
+            float initialYaw) {
+        return replay(world, initial, movement, plan, initialYaw, true);
+    }
+
+    private static Result replay(World world, PhysicsState initial, MovementParameters movement, Result plan,
+            float initialYaw, boolean continuousYaw) {
+        if (!plan.proven() || plan.steps().size() > MAX_TICKS || !Float.isFinite(initialYaw))
+            return new Result(List.of(), 0, "Invalid replay");
         var states = new ArrayList<Step>();
         var state = initial;
+        float yaw = initialYaw;
         int[] work = {0};
         for (var stored : plan.steps()) {
             var control = stored.control();
+            if (continuousYaw) {
+                yaw = executionYaw(yaw, control.yaw());
+                control = new ElytraFlightController.Decision(yaw, control.pitch(),
+                        control.firework(), control.phase());
+            }
             var resource = stored.resource();
             var next = new GlidingPhysics(control.yaw(), control.pitch(), resource.powered(),
                     PlayerInput.NONE, movement).step(world, state, PlayerPose.HALF_WIDTH, PlayerPose.GLIDING.height());
             work[0]++;
-            if (next.fallDistance() > movement.safeFallDistance()
+            if (next.fallDistance() >= movement.safeFallDistance()
                     || !FlightSafety.knownStep(world, state, next) || next.collidedX() || next.collidedZ()
                     || FlightHazards.damage(world, state, next, DamageParameters.NONE, true).raw() > 0
                     || FlightHazards.damage(world, state, next, DamageParameters.NONE, false).raw() > 0) break;
@@ -143,6 +179,13 @@ public final class KnownReturnPlan {
             state = after;
         }
         return new Result(List.of(), work[0], "Fixed return replay unproven");
+    }
+
+    private static float executionYaw(float current, float direction) {
+        float stored = MovementSync.nearestEquivalentYaw(current, direction);
+        // Rounding can turn a near-positive half-turn into exactly +180. Reapplying
+        // the stored float then chooses -180; predict that stable execution value.
+        return MovementSync.nearestEquivalentYaw(current, stored);
     }
 
     public static boolean launchBudget(World world, PhysicsState initial,
